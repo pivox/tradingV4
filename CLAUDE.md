@@ -4,7 +4,7 @@ Plateforme de trading crypto **spot** sur OKX : moteur de backtest, de paper tra
 
 ## État du dépôt
 
-- Conception terminée le 2026-10-13 : documents 01 à 08 dans `docs/`. Les trois points de `docs/03-architecture.md` §13 sont tranchés (décisions du 13/10, 21:47). Reste à trancher par le propriétaire : le seuil d'effectif de F3 (`docs/08-strategies-risque-exploitation.md` §A.6), avant son gel.
+- Conception terminée le 2026-10-13 : documents 01 à 08 dans `docs/`. Les trois points de `docs/03-architecture.md` §13 sont tranchés (décisions du 13/10, 21:47), ainsi que le seuil d'effectif de G0, maintenu à 300 trades en 1d (13/10, 21:59, `docs/08-strategies-risque-exploitation.md` §A.6). Plus aucun point de conception n'est en suspens.
 - **Aucun code applicatif avant le feu vert explicite du propriétaire.** Le jalon 1 est découpé en issues S1 à S8 (`docs/03-architecture.md` §11).
 
 ## Documents, à lire avant toute modification
@@ -27,7 +27,7 @@ Plateforme de trading crypto **spot** sur OKX : moteur de backtest, de paper tra
 - Moteur en Rust ; control plane Symfony au jalon 2, précédé au jalon 1 d'un squelette Symfony qui rend le rapport HTML statique (`docs/03-architecture.md` §11, S8).
 - Données : dumps OHLCVT Kraken et `history-candles` OKX ; paper trading sur le WebSocket public.
 - Capital de départ 300 € au maximum ; pilote en échelle 20 % → 50 % → 100 % ; verdict sur 12 mois à 100 %, avant impôt, contre le Livret A.
-- Recherche limitée au 1d et au 4h sur OKX (1h en maker seulement, hors cycle 1) ; F1 (cassure Donchian 55 + filtre BTC > SMA200) en tête, F3 en repli.
+- Recherche limitée au 1d et au 4h sur OKX (1h en maker seulement, hors cycle 1) ; F1 (cassure Donchian 55 + filtre BTC > SMA200) en tête ; F3 documentée mais rejetée par G0 (seuil de 300 trades en 1d maintenu), repli effectif F4.
 - Un seul utilisateur, aucune notification sortante ; IHM accessible par VPN seul ; machine dédiée à la maison.
 
 ## Règles de travail
