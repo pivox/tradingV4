@@ -4,7 +4,7 @@ Plateforme de trading crypto **spot** sur OKX : moteur de backtest, de paper tra
 
 ## État du dépôt
 
-- Conception terminée le 2026-10-13 : documents 01 à 08 dans `docs/`. Restent à trancher par le propriétaire : les trois points de `docs/03-architecture.md` §13 (stockage du jalon 1, stratégies en Rust pur, durée du jalon 1), avant le squelette ; le seuil d'effectif de F3 (`docs/08-strategies-risque-exploitation.md` §A.6), avant son gel.
+- Conception terminée le 2026-10-13 : documents 01 à 08 dans `docs/`. Les trois points de `docs/03-architecture.md` §13 sont tranchés (décisions du 13/10, 21:47). Reste à trancher par le propriétaire : le seuil d'effectif de F3 (`docs/08-strategies-risque-exploitation.md` §A.6), avant son gel.
 - **Aucun code applicatif avant le feu vert explicite du propriétaire.** Le jalon 1 est découpé en issues S1 à S8 (`docs/03-architecture.md` §11).
 
 ## Documents, à lire avant toute modification
@@ -23,6 +23,7 @@ Plateforme de trading crypto **spot** sur OKX : moteur de backtest, de paper tra
 ## Décisions du propriétaire (ne se rediscutent pas sans lui)
 
 - Crypto **spot uniquement**, aucun compte ni produit dérivé ; exécution OKX spot, frais 0,20 % maker / 0,35 % taker.
+- Jalon 1 : Parquet seul (PostgreSQL au jalon 2), stratégies en Rust pur sans scripting, périmètre complet en 8-12 semaines à mi-temps (`docs/03-architecture.md` §13).
 - Moteur en Rust ; control plane Symfony au jalon 2, précédé au jalon 1 d'un squelette Symfony qui rend le rapport HTML statique (`docs/03-architecture.md` §11, S8).
 - Données : dumps OHLCVT Kraken et `history-candles` OKX ; paper trading sur le WebSocket public.
 - Capital de départ 300 € au maximum ; pilote en échelle 20 % → 50 % → 100 % ; verdict sur 12 mois à 100 %, avant impôt, contre le Livret A.

@@ -56,7 +56,7 @@ Non-objectifs du jalon 1 :
 
 - **Résident français** : seuls les CEX enregistrés PSAN/MiCA sont utilisables en spot. Candidats à vérifier en étape 2 : Binance, Kraken, Coinbase, OKX, Bitstamp (statut d'enregistrement, API spot, données historiques). Hyperliquid est un DEX avec un marché spot, à évaluer séparément. **À valider** au cas par cas, rien n'est acquis.
 - **Performance** : critère de choix de stack à l'étape 3. Le calcul d'indicateurs et le backtest en PHP pur sont la cause principale de la lenteur V3 ; le choix d'un langage plus rapide pour le moteur (Python + NumPy/Polars, Rust, ou autre) se décide à l'étape 3, pas maintenant.
-- **Stack non figée** : les seules hypothèses prises ici sont PostgreSQL pour le stockage et Docker pour l'exécution.
+- **Stack non figée** : les seules hypothèses prises ici sont PostgreSQL pour le stockage et Docker pour l'exécution (stockage amendé le 2026-10-13 (21:47) : Parquet seul au jalon 1, §6 point 6).
 
 ## 6. Décisions prises le 2026-10-13
 
@@ -65,6 +65,7 @@ Non-objectifs du jalon 1 :
 3. **Données de test** : par défaut, données publiques (archives `data.binance.vision` et API REST de l'exchange retenu), pas les captures 24 h de V3, trop courtes pour du swing et liées au format Paper de V3. À revoir si tu veux réutiliser `tradingV3-private/`.
 4. **Exchanges** : par défaut, une interface d'exchange dès le départ (données + ordres), avec une seule implémentation au jalon 1. L'exchange concret est choisi à l'étape 2.
 5. **Spot uniquement, réaffirmé le 2026-10-13 (18:35)** (« pas de perpetual, que du spot ») : pas de compte dérivés OKX (X-Perps), même sans trader de dérivés ; la grille de frais OKX 0,20 % maker / 0,35 % taker est définitive ([02-matrice-exchanges.md](02-matrice-exchanges.md) §7).
+6. **Jalon 1, décidé le 2026-10-13 (21:47)** : Parquet seul pour le stockage (PostgreSQL au jalon 2 pour les métadonnées, Timescale au jalon 3 seulement si besoin), stratégies en Rust pur sans scripting, périmètre complet en 8-12 semaines à mi-temps avec point de contrôle en fin de semaine 3 ([03-architecture.md](03-architecture.md) §13).
 
 ## 7. Étapes suivantes du plan
 
