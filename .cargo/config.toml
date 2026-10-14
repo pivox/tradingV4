@@ -1,4 +1,8 @@
 # Cible CPU fixe, jamais `native` : « même binaire » doit rester vrai entre la CI et le poste
-# (docs/03-architecture.md §4). x86-64-v3 = AVX2, BMI2, FMA (Intel depuis Haswell, AMD depuis Zen).
-[build]
+# (docs/03-architecture.md §4 et §7.4). x86-64-v3 = AVX2, BMI2, FMA (Intel depuis Haswell, AMD depuis
+# Zen). Réglage limité aux cibles x86_64 : sur aarch64 (Mac Apple Silicon, Raspberry Pi 5), ce
+# processeur n'existe pas, LLVM l'ignore avec un avertissement par crate, et rustc prévient que la
+# feature `neon` exigée par l'ABI risque de manquer. Ces cibles gardent le CPU par défaut de leur
+# spécification (apple-m1 pour aarch64-apple-darwin), lui aussi fixe.
+[target.'cfg(target_arch = "x86_64")']
 rustflags = ["-C", "target-cpu=x86-64-v3"]
