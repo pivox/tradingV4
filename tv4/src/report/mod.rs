@@ -17,7 +17,7 @@ use thiserror::Error;
 
 use crate::model::{ModelError, hash};
 
-pub use metrics::{DataInfo, EngineInfo, Metrics};
+pub use metrics::{DataInfo, DatasetRef, EngineInfo, Metrics};
 
 /// Erreurs d'écriture d'un rapport.
 #[derive(Debug, Error)]

@@ -2,12 +2,21 @@
 //! une fonction qui appelle les autres modules (docs/03-architecture.md §2).
 //!
 //! Les sous-commandes pas encore codées sortent en erreur en nommant l'étape du jalon 1 qui les
-//! implémentera (docs/03 §11) ; `backtest` existe depuis S3 (fixture CSV 1m). `grid` arrive au
-//! jalon 1.5.
+//! implémentera (docs/03 §11) ; `backtest` existe depuis S3 (fixture CSV 1m), `ingest csv` et
+//! `dataset build` depuis S4. `grid` arrive au jalon 1.5.
+//!
+//! La CLI est le seul module qui lit l'horloge système ([`now_ms`]) : le store reçoit l'instant en
+//! paramètre (docs/03 §5.3, écart 5 de S4).
+
+use std::time::{SystemTime, UNIX_EPOCH};
 
 use clap::{Parser, Subcommand};
 
+use crate::model::Ts;
+
 pub use backtest::BacktestArgs;
+pub use dataset::DatasetBuildArgs;
+pub use ingest::IngestCsvArgs;
 
 mod backtest;
 mod bench;
@@ -59,6 +68,32 @@ pub enum CliError {
 
     #[error(transparent)]
     Report(#[from] crate::report::ReportError),
+
+    #[error(transparent)]
+    Store(#[from] crate::store::StoreError),
+
+    /// L'horloge système ne donne pas un instant exploitable.
+    #[error("horloge système antérieure à 1970 ou hors plage : impossible de dater l'écriture")]
+    Clock,
+
+    /// `zero_volume_marked` n'est pas encore rejouable par le simulateur.
+    #[error(
+        "dataset `{path}` : gaps_policy = zero_volume_marked n'est pas encore jouable : le simulateur ne sait pas interdire un fill dans une bougie synthétique (S6, écart no_volume_rule de S3) ; construire le dataset en skip ou ffill"
+    )]
+    GapsPolicyUnsupported { path: String },
+
+    /// Le moteur S3 ne rejoue que du 1m.
+    #[error(
+        "dataset `{path}` en {tf} : le moteur S3 ne rejoue que du 1m (agrégation à l'étape S5)"
+    )]
+    DatasetTimeframe {
+        path: String,
+        tf: crate::model::Timeframe,
+    },
+
+    /// Ni `--fixture` ni `--dataset` (ou les deux) : clap l'interdit, cette erreur évite une panique.
+    #[error("indiquer --fixture ou --dataset (un seul des deux)")]
+    DataSource,
 }
 
 impl CliError {
@@ -66,6 +101,14 @@ impl CliError {
     pub(crate) fn not_implemented(command: &'static str, step: &'static str) -> Self {
         CliError::NotImplemented { command, step }
     }
+}
+
+/// Instant présent en millisecondes UTC : seul lecteur d'horloge du dépôt, injecté dans le store.
+pub(crate) fn now_ms() -> Result<Ts, CliError> {
+    let depuis_1970 = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_err(|_| CliError::Clock)?;
+    Ts::try_from(depuis_1970.as_millis()).map_err(|_| CliError::Clock)
 }
 
 /// Arguments de la ligne de commande `tv4`.
@@ -97,7 +140,7 @@ pub enum Command {
         #[command(subcommand)]
         action: DatasetAction,
     },
-    /// Lance un backtest sur une fixture CSV Kraken 1m (S3).
+    /// Lance un backtest sur une fixture CSV Kraken 1m (S3) ou un dataset figé (S4).
     Backtest(BacktestArgs),
     /// Compare deux runs à l'octet.
     Verify,
@@ -112,13 +155,15 @@ pub enum IngestSource {
     Kraken,
     /// API REST OKX `history-candles`.
     Okx,
+    /// CSV OHLCVT au format Kraken : ingestion minimale de S4 en attendant `ingest kraken` (S5).
+    Csv(IngestCsvArgs),
 }
 
 /// Opérations sur les datasets.
 #[derive(Debug, Subcommand)]
 pub enum DatasetAction {
     /// Construit un dataset figé (manifeste et `dataset_hash`).
-    Build,
+    Build(DatasetBuildArgs),
 }
 
 /// Exécute la sous-commande demandée.
@@ -127,9 +172,10 @@ pub fn run(command: &Command) -> Result<(), CliError> {
         Command::Ingest { source } => match source {
             IngestSource::Kraken => ingest::kraken(),
             IngestSource::Okx => ingest::okx(),
+            IngestSource::Csv(args) => ingest::csv(args),
         },
         Command::Dataset { action } => match action {
-            DatasetAction::Build => dataset::build(),
+            DatasetAction::Build(args) => dataset::build(args),
         },
         Command::Backtest(args) => backtest::run(args),
         Command::Verify => verify::run(),
@@ -143,10 +189,9 @@ mod tests {
     use clap::CommandFactory;
 
     /// Chaque sous-commande vide, la commande tapée et l'étape annoncée.
-    const EMPTY_COMMANDS: [(&[&str], &str, &str); 5] = [
+    const EMPTY_COMMANDS: [(&[&str], &str, &str); 4] = [
         (&["tv4", "ingest", "kraken"], "ingest kraken", "S5"),
         (&["tv4", "ingest", "okx"], "ingest okx", "S7"),
-        (&["tv4", "dataset", "build"], "dataset build", "S4"),
         (&["tv4", "verify"], "verify", "S8"),
         (&["tv4", "bench"], "bench", "S8"),
     ];
@@ -192,10 +237,121 @@ mod tests {
         let Command::Backtest(args) = cli.command else {
             panic!("sous-commande attendue : backtest");
         };
+        assert_eq!(args.fixture, Some(std::path::PathBuf::from("f.csv")));
+        assert!(args.dataset.is_none());
+        assert_eq!(args.root, std::path::PathBuf::from("."));
         assert_eq!(args.fees, crate::model::ExchangeId::Okx);
         assert_eq!(args.slippage_bps.bps(), 5.0);
         assert_eq!(args.capital, 300.0);
         assert_eq!(args.fees_file, std::path::PathBuf::from("config/fees.toml"));
+    }
+
+    #[test]
+    fn backtest_exige_fixture_ou_dataset_mais_pas_les_deux() {
+        let base = [
+            "tv4",
+            "backtest",
+            "--strategy",
+            "s",
+            "--params",
+            "p",
+            "--out",
+            "o",
+        ];
+        let avec = |extra: &[&str]| {
+            let mut args = base.to_vec();
+            args.extend_from_slice(extra);
+            Cli::try_parse_from(args)
+        };
+        assert!(avec(&[]).is_err());
+        assert!(avec(&["--fixture", "f.csv", "--dataset", "d.json"]).is_err());
+        let cli =
+            avec(&["--dataset", "datasets/d.json", "--root", "R"]).expect("--dataset seul suffit");
+        let Command::Backtest(args) = cli.command else {
+            panic!("sous-commande attendue : backtest");
+        };
+        assert!(args.fixture.is_none());
+        assert_eq!(
+            args.dataset,
+            Some(std::path::PathBuf::from("datasets/d.json"))
+        );
+        assert_eq!(args.root, std::path::PathBuf::from("R"));
+    }
+
+    #[test]
+    fn ingest_csv_et_dataset_build_se_parsent() {
+        let cli = Cli::try_parse_from([
+            "tv4",
+            "ingest",
+            "csv",
+            "--csv",
+            "f.csv",
+            "--exchange",
+            "kraken",
+            "--symbol",
+            "BTC-USD",
+            "--tf",
+            "1m",
+        ])
+        .expect("ingest csv valide");
+        let Command::Ingest {
+            source: IngestSource::Csv(args),
+        } = cli.command
+        else {
+            panic!("sous-commande attendue : ingest csv");
+        };
+        assert_eq!(args.symbol.as_str(), "BTC-USD");
+        assert_eq!(args.tf, crate::model::Timeframe::M1);
+        assert_eq!(args.root, std::path::PathBuf::from("."));
+
+        let cli = Cli::try_parse_from([
+            "tv4",
+            "dataset",
+            "build",
+            "--name",
+            "d",
+            "--exchange",
+            "kraken",
+            "--symbol",
+            "BTC-USD",
+            "--tf",
+            "1m",
+            "--from",
+            "2020-01-01T00:00:00Z",
+            "--to",
+            "2020-01-09T00:00:00Z",
+        ])
+        .expect("dataset build valide");
+        let Command::Dataset {
+            action: DatasetAction::Build(args),
+        } = cli.command
+        else {
+            panic!("sous-commande attendue : dataset build");
+        };
+        assert_eq!(args.from.0, 1_577_836_800_000);
+        assert_eq!(args.to.0, 1_578_528_000_000);
+        assert_eq!(args.gaps_policy, crate::store::GapsPolicy::Skip);
+        // Date sans heure ou politique inconnue : erreur d'usage.
+        assert!(
+            Cli::try_parse_from([
+                "tv4",
+                "dataset",
+                "build",
+                "--name",
+                "d",
+                "--exchange",
+                "kraken",
+                "--symbol",
+                "BTC-USD",
+                "--tf",
+                "1m",
+                "--from",
+                "2020-01-01",
+                "--to",
+                "2020-01-09T00:00:00Z",
+            ])
+            .is_err()
+        );
     }
 
     #[test]

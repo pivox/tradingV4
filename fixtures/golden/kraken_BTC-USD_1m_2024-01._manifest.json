@@ -1,0 +1,14 @@
+{
+  "closed": true,
+  "content_hash": "blake3:3da10e85c1fdd2673a5cc9a0ea7dbd2bf5c171e3f11c23e04dff603392bdd8ab",
+  "exchange": "kraken",
+  "hash_format": "dsh-v1",
+  "ingested_at": "2026-10-14T00:00:00Z",
+  "period": "2024-01",
+  "row_count": 3,
+  "source": "golden",
+  "symbol": "BTC-USD",
+  "tf": "1m",
+  "ts_max": 1704067320000,
+  "ts_min": 1704067200000
+}

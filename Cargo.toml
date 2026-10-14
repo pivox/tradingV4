@@ -29,8 +29,11 @@ blake3 = "1.8.7"
 thiserror = "2.0.21"
 anyhow = "=1.0.104"
 # Jalon 1, étapes suivantes
-arrow = "=60.0.0"
-parquet = "=60.0.0"
+# Données colonnaires (docs/03 §3.1, S4). Sans les features par défaut : ni csv, ipc, json côté
+# arrow, ni snap, brotli, lz4, flate2, simdutf8 côté parquet. Seuls l'intégration arrow et le codec
+# zstd sont utilisés. Mesuré le 14/10 : +56 crates dans le graphe de tv4 au lieu de +69.
+arrow = { version = "=60.0.0", default-features = false }
+parquet = { version = "=60.0.0", default-features = false, features = ["arrow", "zstd"] }
 csv = "=1.4.0"
 zip = { version = "=9.0.2", default-features = false, features = ["deflate"] }
 sha2 = "=0.11.1"

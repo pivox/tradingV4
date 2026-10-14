@@ -1,6 +1,6 @@
 # Encodage canonique `dsh-v1` des données de marché
 
-Spécification du format de hachage `dsh-v1`, qui produit le `content_hash` d'un fichier de bougies et le `dataset_hash` d'un dataset figé (`docs/03-architecture.md` §5.3). Ce document fait foi : l'implémentation Rust de S4 (`tv4/src/store/dataset.rs`) le suit, et le control plane doit pouvoir recalculer le même hash en PHP au jalon 2 à partir des mêmes bougies, sans lire le code Rust.
+Spécification du format de hachage `dsh-v1`, qui produit le `content_hash` d'un fichier de bougies et le `dataset_hash` d'un dataset figé (`docs/03-architecture.md` §5.3). Ce document fait foi : l'implémentation Rust de S4 (`tv4/src/store/dsh.rs`) le suit, et le control plane doit pouvoir recalculer le même hash en PHP au jalon 2 à partir des mêmes bougies, sans lire le code Rust.
 
 Valeur de `hash_format` dans les manifestes : `"dsh-v1"`.
 
@@ -32,8 +32,10 @@ tradingv4-dataset-v1|<exchange>|<symbol>|<tf>|<window>|<gaps_policy>|<row_count>
 | `symbol` | symbole canonique `BASE-QUOTE`, en majuscules (jamais le symbole natif de l'exchange : `XBTUSD` devient `BTC-USD`) | `[A-Z0-9]+-[A-Z0-9]+` | `BTC-USD`, `BTC-USDC` |
 | `tf` | rendu canonique de `Timeframe` | une des valeurs `1m`, `5m`, `15m`, `30m`, `1h`, `4h`, `12h`, `1d` (`M1` à `D1` de 03 §6) | `1m` |
 | `window` | fenêtre semi-ouverte `[start, end)` en millisecondes epoch UTC, rendue `<start_ms>,<end_ms>` | décimal ASCII, virgule (0x2C) | `1704067200000,1767225600000` |
-| `gaps_policy` | politique de trous du dataset (03 §5.1) | `skip` ou `ffill` | `skip` |
+| `gaps_policy` | politique de trous du dataset (03 §5.1) | `skip`, `ffill` ou `zero_volume_marked` | `skip` |
 | `row_count` | nombre de lignes du segment, **après** filtrage par la fenêtre et dédoublonnage (§3) | décimal ASCII | `1051200` |
+
+La valeur `zero_volume_marked` (03 §15.1 ligne 13) a été ajoutée à la liste le 14/10, avant tout manifeste `dsh-v1` : S4 est la première implémentation, donc aucun hash `dsh-v1` existant ne change, d'où l'absence de `dsh-v2` (§6).
 
 Rendu des entiers (`start_ms`, `end_ms`, `row_count`) : base 10, chiffres ASCII, sans zéro de tête (`0` pour zéro), sans signe `+`, sans séparateur de milliers, sans espace. Un `-` de tête est permis pour un entier négatif (horodatage avant 1970), ce qui n'arrive pas en pratique. Contraintes : `start_ms < end_ms`.
 
@@ -45,7 +47,7 @@ Un champ qui sort de son jeu de caractères est une **erreur** : le calcul du ha
 
 ### 3.1 Sélection, tri et dédoublonnage
 
-1. **Sélection** : seules les bougies de la série dont `start_ms <= open_time_ms < end_ms` sont hachées. Les bougies absentes (trous) ne sont **jamais synthétisées** pour le hash, y compris avec `gaps_policy = ffill` : le remplissage est appliqué au chargement, de façon déterministe à partir des lignes stockées, et sa présence dans l'en-tête suffit à distinguer les deux hashes.
+1. **Sélection** : seules les bougies de la série dont `start_ms <= open_time_ms < end_ms` sont hachées. Les bougies absentes (trous) ne sont **jamais synthétisées** pour le hash, y compris avec `gaps_policy = ffill` ou `zero_volume_marked` : le remplissage est appliqué au chargement, de façon déterministe à partir des lignes stockées, et sa présence dans l'en-tête suffit à distinguer les deux hashes.
 2. **Tri** : par `open_time_ms` strictement croissant (comparaison d'entiers signés 64 bits).
 3. **Dédoublonnage** : deux lignes de même `open_time_ms` sont des doublons.
    - Si leurs 53 octets encodés (§3.2, après canonicalisation §3.3) sont identiques, une seule est gardée.
@@ -91,7 +93,7 @@ Avant d'écrire les bits d'un flottant :
 Un seul segment, avec :
 
 - `exchange`, `symbol`, `tf` : ceux de la partition du fichier ;
-- `window` : la période calendaire du fichier en UTC, `[premier instant du mois, premier instant du mois suivant)` pour un fichier mensuel (1m, 5m), `[1er janvier, 1er janvier suivant)` pour un fichier annuel (TF ≥ 1h) ; la fenêtre reste la même pour le mois courant encore mutable, seul `row_count` et les lignes changent ;
+- `window` : la période calendaire du fichier en UTC, `[premier instant du mois, premier instant du mois suivant)` pour un fichier mensuel (TF < 1h : 1m, 5m, 15m, 30m), `[1er janvier, 1er janvier suivant)` pour un fichier annuel (TF ≥ 1h) ; la fenêtre reste la même pour le mois courant encore mutable, seul `row_count` et les lignes changent ;
 - `gaps_policy` : `skip`, puisqu'un fichier stocke les bougies sans synthèse ;
 - les lignes : toutes celles du fichier. Une ligne dont l'`open_time_ms` tombe hors de la `window` du fichier est une erreur (le calcul échoue, rien n'est ignoré en silence), de même que les doublons qui diffèrent (§3) ; le filtrage par la fenêtre du §3 ne s'applique donc, pour un fichier, qu'à des lignes toutes dans la fenêtre.
 
@@ -162,7 +164,9 @@ Propriétés vérifiées par le programme qui a produit ce vecteur (programme je
 
 Les octets du flux complet ont aussi été reproduits à l'identique en PHP 8.3 avec `pack` (§8).
 
-**Exigence pour S4** : l'implémentation de `dsh-v1` dans `tv4/src/store/dataset.rs` reproduit ce vecteur dans un test golden (octets du flux et hash en dur), avec les mêmes propriétés que ci-dessus en tests unitaires. Ce test s'ajoute au test golden sur fixture Parquet de 03 §5.3, il ne le remplace pas.
+**Exigence pour S4** : l'implémentation de `dsh-v1` dans `tv4/src/store/dsh.rs` reproduit ce vecteur dans un test golden (octets du flux et hash en dur), avec les mêmes propriétés que ci-dessus en tests unitaires. Ce test s'ajoute au test golden sur fixture Parquet de 03 §5.3, il ne le remplace pas.
+
+Le `content_hash` du mois 2024-01 qui contient ces trois bougies (fenêtre `1704067200000,1706745600000`, `skip`, 3 lignes) est `blake3:3da10e85c1fdd2673a5cc9a0ea7dbd2bf5c171e3f11c23e04dff603392bdd8ab`. Il est testé sur le fichier Parquet golden `fixtures/golden/kraken_BTC-USD_1m_2024-01.parquet` (`tv4/tests/store.rs`).
 
 ## 8. Recalcul en PHP (jalon 2)
 
