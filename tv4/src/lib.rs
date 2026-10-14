@@ -11,6 +11,7 @@
 //!   vers `cli` ;
 //! - `indicators` ne dépend que de `model` ;
 //! - `marketdata` ne dépend que de `model` ;
+//! - `mtf` ne dépend que de `model` ;
 //! - `store` ne dépend que de `model` ; `arrow` et `parquet` n'apparaissent que dans
 //!   `store/parquet.rs` ;
 //! - `cli` n'a aucune logique métier ;
@@ -27,6 +28,7 @@ pub mod engine;
 pub mod indicators;
 pub mod marketdata;
 pub mod model;
+pub mod mtf;
 pub mod report;
 pub mod sim;
 pub mod store;

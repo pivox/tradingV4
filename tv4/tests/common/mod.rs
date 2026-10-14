@@ -108,3 +108,73 @@ pub fn fixture_1m() -> Vec<Candle> {
     let file = std::fs::File::open(repo_path("fixtures/kraken_xbtusd_1m.csv")).expect("fixture");
     tv4::marketdata::kraken::read_all(file, Timeframe::M1).expect("fixture lisible")
 }
+
+// --- Zips Kraken synthétiques et constantes des preuves S4/S5 (S5) ---
+
+use std::io::Write as _;
+use std::path::Path;
+
+/// `content_hash` du mois 2020-01 de la fixture (identique pour `ingest csv` et `ingest kraken`).
+pub const HASH_FIXTURE_MOIS: &str =
+    "blake3:d94f2eb46e2c4b6738b7ef4ed2441f3928db379e5b29f48f95532ba18c56f353";
+
+/// `dataset_hash` de la fixture en `skip` sur les 8 premiers jours de janvier 2020 (preuve S4).
+pub const DATASET_HASH_SKIP: &str =
+    "blake3:943075a3c2fe27072d3c2a9a1113580fbfcb04542c6ae2e7a82db44aaf54a495";
+
+/// Écrit un zip déterministe : `MANIFEST.json` en `Stored`, les autres entrées en `Deflated`. Aucun zip
+/// n'est commité : les tests les construisent à la volée (zip 9.0.2 donne deux fois le même SHA-256).
+pub fn ecrire_zip(chemin: &Path, entrees: &[(&str, &[u8])]) {
+    use zip::write::SimpleFileOptions;
+    use zip::{CompressionMethod, ZipWriter};
+    let mut zip = ZipWriter::new(std::fs::File::create(chemin).expect("création du zip"));
+    for (nom, octets) in entrees {
+        let methode = if *nom == "MANIFEST.json" {
+            CompressionMethod::Stored
+        } else {
+            CompressionMethod::Deflated
+        };
+        zip.start_file(
+            *nom,
+            SimpleFileOptions::default().compression_method(methode),
+        )
+        .expect("entrée du zip");
+        zip.write_all(octets).expect("écriture de l'entrée");
+    }
+    zip.finish()
+        .expect("fin du zip")
+        .sync_all()
+        .expect("synchronisation du zip");
+}
+
+/// SHA-256 hexadécimal minuscule d'un fichier (même fonction que la CLI).
+pub fn sha256_fichier(chemin: &Path) -> String {
+    let fichier = std::fs::File::open(chemin).expect("fichier à hacher");
+    tv4::marketdata::kraken_zip::sha256_stream(fichier)
+        .expect("SHA-256")
+        .0
+}
+
+/// `MANIFEST.json` **synthétique** qui reprend les valeurs lues par le propriétaire sur le dump réel
+/// (product `ohlcvt`, schema_version 1, release `r1`, has_header false, couverture 2013-09-11 à `fin`,
+/// 1 760 paires, 12 350 fichiers, 598 910 464 lignes, généré le 2026-10-01). Les NOMS de clés sont une
+/// hypothèse de test : ceux du manifeste réel ne sont pas connus.
+pub fn manifeste_synthetique(fin: &str) -> Vec<u8> {
+    format!(
+        r#"{{"product":"ohlcvt","schema_version":1,"release":"r1","has_header":false,"coverage":{{"start":"2013-09-11","end":"{fin}"}},"pairs":1760,"files":12350,"rows":598910464,"generated_at":"2026-10-01"}}"#
+    )
+    .into_bytes()
+}
+
+/// Texte de `fixtures/kraken_xbtusd_1m.csv` (10 000 lignes réelles).
+pub fn texte_fixture_1m() -> String {
+    std::fs::read_to_string(repo_path("fixtures/kraken_xbtusd_1m.csv")).expect("fixture 1m")
+}
+
+/// Trois lignes **synthétiques** (prix inventés, sans rapport avec un marché) pour l'entrée piège
+/// `AIXBTUSD_1.csv` : si une recherche par suffixe lisait cette entrée pour XBTUSD, les prix le diraient.
+pub const LIGNES_AIXBT_SYNTHETIQUES: &str = "\
+1577836800,5.0,5.5,4.5,5.2,10.0,3
+1577836860,5.2,5.4,5.1,5.3,12.0,4
+1577836920,5.3,5.3,5.0,5.1,8.0,2
+";

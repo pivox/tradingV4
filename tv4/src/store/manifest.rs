@@ -2,12 +2,12 @@
 //!
 //! Écriture : `serde_json::to_value` puis `to_string_pretty` (objets en `BTreeMap`, donc clés triées,
 //! indentation de 2 espaces) et un `\n` final, par `write_bytes_durable`. Lecture : `from_slice`, les
-//! champs inconnus sont ignorés (S5 ajoutera le bloc `continuity` sans casser la lecture de S4).
-//! Aucun manifeste n'entre dans un hash.
+//! champs inconnus sont ignorés. Aucun manifeste n'entre dans un hash.
 //!
 //! Écarts à l'exemple de docs/03 §5.2 : `period` remplace `month` (les fichiers annuels n'ont pas de
-//! mois), `continuity` est absent jusqu'à S5, et chaque fichier d'un manifeste de dataset porte aussi
-//! `symbol`, `tf`, `period` et `snapshot`.
+//! mois), `continuity` est écrit par `tv4 ingest kraken` (S5) et absent des fichiers écrits par
+//! `tv4 ingest csv` ou en S4 (la clé n'est alors pas écrite, et un manifeste S4 se relit sans erreur),
+//! et chaque fichier d'un manifeste de dataset porte aussi `symbol`, `tf`, `period` et `snapshot`.
 
 use std::fs;
 use std::path::Path;
@@ -19,6 +19,25 @@ use crate::model::{ExchangeId, Timeframe, Ts};
 use super::StoreError;
 use super::durable::{io_error, write_bytes_durable};
 use super::layout::{GapsPolicy, Symbol};
+
+/// Bloc `continuity` d'un manifeste de fichier (docs/03 §5.2), écrit par `tv4 ingest kraken`.
+///
+/// Les compteurs portent sur la période du fichier : un trou est compté dans la période de la bougie
+/// qui le termine, un doublon exact ou une bougie non clôturée dans la période qui contient son
+/// horodatage. `ohlc_errors` vaut toujours 0 dans un fichier écrit (une erreur OHLC bloque la paire à
+/// l'ingestion) ; le champ est gardé pour suivre le format de docs/03 §5.2.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ContinuityCounts {
+    /// Nombre de trous (minutes absentes consécutives comptées pour un seul).
+    pub gaps: u64,
+    /// Plus long trou en millisecondes de bougies absentes ; 0 sans trou.
+    pub longest_gap_ms: i64,
+    /// Doublons exacts retirés.
+    pub duplicates: u64,
+    /// Bougies exclues parce que leur fin dépasse la fin de couverture.
+    pub rejected_unclosed: u64,
+    pub ohlc_errors: u64,
+}
 
 /// Manifeste d'un fichier de bougies : `<période>._manifest.json`.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -41,6 +60,10 @@ pub struct FileManifest {
     pub source: String,
     /// RFC 3339 UTC à la seconde ; n'entre dans aucun hash.
     pub ingested_at: String,
+    /// Absent des manifestes S4 et de `tv4 ingest csv` : la clé n'est alors pas écrite, et un manifeste
+    /// S4 se relit sans erreur.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub continuity: Option<ContinuityCounts>,
 }
 
 /// Manifeste d'un dataset figé : `datasets/<nom>.json`.
@@ -140,6 +163,7 @@ mod tests {
             hash_format: "dsh-v1".to_string(),
             source: "golden".to_string(),
             ingested_at: "2026-10-14T00:00:00Z".to_string(),
+            continuity: None,
         }
     }
 
@@ -174,9 +198,40 @@ mod tests {
         write_file_manifest(&path, &manifeste_fichier()).unwrap();
         let mut valeur: serde_json::Value =
             serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
-        valeur["continuity"] = serde_json::json!({"gaps": 0});
+        valeur["champ_futur"] = serde_json::json!({"gaps": 0});
         fs::write(&path, serde_json::to_vec(&valeur).unwrap()).unwrap();
         assert_eq!(read_file_manifest(&path).unwrap(), manifeste_fichier());
+    }
+
+    #[test]
+    fn manifeste_s4_sans_bloc_se_relit() {
+        // Le golden S4 n'a pas de bloc `continuity`.
+        let golden = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../fixtures/golden/kraken_BTC-USD_1m_2024-01._manifest.json");
+        let manifeste = read_file_manifest(&golden).unwrap();
+        assert_eq!(manifeste.continuity, None);
+        assert_eq!(manifeste.source, "golden");
+    }
+
+    #[test]
+    fn bloc_de_continuite_aller_retour_et_cle_ecrite() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("m._manifest.json");
+        let mut manifeste = manifeste_fichier();
+        manifeste.continuity = Some(ContinuityCounts {
+            gaps: 951,
+            longest_gap_ms: 480_000,
+            duplicates: 1,
+            rejected_unclosed: 2,
+            ohlc_errors: 0,
+        });
+        write_file_manifest(&path, &manifeste).unwrap();
+        let texte = fs::read_to_string(&path).unwrap();
+        assert!(
+            texte.contains("\"continuity\": {\n    \"duplicates\": 1,"),
+            "{texte}"
+        );
+        assert_eq!(read_file_manifest(&path).unwrap(), manifeste);
     }
 
     #[test]

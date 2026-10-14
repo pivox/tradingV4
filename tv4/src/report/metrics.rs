@@ -16,14 +16,13 @@ use super::ReportError;
 pub const SCHEMA: &str = "tv4-metrics-s3";
 
 /// Écarts temporaires de S3 (docs/03 §7.2, détail dans la doc de `sim` et de `engine`).
-pub const S3_DEVIATIONS: [&str; 7] = [
+pub const S3_DEVIATIONS: [&str; 6] = [
     "stops_inactive",
     "risk_sizing_on_signal_close",
     "market_buy_cash_margin",
     "no_lot_tick_min_size",
     "activation_delay_0",
     "no_volume_rule",
-    "single_tf_1m",
 ];
 
 /// Version du moteur qui a produit le fichier.
@@ -177,7 +176,7 @@ pub struct Metrics {
     pub fills_rejected_insufficient_cash: u64,
     pub orders_unfilled_at_end: u64,
     pub signals: SignalsInfo,
-    pub s3_deviations: [&'static str; 7],
+    pub s3_deviations: [&'static str; 6],
 }
 
 impl Metrics {

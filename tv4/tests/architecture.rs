@@ -50,6 +50,8 @@ fn rules() -> Vec<(&'static str, Rule)> {
         ("indicators", Rule::OnlyAllowed(&["model"])),
         // S2 : le lecteur Kraken ne dépend que de `model` ; à revoir explicitement en S5/S7 si besoin.
         ("marketdata", Rule::OnlyAllowed(&["model"])),
+        // S5 : `mtf` (agrégation 1m vers TF, `closed_count`) ne dépend que de `model`.
+        ("mtf", Rule::OnlyAllowed(&["model"])),
         // S4 : `store` ne dépend que de `model` ; `tv4 ingest csv` fait le lien avec `marketdata` dans la
         // CLI. Il ne connaît ni `engine`, ni `sim`, ni `strategy`, ni `report`, ni `cli`.
         ("store", Rule::OnlyAllowed(&["model"])),
@@ -65,7 +67,7 @@ fn rules() -> Vec<(&'static str, Rule)> {
 }
 
 /// Modules où la crate `chrono` est interdite : le temps y est un `i64` en millisecondes UTC.
-const NO_CHRONO: [&str; 4] = ["model", "engine", "sim", "strategy"];
+const NO_CHRONO: [&str; 5] = ["model", "engine", "sim", "strategy", "mtf"];
 
 /// Retire les commentaires de ligne (`// ...`, `/// ...`, `//! ...`) pour ne pas compter les mentions
 /// dans la documentation. Un `//` situé dans une chaîne (`"https://..."`) n'est pas un commentaire.
@@ -320,7 +322,7 @@ fn chrono_est_absent_des_modules_de_calcul() {
     }
     assert!(
         violations.is_empty(),
-        "chrono est interdit dans model, engine, sim et strategy (temps = i64 ms UTC) :\n{}",
+        "chrono est interdit dans model, engine, sim, strategy et mtf (temps = i64 ms UTC) :\n{}",
         violations.join("\n")
     );
 }
@@ -339,7 +341,7 @@ fn les_modules_du_jalon_existent() {
 #[test]
 fn les_regles_ne_sont_plus_vides() {
     // Sans fichier à lire, la règle « sim ne dépend pas de strategy » serait vacuement verte.
-    for module in ["sim", "engine", "report", "store"] {
+    for module in ["sim", "engine", "report", "store", "mtf"] {
         assert!(
             !module_files(&src_dir(), module).is_empty(),
             "aucun fichier pour le module « {module} » dans src"

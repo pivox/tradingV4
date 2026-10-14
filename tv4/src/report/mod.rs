@@ -1,4 +1,5 @@
-//! Rapports d'un run (docs/03-architecture.md §2). En S3 : `metrics.json`, écrit de façon atomique.
+//! Rapports d'un run (docs/03-architecture.md §2). En S3 : `metrics.json`, écrit de façon atomique ;
+//! [`write_json_atomic`] sert aussi aux rapports d'ingestion de `tv4 ingest kraken` (S5).
 //! Les rapports complets (`trades.csv`, `equity.csv`, `manifest.json`, verdict) arrivent en S8.
 //!
 //! Le module lit les résultats de `engine` ; il ne connaît pas les stratégies (id, version et

@@ -11,9 +11,9 @@ use std::path::{Path, PathBuf};
 
 use tv4::model::{Candle, ExchangeId, Timeframe};
 use tv4::store::{
-    BuildRequest, Columns, GapsPolicy, Partition, Period, Projection, ReadOptions, Window,
-    build_dataset, inspect_parquet, load_dataset, read_file_manifest, read_parquet,
-    write_partition,
+    BuildRequest, Columns, ContinuityInput, GapsPolicy, Partition, Period, Projection, ReadOptions,
+    Window, WriteOptions, build_dataset, inspect_parquet, load_dataset, quality_report,
+    read_file_manifest, read_parquet, write_partition, write_partition_with,
 };
 
 /// 2024-01-31T12:00:00Z : une série de 1 000 bougies avec trous y passe en février.
@@ -270,6 +270,72 @@ fn golden_reecrit_par_tv4_meme_content_hash() {
 
 fn colonnes_fixture() -> Columns {
     Columns::from_candles(&common::fixture_1m())
+}
+
+#[test]
+fn qualite_sur_la_fixture() {
+    let colonnes = colonnes_fixture();
+    let rapport = quality_report(colonnes.open_time_ms(), &Timeframe::ALL).unwrap();
+    assert_eq!(rapport.first_open_time, "2020-01-01T00:00:00Z");
+    assert_eq!(rapport.end_time, "2020-01-08T21:30:00Z");
+    assert_eq!(rapport.threshold, 0.01);
+    // (tf, attendues, présentes, absentes, plus long trou en ms) : le seul trimestre est 2020-Q1. La
+    // fraction est `absentes / attendues`, comparée au bit.
+    let attendu: [(Timeframe, u64, u64, u64, i64); 8] = [
+        (Timeframe::M1, 11_370, 10_000, 1_370, 480_000),
+        (Timeframe::M5, 2_274, 2_271, 3, 300_000),
+        (Timeframe::M15, 758, 758, 0, 0),
+        (Timeframe::M30, 379, 379, 0, 0),
+        (Timeframe::H1, 189, 189, 0, 0),
+        (Timeframe::H4, 47, 47, 0, 0),
+        (Timeframe::H12, 15, 15, 0, 0),
+        (Timeframe::D1, 7, 7, 0, 0),
+    ];
+    assert_eq!(rapport.rows.len(), 8);
+    for (ligne, (tf, expected, present, missing, gap)) in rapport.rows.iter().zip(attendu) {
+        assert_eq!((ligne.tf, ligne.quarter.as_str()), (tf, "2020-Q1"));
+        assert_eq!(
+            (ligne.expected, ligne.present, ligne.missing),
+            (expected, present, missing)
+        );
+        assert_eq!(
+            ligne.missing_fraction,
+            missing as f64 / expected as f64,
+            "{tf}"
+        );
+        assert_eq!(ligne.excluded, tf == Timeframe::M1, "{tf}");
+        assert_eq!(ligne.longest_gap_ms, gap, "{tf}");
+    }
+    // Les deux valeurs de la spécification, relues du Python indépendant.
+    assert_eq!(rapport.rows[0].missing_fraction, 0.12049252418645559);
+    assert_eq!(rapport.rows[1].missing_fraction, 0.0013192612137203166);
+}
+
+#[test]
+fn continuite_du_store_sur_la_fixture() {
+    let dossier = tempfile::tempdir().unwrap();
+    let p = partition(ExchangeId::Kraken, "BTC-USD", Timeframe::M1);
+    let options = WriteOptions {
+        source: "kraken-ohlcvt",
+        now_ms: NOW_GOLDEN,
+        closed_until_ms: NOW_GOLDEN,
+        continuity: Some(ContinuityInput {
+            duplicates: &[],
+            rejected_unclosed: &[],
+        }),
+    };
+    let sorties = write_partition_with(dossier.path(), &p, &colonnes_fixture(), &options).unwrap();
+    assert_eq!(sorties[0].content_hash, CONTENT_HASH_FIXTURE);
+    let bloc = sorties[0].continuity.unwrap();
+    // 951 trous, le plus long de 8 minutes absentes d'affilée (mesuré sur la fixture réelle).
+    assert_eq!((bloc.gaps, bloc.longest_gap_ms), (951, 480_000));
+    assert_eq!(
+        (bloc.duplicates, bloc.rejected_unclosed, bloc.ohlc_errors),
+        (0, 0, 0)
+    );
+    let manifeste =
+        read_file_manifest(&chemin(dossier.path(), &p.manifest_rel(sorties[0].period))).unwrap();
+    assert_eq!(manifeste.continuity, Some(bloc));
 }
 
 #[test]

@@ -15,7 +15,7 @@ use common::{T0, okx_fees, slippage};
 use tv4::engine::{CellConfig, LoopObserver, run_cell_observed};
 use tv4::model::Timeframe;
 use tv4::sim::SimRules;
-use tv4::strategy::{BarContext, IndicatorSpec, Signal, Strategy};
+use tv4::strategy::{BarContext, IndicatorKind, IndicatorSpec, OrderKind, Signal, Size, Strategy};
 
 struct CountingAllocator;
 
@@ -176,6 +176,111 @@ fn le_compteur_detecte_une_allocation_par_bougie() {
     assert!(
         probe.during_loop >= 10_000,
         "le compteur n'a vu que {} allocations",
+        probe.during_loop
+    );
+}
+
+/// Stratégie multi-timeframe de test sur `[5m, 1h]` : lit les deux vues et ses colonnes, entre quand
+/// elle est à plat et sort quand elle est en position, à chaque clôture de l'un des deux timeframes.
+/// Elle n'alloue pas elle-même.
+struct MultiTf;
+
+impl Strategy for MultiTf {
+    fn id(&self) -> &'static str {
+        "multi_tf"
+    }
+    fn version(&self) -> &'static str {
+        "0.0.0"
+    }
+    fn params_json(&self) -> serde_json::Value {
+        serde_json::json!({})
+    }
+    fn timeframes(&self) -> &[Timeframe] {
+        &[Timeframe::M5, Timeframe::H1]
+    }
+    fn indicators(&self) -> Vec<IndicatorSpec> {
+        vec![
+            IndicatorSpec {
+                name: "sma3",
+                tf: Timeframe::M5,
+                kind: IndicatorKind::Sma { period: 3 },
+            },
+            IndicatorSpec {
+                name: "atr3",
+                tf: Timeframe::H1,
+                kind: IndicatorKind::Atr { period: 3 },
+            },
+        ]
+    }
+    fn warmup_bars(&self) -> usize {
+        3
+    }
+    fn on_bar(&mut self, ctx: &BarContext<'_>, out: &mut Vec<Signal>) {
+        let (Some(sma), Some(atr), Some(last)) = (
+            ctx.ind(Timeframe::M5, "sma3").last(),
+            ctx.ind(Timeframe::H1, "atr3").last(),
+            ctx.last(Timeframe::M5),
+        ) else {
+            return;
+        };
+        std::hint::black_box((sma, atr, ctx.candles(Timeframe::H1).len()));
+        if ctx.position().is_none() {
+            out.push(Signal::EnterLong {
+                size: Size::RiskPct(0.01),
+                kind: OrderKind::Market,
+                stop: Some(last.close * 0.99),
+                take_profit: None,
+                tag: "entree",
+            });
+        } else {
+            out.push(Signal::ExitLong {
+                kind: OrderKind::Market,
+                tag: "sortie",
+            });
+        }
+    }
+}
+
+#[test]
+fn la_boucle_multi_tf_alloue_au_plus_une_fois() {
+    // Données synthétiques sans trou : 10 000 minutes jouées après un warmup de 3 H1 (180 minutes) ;
+    // `Scripted`-like `MultiTf` sur [5m, 1h] avec une SMA 5m et un ATR 1h.
+    let candles = common::synthetic_candles(10_180, 9, T0, 0.0);
+    let mut probe = Probe::default();
+    let result = run_cell_observed(&candles, Box::new(MultiTf), &config(), &mut probe)
+        .expect("run multi-TF valide");
+    assert_eq!(result.start_index, 180);
+    assert_eq!(result.bars_in_window, 10_000);
+    assert!(
+        !result.trades.is_empty(),
+        "le chemin des fills doit être exercé"
+    );
+    println!(
+        "allocations dans la boucle ([5m, 1h] synthétique) : {}",
+        probe.during_loop
+    );
+    assert!(
+        probe.during_loop <= 1,
+        "{} allocations dans la boucle multi-TF de 10 000 bougies",
+        probe.during_loop
+    );
+}
+
+#[test]
+fn la_boucle_sma_cross_15m_sur_la_fixture_alloue_au_plus_une_fois() {
+    let candles = common::fixture_1m();
+    let strategy = common::strategy_from_file("sma_cross", "config/strategies/sma_cross.toml");
+    let mut probe = Probe::default();
+    let result =
+        run_cell_observed(&candles, strategy, &config(), &mut probe).expect("run 15m valide");
+    assert!(!result.trades.is_empty());
+    println!(
+        "allocations dans la boucle (fixture, 15m) : {}",
+        probe.during_loop
+    );
+    assert!(
+        probe.during_loop <= 1,
+        "{} allocations dans la boucle de la fixture en 15m",
         probe.during_loop
     );
 }

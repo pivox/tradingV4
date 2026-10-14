@@ -35,10 +35,12 @@
 //! `content_hash` et `dataset_hash` suivent `docs/dataset-hash.md` (dsh-v1), implémenté dans [`dsh`] :
 //! ils portent sur le contenu logique des bougies, jamais sur les octets Parquet.
 //!
-//! # Écarts à docs/03 (S4)
+//! # Écarts à docs/03 (S4, S5)
 //!
 //! Les écarts de S4 (lecture vérifiée complète, `period` au lieu de `month`, `gaps_policy` à trois
-//! valeurs, champs ajoutés aux manifestes) sont décrits dans docs/03 §5.3.
+//! valeurs, champs ajoutés aux manifestes) sont décrits dans docs/03 §5.3. S5 ajoute le bloc optionnel
+//! `continuity` des manifestes, [`WriteOptions`] (fin de clôture bornée par la couverture du dump) et
+//! [`quality_report`] (rapport de qualité trimestriel, docs/04 §2.5).
 
 #![forbid(unsafe_code)]
 
@@ -51,6 +53,7 @@ mod lock;
 mod manifest;
 mod parquet;
 mod partition;
+mod quality;
 pub mod time;
 
 use std::io;
@@ -66,13 +69,17 @@ pub use self::dataset::{
 pub use self::layout::{GapsPolicy, Partition, Period, Symbol, Window, resolve_rel};
 pub use self::lock::{DatasetLock, PartitionLock};
 pub use self::manifest::{
-    DatasetFile, DatasetManifest, FileManifest, read_dataset_manifest, read_file_manifest,
+    ContinuityCounts, DatasetFile, DatasetManifest, FileManifest, read_dataset_manifest,
+    read_file_manifest,
 };
 pub use self::parquet::{
     FileInfo, Projection, ReadOptions, RowGroupInfo, inspect_parquet, read_parquet,
     select_row_groups,
 };
-pub use self::partition::{WriteOutcome, WriteStatus, write_partition};
+pub use self::partition::{
+    ContinuityInput, WriteOptions, WriteOutcome, WriteStatus, write_partition, write_partition_with,
+};
+pub use self::quality::{QUALITY_MISSING_THRESHOLD, QualityReport, QualityRow, quality_report};
 pub use self::time::UtcMs;
 
 /// Toutes les erreurs du module `store`. Aucun type arrow ou parquet : leurs erreurs sont converties
@@ -172,7 +179,7 @@ pub enum StoreError {
     EmptyInput,
 
     #[error(
-        "bougie {index} : open_time {open_time_ms} non strictement croissant (précédent : {previous_ms}) ; tri et dédoublonnage relèvent de l'ingestion (S5)"
+        "bougie {index} : open_time {open_time_ms} non strictement croissant (précédent : {previous_ms}) ; tri et dédoublonnage relèvent de l'ingestion (marketdata::continuity)"
     )]
     NotStrictlyIncreasing {
         index: usize,

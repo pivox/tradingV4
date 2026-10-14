@@ -1,7 +1,8 @@
-//! Boucle de backtest 1m (docs/03-architecture.md §7.1 et §7.2).
+//! Boucle de backtest sur la grille 1m, multi-timeframe (docs/03-architecture.md §7.1 et §7.2).
 
 use crate::indicators::{Atr, Ema, Rsi, Sma, Vwap, batch};
 use crate::model::{Candle, Timeframe, Ts};
+use crate::mtf::Mtf;
 use crate::sim::{ExitReason, SimCounters, Simulator, Trade};
 use crate::strategy::{
     BarContext, BarState, IndicatorKind, Position, Signal, Strategy, TfView, validate_declaration,
@@ -60,59 +61,174 @@ pub fn run_cell(
 }
 
 /// Comme [`run_cell`], avec un observateur appelé juste avant et juste après la boucle.
+///
+/// Contrôle les données, agrège le 1m vers les timeframes déclarés par la stratégie ([`Mtf::build`])
+/// puis délègue à [`run_cell_mtf`].
 pub fn run_cell_observed(
     candles: &[Candle],
+    strategy: Box<dyn Strategy>,
+    config: &CellConfig<'_>,
+    observer: &mut dyn LoopObserver,
+) -> Result<CellResult, EngineError> {
+    config.sim_rules.validate()?;
+    validate_declaration(strategy.as_ref())?;
+    check_candles(candles)?;
+    let mtf = Mtf::build(candles, strategy.timeframes())?;
+    run_prepared(&mtf, strategy, config, observer)
+}
+
+/// Rejoue sur un [`Mtf`] déjà construit (campagnes du jalon 1.5, tests du mutant de docs/03 §7.5).
+///
+/// Le `Mtf` doit contenir tous les timeframes déclarés par la stratégie, sinon
+/// [`EngineError::MissingTimeframe`].
+pub fn run_cell_mtf(
+    mtf: &Mtf<'_>,
+    strategy: Box<dyn Strategy>,
+    config: &CellConfig<'_>,
+    observer: &mut dyn LoopObserver,
+) -> Result<CellResult, EngineError> {
+    config.sim_rules.validate()?;
+    validate_declaration(strategy.as_ref())?;
+    check_candles(mtf.m1())?;
+    run_prepared(mtf, strategy, config, observer)
+}
+
+/// Un indicateur calculé hors boucle : sa position dans les tableaux par timeframe déclaré.
+struct IndicatorSlot {
+    name: &'static str,
+    /// Index du timeframe dans l'ordre de `Strategy::timeframes`.
+    tf_index: usize,
+    /// Index de la colonne parmi celles de ce timeframe.
+    column_index: usize,
+}
+
+/// Colonne d'un indicateur sur la série `candles` de son timeframe, par `batch` (docs/03 §1).
+fn indicator_column(kind: IndicatorKind, candles: &[Candle]) -> Result<Vec<f64>, EngineError> {
+    Ok(match kind {
+        IndicatorKind::Sma { period } => batch(Sma::new(period)?, candles.iter().map(|c| c.close)),
+        IndicatorKind::Ema { period } => batch(Ema::new(period)?, candles.iter().map(|c| c.close)),
+        IndicatorKind::Rsi { period } => batch(Rsi::new(period)?, candles.iter().map(|c| c.close)),
+        IndicatorKind::Atr { period } => batch(Atr::new(period)?, candles.iter().copied()),
+        IndicatorKind::Vwap => batch(Vwap::new(), candles.iter().copied()),
+    })
+}
+
+/// Corps commun de [`run_cell_observed`] et [`run_cell_mtf`] : déclaration et données déjà contrôlées.
+fn run_prepared(
+    mtf: &Mtf<'_>,
     mut strategy: Box<dyn Strategy>,
     config: &CellConfig<'_>,
     observer: &mut dyn LoopObserver,
 ) -> Result<CellResult, EngineError> {
     // --- Préparation, hors boucle : les allocations sont permises (docs/03 §7.1) ---
-    config.sim_rules.validate()?;
-    validate_declaration(strategy.as_ref())?;
-    if strategy.timeframes() != [Timeframe::M1] {
-        return Err(EngineError::UnsupportedTimeframes {
-            declared: strategy.timeframes().to_vec(),
-        });
-    }
-    check_candles(candles)?;
+    let candles = mtf.m1();
     let n = candles.len();
 
-    let specs = strategy.indicators();
-    let mut names: Vec<&'static str> = Vec::with_capacity(specs.len());
-    let mut columns: Vec<Vec<f64>> = Vec::with_capacity(specs.len());
-    for spec in &specs {
-        names.push(spec.name);
-        columns.push(match spec.kind {
-            IndicatorKind::Sma { period } => {
-                batch(Sma::new(period)?, candles.iter().map(|c| c.close))
-            }
-            IndicatorKind::Ema { period } => {
-                batch(Ema::new(period)?, candles.iter().map(|c| c.close))
-            }
-            IndicatorKind::Rsi { period } => {
-                batch(Rsi::new(period)?, candles.iter().map(|c| c.close))
-            }
-            IndicatorKind::Atr { period } => batch(Atr::new(period)?, candles.iter().copied()),
-            IndicatorKind::Vwap => batch(Vwap::new(), candles.iter().copied()),
-        });
+    // Timeframes déclarés, dans l'ordre de déclaration ; `tf_max` fixe l'unité du warmup.
+    let declared: Vec<Timeframe> = strategy.timeframes().to_vec();
+    let mut declared_mask = 0u8;
+    let mut tf_max = Timeframe::M1;
+    let mut tf_candles: Vec<&[Candle]> = Vec::with_capacity(declared.len());
+    let mut closed: Vec<&[usize]> = Vec::with_capacity(declared.len());
+    for &tf in &declared {
+        let (Some(series), Some(counts)) = (mtf.candles(tf), mtf.closed_counts(tf)) else {
+            return Err(EngineError::MissingTimeframe { tf });
+        };
+        declared_mask |= tf.bit();
+        tf_max = tf_max.max(tf);
+        tf_candles.push(series);
+        closed.push(counts);
     }
-    let column_refs: Vec<&[f64]> = columns.iter().map(Vec::as_slice).collect();
 
+    // Indicateurs : colonnes calculées sur la série de leur timeframe, rangées dans l'ordre de
+    // `indicators()` restreint à ce timeframe (c'est l'ordre que `BarContext::ind_at` attend).
+    let specs = strategy.indicators();
+    let mut names: Vec<Vec<&'static str>> = vec![Vec::new(); declared.len()];
+    let mut columns: Vec<Vec<Vec<f64>>> = vec![Vec::new(); declared.len()];
+    let mut slots: Vec<IndicatorSlot> = Vec::with_capacity(specs.len());
+    for spec in &specs {
+        let tf_index = declared
+            .iter()
+            .position(|tf| *tf == spec.tf)
+            .ok_or(EngineError::MissingTimeframe { tf: spec.tf })?;
+        let (Some(series), Some(tf_names), Some(tf_columns)) = (
+            tf_candles.get(tf_index),
+            names.get_mut(tf_index),
+            columns.get_mut(tf_index),
+        ) else {
+            return Err(EngineError::MissingTimeframe { tf: spec.tf });
+        };
+        slots.push(IndicatorSlot {
+            name: spec.name,
+            tf_index,
+            column_index: tf_columns.len(),
+        });
+        tf_names.push(spec.name);
+        tf_columns.push(indicator_column(spec.kind, series)?);
+    }
+    let column_refs: Vec<Vec<&[f64]>> = columns
+        .iter()
+        .map(|tf_columns| tf_columns.iter().map(Vec::as_slice).collect())
+        .collect();
+
+    // Warmup en bougies du plus grand timeframe déclaré (docs/03 §7.2, écart S5 point 1) : la première
+    // 1m jouée est la première dont les `warmup_bars` bougies sont toutes clôturées à la fin de la 1m
+    // précédente. Pour une stratégie 1m, `closed_count[i - 1] = i` donne `start = warmup_bars` (S3).
     let warmup_bars = strategy.warmup_bars();
-    let start = warmup_bars;
-    if start >= n {
-        return Err(EngineError::NotEnoughBars {
+    let counts_max = declared
+        .iter()
+        .position(|tf| *tf == tf_max)
+        .and_then(|k| closed.get(k).copied())
+        .ok_or(EngineError::MissingTimeframe { tf: tf_max })?;
+    let start = (0..n)
+        .find(|&i| {
+            let before = if i == 0 {
+                0
+            } else {
+                counts_max.get(i - 1).copied().unwrap_or(0)
+            };
+            before >= warmup_bars
+        })
+        .ok_or(EngineError::NotEnoughBars {
             warmup_bars,
             bars: n,
-        });
-    }
-    for (name, column) in names.iter().zip(&columns) {
-        if column.get(start).is_none_or(|value| !value.is_finite()) {
-            return Err(EngineError::WarmupTooShort { name, index: start });
+        })?;
+
+    // Refus de démarrer (S3 point 2 généralisé) : pour chaque indicateur, dans l'ordre de
+    // `indicators()`, la dernière valeur visible à la première 1m jouée doit être finie. L'index est
+    // celui de la série du timeframe de l'indicateur.
+    for slot in &slots {
+        let visible = closed
+            .get(slot.tf_index)
+            .and_then(|counts| counts.get(start))
+            .copied()
+            .unwrap_or(0);
+        let index = visible.saturating_sub(1);
+        let value = columns
+            .get(slot.tf_index)
+            .and_then(|tf_columns| tf_columns.get(slot.column_index))
+            .filter(|_| visible > 0)
+            .and_then(|column| column.get(index));
+        if value.is_none_or(|v| !v.is_finite()) {
+            return Err(EngineError::WarmupTooShort {
+                name: slot.name,
+                index,
+            });
         }
     }
 
-    let base = TfView::new(Timeframe::M1, candles, &names, &column_refs)?;
+    // Une vue par timeframe déclaré, bornée plus tard à `closed_count[tf][i]`.
+    let mut base_views: Vec<TfView<'_>> = Vec::with_capacity(declared.len());
+    for (k, &tf) in declared.iter().enumerate() {
+        let (Some(series), Some(tf_names), Some(tf_refs)) =
+            (tf_candles.get(k), names.get(k), column_refs.get(k))
+        else {
+            return Err(EngineError::MissingTimeframe { tf });
+        };
+        base_views.push(TfView::new(tf, series, tf_names, tf_refs)?);
+    }
+    let views = base_views.clone();
+
     let window = n - start;
     let trades_capacity = (window / 2 + 1).min(TRADES_INITIAL_CAPACITY);
     let mut sim = Simulator::new(
@@ -141,7 +257,13 @@ pub fn run_cell_observed(
     let looped = run_loop(
         window_candles,
         start,
-        base,
+        LoopViews {
+            mtf,
+            declared_mask,
+            base: base_views,
+            current: views,
+            closed,
+        },
         config,
         strategy.as_mut(),
         &mut sim,
@@ -241,17 +363,33 @@ struct LoopBuffers {
     rejections: SignalRejections,
 }
 
+/// Vues par timeframe déclaré et index de clôture, préparés hors boucle.
+struct LoopViews<'a> {
+    mtf: &'a Mtf<'a>,
+    /// OU des `Timeframe::bit` des timeframes déclarés par la stratégie.
+    declared_mask: u8,
+    /// Vues à `closed = 0`, dans l'ordre de `Strategy::timeframes`.
+    base: Vec<TfView<'a>>,
+    /// Vues de la bougie courante, réécrites sur place (aucune allocation dans la boucle).
+    current: Vec<TfView<'a>>,
+    /// `closed_count` de chaque timeframe déclaré, même ordre que `base`.
+    closed: Vec<&'a [usize]>,
+}
+
 /// Boucle des étapes 1 à 5 de docs/03 §7.2 sur `window_candles`, qui commence à l'index `start`.
+///
+/// La stratégie n'est appelée à la 1m `i` que si une bougie de l'un de ses timeframes déclarés vient de
+/// s'y clôturer (`just_closed[i] & declared_mask != 0`) ; sinon aucun signal ne naît, mais les fills,
+/// l'observation intrabar et l'equity de la bougie ont lieu comme toujours.
 fn run_loop(
     window_candles: &[Candle],
     start: usize,
-    base: TfView<'_>,
+    mut views: LoopViews<'_>,
     config: &CellConfig<'_>,
     strategy: &mut dyn Strategy,
     sim: &mut Simulator,
     buffers: &mut LoopBuffers,
 ) -> Result<(), EngineError> {
-    let mut views = [base];
     for (offset, candle) in window_candles.iter().enumerate() {
         let i = start + offset;
         // 1. Fills des ordres émis à i-1 ou avant, à open[i].
@@ -261,9 +399,22 @@ fn run_loop(
         // 3. Equity à la clôture de la bougie.
         let equity_i = sim.equity_at(candle.close);
         buffers.equity.push(equity_i);
-        // 4. Stratégie, appelée à chaque 1m (le TF 1m vient toujours de clôturer).
+        // 4. Stratégie, appelée seulement quand un de ses timeframes vient de clôturer une bougie.
+        let mask = views.mtf.just_closed(i) & views.declared_mask;
+        if mask == 0 {
+            continue;
+        }
         let now_ms = candle.open_time_ms.saturating_add(Timeframe::M1.ms());
-        views[0] = base.with_closed(i + 1)?;
+        for (k, current) in views.current.iter_mut().enumerate() {
+            let (Some(base), Some(counts)) = (views.base.get(k), views.closed.get(k)) else {
+                return Err(EngineError::MissingClosedCount { index: i });
+            };
+            let count = counts
+                .get(i)
+                .copied()
+                .ok_or(EngineError::MissingClosedCount { index: i })?;
+            *current = base.with_closed(count)?;
+        }
         let portfolio = sim.portfolio();
         let position = portfolio.is_long().then(|| Position {
             qty: portfolio.qty(),
@@ -284,7 +435,7 @@ fn run_loop(
         debug_assert!(!sim.has_pending());
         buffers.signals.clear();
         {
-            let ctx = BarContext::new(config.symbol, state, &[], &views, Timeframe::M1.bit())?;
+            let ctx = BarContext::new(config.symbol, state, &[], &views.current, mask)?;
             strategy.on_bar(&ctx, &mut buffers.signals);
         }
         // 5. Traduction des signaux : exécutables à partir de i+1 seulement.

@@ -85,6 +85,48 @@ cas on régénère et on met à jour les empreintes. Le `content_hash` du mois 2
 `kraken_xbtusd_1m.csv` une fois ingéré (`blake3:d94f2eb46e2c4b6738b7ef4ed2441f3928db379e5b29f48f95532ba18c56f353`)
 est aussi épinglé dans `tv4/tests/store.rs`.
 
+## Zips synthétiques des tests (S5)
+
+Les tests de `tv4 ingest kraken` (`tv4/tests/ingest_kraken.rs`) construisent leurs zips à la volée avec
+la crate `zip` en écriture : aucun zip n'est commité. Un zip de test reprend la structure du dump réel
+(entrées à la racine nommées `<PAIRE>_<minutes>.csv`, sans en-tête, plus un `MANIFEST.json`), avec les
+lignes réelles de ces trois fichiers pour XBTUSD. Les contenus inventés sont annoncés comme tels dans
+le code : le `MANIFEST.json` (les noms de clés du manifeste réel ne sont pas connus, le lecteur est
+tolérant), l'entrée piège `AIXBTUSD_1.csv` (la recherche se fait par nom exact, jamais par suffixe) et
+l'échantillon `ETHUSD_1.csv`. Le dump complet n'est pas joignable depuis le conteneur de développement :
+il n'est lu que sur le poste du propriétaire.
+
+## Commande à lancer sur le poste du propriétaire (S5)
+
+À lancer après la fusion de la PR de S5, dans un terminal zsh sur le Mac, ligne par ligne. La séquence
+ne contient aucun commentaire en ligne (zsh interactif ne les accepte pas sans `setopt
+interactivecomments`) et aucun tube après `tv4`, pour que le code de sortie affiché soit celui de `tv4`.
+La racine dédiée `~/data/tv4` est recommandée : les fichiers clos y sont immuables, et une racine de test
+mélangerait le dump avec la fixture ingérée par `tv4 ingest csv`. Le chemin du zip est à remplacer s'il
+diffère.
+
+```zsh
+cd ~/workspace/perso/tradingV4
+git switch main
+git pull --ff-only
+cargo build --release --locked
+mkdir -p ~/data/tv4
+./target/release/tv4 ingest kraken --root ~/data/tv4 --zip ~/data/kraken/Kraken_OHLCVT_Full.zip --sha256 bc273e9027470b07d790a7fa4df9bb43f0dfc527c20c6ecae48402e123e7b1c7 --pair XBTUSD --pair ETHUSD > ~/data/tv4/ingest-kraken.log 2>&1; echo "code de sortie : $?"
+cat ~/data/tv4/ingest-kraken.log
+ls -la ~/data/tv4/reports/ingest/kraken
+```
+
+Le SHA-256 du zip (`bc273e90...b1c7`, celui de la section Provenance) figure dans cette commande et dans
+la documentation, jamais dans le code : le binaire ne connaît aucun hash en dur.
+
+À renvoyer au pilote : le code de sortie affiché, le fichier `~/data/tv4/ingest-kraken.log` et les trois
+fichiers `~/data/tv4/reports/ingest/kraken/_summary.json`, `BTC-USD.json` et `ETH-USD.json`. Ils ne
+contiennent aucun secret (chemins locaux, compteurs, hash, manifeste du zip). Le champ `raw` du
+manifeste dans `_summary.json` donne les vrais noms de clés : si `coverage_end` y est `null`, le pilote
+ajoutera la clé réelle à la liste des candidats du lecteur (`tv4/src/marketdata/kraken_zip.rs`), sans
+autre changement. Durée attendue : quelques dizaines de secondes (SHA-256 du zip entier, puis deux
+paires) ; pic de mémoire de l'ordre de 1 Go pendant XBTUSD.
+
 ## Règle
 
 Ces fichiers ne se modifient jamais. Un changement = de nouveaux fichiers et de nouvelles empreintes
