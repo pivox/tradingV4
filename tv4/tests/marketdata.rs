@@ -1,8 +1,7 @@
 //! Tests d'intégration du lecteur Kraken sur un vrai fichier.
 //!
 //! Les lignes ci-dessous sont un échantillon de format, valeurs inventées (prix ronds autour de 100),
-//! pas des données de marché. Le test sur la vraie fixture de 10 000 bougies XBTUSD 1m sera ajouté à
-//! son arrivée (`fixtures/README.md`).
+//! pas des données de marché. Les tests sur la vraie fixture XBTUSD sont dans `fixture_kraken.rs`.
 
 use std::fs;
 use std::path::Path;
