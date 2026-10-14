@@ -1,0 +1,2 @@
+# Aucune conversion de fins de ligne sur les fixtures : les empreintes doivent rester stables quel que soit le poste.
+fixtures/** -text
