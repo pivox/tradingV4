@@ -48,6 +48,8 @@ fn rules() -> Vec<(&'static str, Rule)> {
         ("strategy", Rule::OnlyAllowed(&["model"])),
         // `indicators` ne dépend que de `model`.
         ("indicators", Rule::OnlyAllowed(&["model"])),
+        // S2 : le lecteur Kraken ne dépend que de `model` ; à revoir explicitement en S5/S7 si besoin.
+        ("marketdata", Rule::OnlyAllowed(&["model"])),
         // `sim` ne dépend pas de `strategy` ; il ne remonte pas non plus vers l'orchestration.
         ("sim", Rule::Forbidden(&["strategy", "engine", "cli"])),
     ]
@@ -315,11 +317,116 @@ fn chrono_est_absent_des_modules_de_calcul() {
 }
 
 #[test]
-fn le_module_model_existe() {
-    // Garde-fou du test lui-même : si le dossier src bouge, les tests ci-dessus ne liraient plus rien.
+fn les_modules_du_jalon_existent() {
+    // Garde-fou du test lui-même : si le dossier src bouge, les règles ci-dessus ne liraient plus rien.
+    for module in ["model", "marketdata", "indicators", "strategy"] {
+        assert!(
+            !module_files(&src_dir(), module).is_empty(),
+            "aucun fichier pour le module « {module} » dans src"
+        );
+    }
+}
+
+#[test]
+fn strategy_interdit_unsafe() {
+    // Le bornage anti look-ahead de `BarContext` repose sur l'absence d'`unsafe` (docs/03 §1.2).
+    let path = src_dir().join("strategy").join("mod.rs");
+    let code = strip_line_comments(&read(&path));
     assert!(
-        !module_files(&src_dir(), "model").is_empty(),
-        "src/model.rs introuvable"
+        code.contains("#![forbid(unsafe_code)]"),
+        "{} doit contenir #![forbid(unsafe_code)]",
+        path.display()
+    );
+}
+
+/// Champs privés de `TfView` et `BarContext` (`strategy/context.rs`).
+const CONTEXT_FIELDS: [&str; 9] = [
+    "views",
+    "columns",
+    "candles",
+    "names",
+    "closed",
+    "state",
+    "pending",
+    "just_closed",
+    "symbol",
+];
+
+/// Accès par champ (`.champ` non suivi de `(`) à l'un des champs de [`CONTEXT_FIELDS`] dans `code`.
+fn context_field_accesses(code: &str) -> Vec<&'static str> {
+    let mut found = Vec::new();
+    for field in CONTEXT_FIELDS {
+        let pattern = format!(".{field}");
+        for (index, _) in code.match_indices(&pattern) {
+            let rest = &code[index + pattern.len()..];
+            let next = rest.chars().next().unwrap_or(' ');
+            let is_identifier = next.is_alphanumeric() || next == '_';
+            if !is_identifier && next != '(' && !found.contains(&field) {
+                found.push(field);
+            }
+        }
+    }
+    found
+}
+
+#[test]
+fn les_strategies_ne_lisent_pas_les_champs_du_contexte() {
+    // Un champ privé reste visible des modules descendants du module qui définit le type : `TfView` et
+    // `BarContext` vivent donc dans `strategy/context.rs`, et aucun autre fichier de `strategy/` ne
+    // doit accéder à leurs champs (`ctx.views`, `.columns`...), sous peine de lire au-delà de `closed`
+    // sans `unsafe`. Seuls les accesseurs bornés (`ctx.candles(tf)`, `ctx.ind(tf, name)`) sont permis.
+    let directory = src_dir().join("strategy");
+    assert!(directory.join("context.rs").is_file(), "context.rs absent");
+    let mut violations = Vec::new();
+    for (path, _) in module_files(&src_dir(), "strategy") {
+        if path.file_name().is_some_and(|name| name == "context.rs") {
+            continue;
+        }
+        let code = strip_line_comments(&read(&path));
+        for field in context_field_accesses(&code) {
+            violations.push(format!("{} accède au champ `.{field}`", path.display()));
+        }
+    }
+    assert!(
+        violations.is_empty(),
+        "accès aux champs du contexte hors de strategy/context.rs :\n{}",
+        violations.join("\n")
+    );
+}
+
+#[test]
+fn l_analyseur_de_champs_distingue_champ_et_methode() {
+    assert!(context_field_accesses("ctx.candles(tf)").is_empty());
+    assert!(context_field_accesses("ctx.just_closed(tf)").is_empty());
+    assert_eq!(context_field_accesses("ctx.views[0]"), vec!["views"]);
+    assert_eq!(
+        context_field_accesses("let n = v.columns.len();"),
+        vec!["columns"]
+    );
+    assert!(context_field_accesses("self.candles_count").is_empty());
+}
+
+#[test]
+fn arrow_et_parquet_absents_de_cargo_lock() {
+    // À supprimer en S4, à l'arrivée d'arrow et parquet (docs/03 §11 point 4).
+    let lock = read(Path::new(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../Cargo.lock"
+    )));
+    let forbidden: Vec<&str> = lock
+        .lines()
+        .filter_map(|line| line.strip_prefix("name = \""))
+        .filter_map(|rest| rest.strip_suffix('"'))
+        .filter(|name| {
+            *name == "arrow"
+                || *name == "parquet"
+                || name.starts_with("arrow-")
+                || name.starts_with("parquet-")
+        })
+        .collect();
+    assert!(
+        forbidden.is_empty(),
+        "arrow et parquet n'arrivent qu'en S4 : {forbidden:?}"
     );
 }
 

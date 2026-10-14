@@ -421,6 +421,8 @@ pub fn build(id: &str, params: &toml::Value) -> anyhow::Result<Box<dyn Strategy>
 
 `Signal` est une intention ; le simulateur décide des fills. La stratégie ne touche jamais aux ordres. Ce trait est volontairement neutre (`params_json`, pas de type associé) : une implémentation scriptée pourrait être ajoutée plus tard sans toucher au moteur ; elle n'est pas construite.
 
+**Écarts d'implémentation (S2).** Le code de `tv4/src/strategy/` diffère de l'extrait ci-dessus ; la liste complète, justifiée, est en tête de `tv4/src/strategy/mod.rs`. En bref : `BarContext` n'a plus de champ public (accesseurs bornés, scalaires regroupés dans `BarState`, `ctx.position()` au lieu de `ctx.position`) ; les colonnes d'un timeframe sont rangées une fois, à la construction, dans l'ordre de `indicators()` ; `ind(tf, name)` y cherche le nom parmi les quelques noms du timeframe (comparaison de `&'static str`, sans hachage ni allocation) et `ind_at(tf, index)` donne l'accès direct par index ; `TfView` garde les colonnes complètes et un compteur `closed` ; le masque `just_closed` est un `u8` construit avec `Timeframe::bit()` ; les erreurs sont typées (`StrategyError`) et `registry::build` rend un `Result` de cette erreur, pas `anyhow`. `BarState`, `TfView` et `BarContext` sont définis dans un sous-module privé `strategy/context.rs` : un champ privé reste lisible par les modules descendants de celui qui définit le type, donc définis dans `strategy/mod.rs` ils auraient été lisibles par `sma_cross` et par toute stratégie future (lecture au-delà de `closed` sans `unsafe`). `tests/architecture.rs` interdit l'accès à ces champs hors de `context.rs`.
+
 ## 7. Boucle de backtest et simulateur
 
 ### 7.1 Préparation (une fois par run, ou partagée par campagne)
