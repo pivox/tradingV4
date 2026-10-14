@@ -1,0 +1,410 @@
+//! Test de la règle de dépendance entre modules (docs/03-architecture.md §2).
+//!
+//! clippy ne sait pas vérifier qui `use` qui : on lit donc les sources de `tv4/src` et on cherche les
+//! références `crate::<module>` et `tv4::<module>`. Le test est tolérant : un module qui n'existe pas
+//! encore n'a aucun fichier à lire, donc aucune violation possible.
+//!
+//! Limite assumée : c'est une analyse de texte, pas du compilateur. Elle voit les `use`, les chemins
+//! complets dans le code et les groupes `use crate::{a, b}`. Elle ne suit pas les alias de chemins
+//! (`use crate as racine;`), qui n'ont pas de raison d'exister ici. Les `super::` sont résolus selon
+//! la profondeur du fichier dans `src` : `super::x` dans `sim.rs`, `super::super::x` dans
+//! `sim/orders.rs`. Un `super::` écrit dans un module en ligne (`mod tests { ... }`) n'est pas suivi :
+//! la convention du projet est `crate::` dans les sous-fichiers.
+
+use std::collections::BTreeSet;
+use std::fs;
+use std::path::{Path, PathBuf};
+
+/// Modules de `tv4/src` connus (docs/03 §4). Un nom qui n'est pas dans cette liste est ignoré.
+const MODULES: [&str; 12] = [
+    "model",
+    "marketdata",
+    "store",
+    "mtf",
+    "indicators",
+    "strategy",
+    "sim",
+    "engine",
+    "report",
+    "cli",
+    "research",
+    "execution",
+];
+
+/// Règle d'un module : ce qu'il a le droit de référencer.
+enum Rule {
+    /// Seuls ces modules sont autorisés (le module peut toujours se référencer lui-même).
+    OnlyAllowed(&'static [&'static str]),
+    /// Tout est autorisé sauf ces modules.
+    Forbidden(&'static [&'static str]),
+}
+
+/// Règles de dépendance de docs/03 §2. `engine` orchestre tout et n'a donc pas de règle ici.
+fn rules() -> Vec<(&'static str, Rule)> {
+    vec![
+        // `model` ne dépend de rien.
+        ("model", Rule::OnlyAllowed(&[])),
+        // `strategy` ne dépend que de `model`.
+        ("strategy", Rule::OnlyAllowed(&["model"])),
+        // `indicators` ne dépend que de `model`.
+        ("indicators", Rule::OnlyAllowed(&["model"])),
+        // `sim` ne dépend pas de `strategy` ; il ne remonte pas non plus vers l'orchestration.
+        ("sim", Rule::Forbidden(&["strategy", "engine", "cli"])),
+    ]
+}
+
+/// Modules où la crate `chrono` est interdite : le temps y est un `i64` en millisecondes UTC.
+const NO_CHRONO: [&str; 4] = ["model", "engine", "sim", "strategy"];
+
+/// Retire les commentaires de ligne (`// ...`, `/// ...`, `//! ...`) pour ne pas compter les mentions
+/// dans la documentation. Un `//` situé dans une chaîne (`"https://..."`) n'est pas un commentaire.
+/// Les commentaires de bloc ne sont pas utilisés dans le projet.
+fn strip_line_comments(source: &str) -> String {
+    let mut result = String::new();
+    for line in source.lines() {
+        let mut in_string = false;
+        let mut previous = ' ';
+        let mut cut = line.len();
+        for (index, c) in line.char_indices() {
+            if c == '"' && previous != '\\' {
+                in_string = !in_string;
+            }
+            if !in_string && c == '/' && previous == '/' {
+                cut = index - 1;
+                break;
+            }
+            previous = c;
+        }
+        result.push_str(&line[..cut]);
+        result.push('\n');
+    }
+    result
+}
+
+/// Identifiant qui commence `text` (lettres, chiffres, `_`) ; chaîne vide s'il n'y en a pas.
+fn leading_ident(text: &str) -> &str {
+    let end = text
+        .char_indices()
+        .find(|(_, c)| !(c.is_ascii_alphanumeric() || *c == '_'))
+        .map_or(text.len(), |(index, _)| index);
+    &text[..end]
+}
+
+/// Noms de modules qui suivent le préfixe `prefix` (par exemple `crate::`) dans `text`.
+///
+/// Gère `crate::model::X` et le groupe `crate::{model::X, sim}`.
+fn modules_after_prefix(text: &str, prefix: &str, found: &mut BTreeSet<String>) {
+    let mut rest = text;
+    while let Some(position) = rest.find(prefix) {
+        // Le préfixe doit commencer un mot : on ignore `autre_crate::` pour `crate::`.
+        let before = rest[..position].chars().last();
+        let after_prefix = &rest[position + prefix.len()..];
+        rest = after_prefix;
+        if before.is_some_and(|c| c.is_ascii_alphanumeric() || c == '_') {
+            continue;
+        }
+        if let Some(group) = after_prefix.strip_prefix('{') {
+            // Groupe : on prend le premier identifiant de chaque élément de premier niveau.
+            let mut depth = 0;
+            let mut element_start = true;
+            let mut index = 0;
+            let chars: Vec<char> = group.chars().collect();
+            while index < chars.len() {
+                let c = chars[index];
+                match c {
+                    '{' => {
+                        depth += 1;
+                        element_start = false;
+                    }
+                    '}' => {
+                        if depth == 0 {
+                            break;
+                        }
+                        depth -= 1;
+                    }
+                    ',' if depth == 0 => element_start = true,
+                    c if c.is_whitespace() => {}
+                    _ => {
+                        if element_start && depth == 0 {
+                            let tail: String = chars[index..].iter().collect();
+                            let name = leading_ident(&tail).to_string();
+                            if !name.is_empty() {
+                                index += name.len() - 1;
+                                found.insert(name);
+                            }
+                        }
+                        element_start = false;
+                    }
+                }
+                index += 1;
+            }
+        } else {
+            let name = leading_ident(after_prefix);
+            if !name.is_empty() {
+                found.insert(name.to_string());
+            }
+        }
+    }
+}
+
+/// Modules de `tv4` référencés par un fichier source.
+///
+/// `super_depth` est le nombre de `super::` qui mènent à la racine de la crate : 1 pour `module.rs`
+/// et `module/mod.rs` (`super::x` désigne alors le module voisin `x`), 2 pour `module/fichier.rs`
+/// (`super::super::x`), et ainsi de suite.
+fn referenced_modules(source: &str, super_depth: usize) -> BTreeSet<String> {
+    let code = strip_line_comments(source);
+    let mut names = BTreeSet::new();
+    modules_after_prefix(&code, "crate::", &mut names);
+    modules_after_prefix(&code, "tv4::", &mut names);
+    if super_depth > 0 {
+        modules_after_prefix(&code, &"super::".repeat(super_depth), &mut names);
+    }
+    names
+        .into_iter()
+        .filter(|name| MODULES.contains(&name.as_str()))
+        .collect()
+}
+
+/// `true` si la crate `chrono` est utilisée (`chrono::...` ou `use chrono`) : le mot `chrono` isolé,
+/// hors commentaires.
+fn uses_chrono(source: &str) -> bool {
+    let code = strip_line_comments(source);
+    let is_word_char = |c: char| c.is_ascii_alphanumeric() || c == '_';
+    let mut rest = code.as_str();
+    while let Some(position) = rest.find("chrono") {
+        let before = rest[..position].chars().last();
+        let after = &rest[position + "chrono".len()..];
+        rest = after;
+        let word_start = !before.is_some_and(is_word_char);
+        let word_end = !after.chars().next().is_some_and(is_word_char);
+        if word_start && word_end {
+            return true;
+        }
+    }
+    false
+}
+
+/// Fichiers `.rs` du module : `src/<module>.rs` et tout `src/<module>/**/*.rs`, avec leur profondeur
+/// de `super::` (voir [`referenced_modules`]). Liste vide si le module n'existe pas encore.
+fn module_files(src: &Path, module: &str) -> Vec<(PathBuf, usize)> {
+    let mut paths = Vec::new();
+    let single = src.join(format!("{module}.rs"));
+    if single.is_file() {
+        paths.push(single);
+    }
+    let directory = src.join(module);
+    if directory.is_dir() {
+        collect_rs_files(&directory, &mut paths);
+    }
+    paths
+        .into_iter()
+        .map(|path| {
+            let depth = super_depth(src, &path);
+            (path, depth)
+        })
+        .collect()
+}
+
+/// Nombre de `super::` pour remonter de ce fichier à la racine de la crate.
+///
+/// `src/sim.rs` et `src/sim/mod.rs` valent 1 ; `src/sim/orders.rs` et `src/sim/a/mod.rs` valent 2.
+fn super_depth(src: &Path, path: &Path) -> usize {
+    let relative = path.strip_prefix(src).unwrap_or(path);
+    let components = relative.components().count();
+    if relative.file_name().is_some_and(|name| name == "mod.rs") {
+        components - 1
+    } else {
+        components
+    }
+}
+
+/// Parcourt `directory` en profondeur et ajoute les fichiers `.rs` à `files`.
+fn collect_rs_files(directory: &Path, files: &mut Vec<PathBuf>) {
+    let Ok(entries) = fs::read_dir(directory) else {
+        return;
+    };
+    let mut paths: Vec<PathBuf> = entries
+        .filter_map(|entry| entry.ok())
+        .map(|e| e.path())
+        .collect();
+    paths.sort();
+    for path in paths {
+        if path.is_dir() {
+            collect_rs_files(&path, files);
+        } else if path.extension().is_some_and(|ext| ext == "rs") {
+            files.push(path);
+        }
+    }
+}
+
+fn src_dir() -> PathBuf {
+    Path::new(env!("CARGO_MANIFEST_DIR")).join("src")
+}
+
+fn read(path: &Path) -> String {
+    fs::read_to_string(path)
+        .unwrap_or_else(|erreur| panic!("lecture de {} : {erreur}", path.display()))
+}
+
+#[test]
+fn la_regle_de_dependance_est_respectee() {
+    let src = src_dir();
+    let mut violations = Vec::new();
+    for (module, rule) in rules() {
+        for (path, depth) in module_files(&src, module) {
+            for name in referenced_modules(&read(&path), depth) {
+                if name == module {
+                    continue;
+                }
+                let allowed = match &rule {
+                    Rule::OnlyAllowed(list) => list.contains(&name.as_str()),
+                    Rule::Forbidden(list) => !list.contains(&name.as_str()),
+                };
+                if !allowed {
+                    violations.push(format!(
+                        "{} : le module « {module} » référence « {name} »",
+                        path.display()
+                    ));
+                }
+            }
+        }
+    }
+    assert!(
+        violations.is_empty(),
+        "dépendances interdites (docs/03 §2) :\n{}",
+        violations.join("\n")
+    );
+}
+
+#[test]
+fn personne_ne_depend_de_cli() {
+    // `cli` n'a aucune logique métier : il appelle les autres modules, jamais l'inverse.
+    let src = src_dir();
+    let mut violations = Vec::new();
+    for module in MODULES.iter().filter(|m| **m != "cli") {
+        for (path, depth) in module_files(&src, module) {
+            if referenced_modules(&read(&path), depth).contains("cli") {
+                violations.push(path.display().to_string());
+            }
+        }
+    }
+    assert!(
+        violations.is_empty(),
+        "des modules dépendent de cli :\n{}",
+        violations.join("\n")
+    );
+}
+
+#[test]
+fn chrono_est_absent_des_modules_de_calcul() {
+    let src = src_dir();
+    let mut violations = Vec::new();
+    for module in NO_CHRONO {
+        for (path, _) in module_files(&src, module) {
+            if uses_chrono(&read(&path)) {
+                violations.push(format!("{} utilise chrono", path.display()));
+            }
+        }
+    }
+    assert!(
+        violations.is_empty(),
+        "chrono est interdit dans model, engine, sim et strategy (temps = i64 ms UTC) :\n{}",
+        violations.join("\n")
+    );
+}
+
+#[test]
+fn le_module_model_existe() {
+    // Garde-fou du test lui-même : si le dossier src bouge, les tests ci-dessus ne liraient plus rien.
+    assert!(
+        !module_files(&src_dir(), "model").is_empty(),
+        "src/model.rs introuvable"
+    );
+}
+
+// --- Tests de l'analyseur lui-même (il doit voir les violations qu'il est censé voir) ---
+
+fn names(source: &str, super_depth: usize) -> Vec<String> {
+    referenced_modules(source, super_depth)
+        .into_iter()
+        .collect()
+}
+
+#[test]
+fn l_analyseur_voit_un_use_simple() {
+    assert_eq!(names("use crate::sim::Portfolio;", 0), ["sim"]);
+    assert_eq!(
+        names("let x = crate::strategy::Signal::Hold;", 0),
+        ["strategy"]
+    );
+}
+
+#[test]
+fn l_analyseur_voit_les_groupes() {
+    let source = "use crate::{model::Candle, sim::{Order, Fill}, engine};";
+    assert_eq!(names(source, 0), ["engine", "model", "sim"]);
+}
+
+#[test]
+fn l_analyseur_voit_un_groupe_sur_plusieurs_lignes() {
+    let source = "use crate::{\n    model::Candle,\n    strategy::Signal,\n};";
+    assert_eq!(names(source, 0), ["model", "strategy"]);
+}
+
+#[test]
+fn l_analyseur_voit_le_chemin_par_le_nom_de_la_crate() {
+    assert_eq!(names("use tv4::engine::run_cell;", 0), ["engine"]);
+}
+
+#[test]
+fn l_analyseur_ignore_les_commentaires_et_les_autres_crates() {
+    assert!(names("// use crate::strategy::Signal;", 0).is_empty());
+    assert!(names("/// Voir `crate::sim`.", 0).is_empty());
+    assert!(names("use autre_crate::sim::X;", 0).is_empty());
+    assert!(names("use crate::inconnu::X;", 0).is_empty());
+}
+
+#[test]
+fn l_analyseur_resout_super_selon_la_profondeur_du_fichier() {
+    // `sim.rs` ou `sim/mod.rs` (profondeur 1) : `super::sim` est le module voisin.
+    assert_eq!(names("use super::sim::Portfolio;", 1), ["sim"]);
+    assert!(names("use super::sim::Portfolio;", 0).is_empty());
+    // `sim/orders.rs` (profondeur 2) : il faut deux `super::` pour atteindre la racine.
+    assert_eq!(
+        names("use super::super::strategy::Signal;", 2),
+        ["strategy"]
+    );
+    // Un seul `super::` y désigne le module `sim` lui-même, pas la racine.
+    assert!(names("use super::fills::Fill;", 2).is_empty());
+}
+
+#[test]
+fn la_profondeur_de_super_vient_du_chemin_du_fichier() {
+    let src = Path::new("/x/src");
+    assert_eq!(super_depth(src, Path::new("/x/src/sim.rs")), 1);
+    assert_eq!(super_depth(src, Path::new("/x/src/sim/mod.rs")), 1);
+    assert_eq!(super_depth(src, Path::new("/x/src/sim/orders.rs")), 2);
+    assert_eq!(super_depth(src, Path::new("/x/src/sim/a/mod.rs")), 2);
+}
+
+#[test]
+fn l_analyseur_ne_coupe_pas_une_chaine_contenant_deux_barres() {
+    // Le `//` de l'URL est dans une chaîne : le `use` qui suit sur la même ligne reste visible.
+    let source = "let u = \"https://exemple.org\"; let s = crate::strategy::Signal::Hold; // note";
+    assert_eq!(names(source, 0), ["strategy"]);
+    assert!(names("let x = 1; // crate::strategy::Signal", 0).is_empty());
+}
+
+#[test]
+fn l_analyseur_detecte_chrono() {
+    assert!(uses_chrono("use chrono::Utc;"));
+    assert!(uses_chrono("let t = ::chrono::Utc::now();"));
+    assert!(!uses_chrono("// chrono est interdit ici"));
+    assert!(!uses_chrono("let chronometre = 1;"));
+}
+
+#[test]
+fn les_fichiers_d_un_module_absent_sont_une_liste_vide() {
+    assert!(module_files(&src_dir(), "execution").is_empty());
+}

@@ -1,0 +1,5 @@
+[toolchain]
+channel = "1.97.0"
+profile = "minimal"
+# llvm-tools-preview est ajouté en CI seulement (cargo-llvm-cov).
+components = ["rustfmt", "clippy"]
