@@ -1,0 +1,8 @@
+# Paramètres de référence de sma_cross (docs/03-architecture.md §6), lus par le registre (strategy::registry::build).
+# Valeurs de démonstration pour la tranche verticale : dimensionnées pour la fixture de 10 000 bougies 1m
+# (≈ 6,9 jours, ≈ 666 bougies 15m), afin de produire plusieurs croisements. Ce n'est pas une hypothèse de
+# recherche : aucune fiche H-NNN, aucun run sur DEV (docs/04-protocole-recherche.md §4.3).
+tf = "15m"
+fast = 20
+slow = 50
+stop_atr_mult = 2.0

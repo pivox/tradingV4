@@ -19,10 +19,19 @@ path = "src/main.rs"
 [dependencies]
 blake3.workspace = true
 clap.workspace = true
+csv.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true
 toml.workspace = true
+
+[dev-dependencies]
+criterion.workspace = true
+proptest.workspace = true
+
+[[bench]]
+name = "engine"
+harness = false
 
 [lints]
 workspace = true

@@ -21,6 +21,10 @@ pub type Ts = i64;
 /// Un point de base (bp) vaut 0,01 % : 10 000 bps valent 100 %.
 pub const BPS_PER_UNIT: f64 = 10_000.0;
 
+/// Période maximale d'un indicateur (≈ 70 jours de 1m) : garde-fou contre une faute de frappe dans un
+/// TOML. Partagée par `indicators` et `strategy`, qui ne se voient pas l'un l'autre.
+pub const MAX_INDICATOR_PERIOD: usize = 100_000;
+
 /// Valeur maximale acceptée pour des frais ou un slippage, en points de base (100 %).
 pub const MAX_BPS: u32 = 10_000;
 
@@ -235,6 +239,23 @@ impl Timeframe {
             Timeframe::H4 => 14_400_000,
             Timeframe::H12 => 43_200_000,
             Timeframe::D1 => 86_400_000,
+        }
+    }
+
+    /// Bit du timeframe dans un masque `u8` (huit timeframes remplissent exactement un octet).
+    ///
+    /// Le `match` est explicite : le bit ne dépend pas de l'ordre de déclaration de l'énumération.
+    /// Sert au masque `just_closed` de `BarContext` (docs/03 §6).
+    pub const fn bit(self) -> u8 {
+        match self {
+            Timeframe::M1 => 1 << 0,
+            Timeframe::M5 => 1 << 1,
+            Timeframe::M15 => 1 << 2,
+            Timeframe::M30 => 1 << 3,
+            Timeframe::H1 => 1 << 4,
+            Timeframe::H4 => 1 << 5,
+            Timeframe::H12 => 1 << 6,
+            Timeframe::D1 => 1 << 7,
         }
     }
 
@@ -630,6 +651,22 @@ mod tests {
             );
             assert_eq!(serde_json::from_str::<Timeframe>(&json).unwrap(), tf);
         }
+    }
+
+    #[test]
+    fn les_bits_des_timeframes_sont_distincts_et_remplissent_un_octet() {
+        let mut masque = 0u8;
+        for (i, tf) in Timeframe::ALL.into_iter().enumerate() {
+            assert_eq!(tf.bit(), 1u8 << i, "{tf}");
+            assert_eq!(masque & tf.bit(), 0, "bit déjà pris par un autre : {tf}");
+            masque |= tf.bit();
+        }
+        assert_eq!(masque, 0xFF);
+    }
+
+    #[test]
+    fn la_periode_maximale_d_un_indicateur() {
+        assert_eq!(MAX_INDICATOR_PERIOD, 100_000);
     }
 
     #[test]

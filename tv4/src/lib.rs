@@ -7,6 +7,7 @@
 //! - `strategy` ne dépend que de `model` ;
 //! - `sim` ne dépend pas de `strategy` ;
 //! - `indicators` ne dépend que de `model` ;
+//! - `marketdata` ne dépend que de `model` ;
 //! - `engine` orchestre tout ; `cli` n'a aucune logique métier ;
 //! - `chrono` est absent de `model`, `engine`, `sim` et `strategy` (en interne, le temps est un `i64`
 //!   en millisecondes UTC).
@@ -17,7 +18,10 @@
 #![deny(clippy::unwrap_used)]
 
 pub mod cli;
+pub mod indicators;
+pub mod marketdata;
 pub mod model;
+pub mod strategy;
 
 /// Git sha du commit compilé, fourni par `build.rs` (`unknown` sans git).
 pub const GIT_SHA: &str = env!("TV4_GIT_SHA");
