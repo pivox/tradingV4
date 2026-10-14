@@ -50,6 +50,9 @@ fn rules() -> Vec<(&'static str, Rule)> {
         ("indicators", Rule::OnlyAllowed(&["model"])),
         // S2 : le lecteur Kraken ne dépend que de `model` ; à revoir explicitement en S5/S7 si besoin.
         ("marketdata", Rule::OnlyAllowed(&["model"])),
+        // S4 : `store` ne dépend que de `model` ; `tv4 ingest csv` fait le lien avec `marketdata` dans la
+        // CLI. Il ne connaît ni `engine`, ni `sim`, ni `strategy`, ni `report`, ni `cli`.
+        ("store", Rule::OnlyAllowed(&["model"])),
         // `sim` ne dépend pas de `strategy` ; il ne remonte pas non plus vers l'orchestration.
         ("sim", Rule::Forbidden(&["strategy", "engine", "cli"])),
         // `engine` produit un résultat pur (run_cell, docs/03 §6-§7) : il n'écrit rien (c'est `report`)
@@ -336,7 +339,7 @@ fn les_modules_du_jalon_existent() {
 #[test]
 fn les_regles_ne_sont_plus_vides() {
     // Sans fichier à lire, la règle « sim ne dépend pas de strategy » serait vacuement verte.
-    for module in ["sim", "engine", "report"] {
+    for module in ["sim", "engine", "report", "store"] {
         assert!(
             !module_files(&src_dir(), module).is_empty(),
             "aucun fichier pour le module « {module} » dans src"
@@ -423,28 +426,158 @@ fn l_analyseur_de_champs_distingue_champ_et_methode() {
     assert!(context_field_accesses("self.candles_count").is_empty());
 }
 
+/// `true` si la crate `name` est utilisée dans `source`, hors commentaires : soit en tête de chemin
+/// (`name::...`), soit importée sous un alias ou en bloc (`use name as a;`, `use name;`,
+/// `extern crate name as a;`), cas où le chemin ne contient plus `name::`.
+///
+/// Un `name::` précédé d'un caractère d'identifiant (`my_arrow::f()`) est un autre nom. Un `name::`
+/// précédé de `::` est un chemin de module (`store::parquet::`, `self::parquet::`) quand le caractère
+/// avant ce `::` est un identifiant ou `>` ; sinon (`::parquet::` en tête de chemin) c'est la crate.
+fn uses_crate(source: &str, name: &str) -> bool {
+    let code = strip_line_comments(source);
+    let is_ident = |c: char| c.is_ascii_alphanumeric() || c == '_';
+    let pattern = format!("{name}::");
+    for (position, _) in code.match_indices(&pattern) {
+        let before = &code[..position];
+        if before.chars().next_back().is_some_and(is_ident) {
+            continue;
+        }
+        if let Some(path) = before.strip_suffix("::")
+            && path
+                .chars()
+                .next_back()
+                .is_some_and(|c| is_ident(c) || c == '>')
+        {
+            continue;
+        }
+        return true;
+    }
+    imports_crate_without_path(&code, name)
+}
+
+/// `use name;`, `use name as a;`, `use ::name as a;`, `use name::{...}` et `extern crate name ...;`
+/// (`code` sans commentaires) : formes qui introduisent la crate sans la suivre de `::`.
+fn imports_crate_without_path(code: &str, name: &str) -> bool {
+    let is_ident = |c: char| c.is_ascii_alphanumeric() || c == '_';
+    for keyword in ["use", "extern crate"] {
+        for (position, _) in code.match_indices(keyword) {
+            if code[..position].chars().next_back().is_some_and(is_ident) {
+                continue;
+            }
+            let rest = &code[position + keyword.len()..];
+            // Le mot-clé doit être suivi d'un espace (`user`, `used` sont d'autres mots).
+            if !rest.starts_with(char::is_whitespace) {
+                continue;
+            }
+            let rest = rest.trim_start();
+            let rest = rest.strip_prefix('{').unwrap_or(rest).trim_start();
+            let rest = rest.strip_prefix("::").unwrap_or(rest);
+            let Some(after) = rest.strip_prefix(name) else {
+                continue;
+            };
+            if after.chars().next().is_some_and(is_ident) {
+                continue;
+            }
+            let after = after.trim_start();
+            if after.starts_with(';')
+                || after.starts_with(',')
+                || after.starts_with('}')
+                || after.starts_with("as ")
+                || after.starts_with("as\t")
+                || after.starts_with("as\n")
+            {
+                return true;
+            }
+        }
+    }
+    false
+}
+
+/// Fichiers `.rs` de `src`, `tests` et `benches` du paquet.
+fn all_rs_files() -> Vec<PathBuf> {
+    let root = Path::new(env!("CARGO_MANIFEST_DIR"));
+    let mut files = Vec::new();
+    for directory in ["src", "tests", "benches"] {
+        collect_rs_files(&root.join(directory), &mut files);
+    }
+    files
+}
+
 #[test]
-fn arrow_et_parquet_absents_de_cargo_lock() {
-    // À supprimer en S4, à l'arrivée d'arrow et parquet (docs/03 §11 point 4).
-    let lock = read(Path::new(concat!(
-        env!("CARGO_MANIFEST_DIR"),
-        "/../Cargo.lock"
-    )));
-    let forbidden: Vec<&str> = lock
-        .lines()
-        .filter_map(|line| line.strip_prefix("name = \""))
-        .filter_map(|rest| rest.strip_suffix('"'))
-        .filter(|name| {
-            *name == "arrow"
-                || *name == "parquet"
-                || name.starts_with("arrow-")
-                || name.starts_with("parquet-")
+fn arrow_et_parquet_confines_a_store_parquet() {
+    // docs/03 §10 ligne S4 : l'API arrow est la plus verbeuse du jalon, elle reste dans un seul
+    // fichier. Les tests d'intégration ni les benchs n'en voient aucun type : ils passent par
+    // `Columns`, `read_parquet` et les autres types du store.
+    let root = Path::new(env!("CARGO_MANIFEST_DIR"));
+    let autorise = root.join("src").join("store").join("parquet.rs");
+    let ce_fichier = root.join("tests").join("architecture.rs");
+    assert!(autorise.is_file(), "{} absent", autorise.display());
+    assert!(
+        uses_crate(&read(&autorise), "parquet"),
+        "garde-fou : store/parquet.rs devrait utiliser la crate parquet"
+    );
+    let violations: Vec<String> = all_rs_files()
+        .into_iter()
+        .filter(|path| *path != autorise && *path != ce_fichier)
+        .filter(|path| {
+            let source = read(path);
+            uses_crate(&source, "arrow") || uses_crate(&source, "parquet")
         })
+        .map(|path| path.display().to_string())
         .collect();
     assert!(
-        forbidden.is_empty(),
-        "arrow et parquet n'arrivent qu'en S4 : {forbidden:?}"
+        violations.is_empty(),
+        "arrow ou parquet utilisés hors de store/parquet.rs :\n{}",
+        violations.join("\n")
     );
+}
+
+#[test]
+fn l_analyseur_de_crate_voit_arrow_et_parquet() {
+    assert!(uses_crate("use parquet::arrow::ArrowWriter;", "parquet"));
+    assert!(uses_crate("use arrow::array::Int64Array;", "arrow"));
+    assert!(uses_crate(
+        "let t = ::arrow::datatypes::DataType::Int64;",
+        "arrow"
+    ));
+    assert!(uses_crate("Vec<arrow::array::ArrayRef>", "arrow"));
+}
+
+#[test]
+fn l_analyseur_de_crate_voit_les_alias() {
+    // Après un alias, plus aucun `arrow::` dans le code : le confinement doit quand même le voir.
+    assert!(uses_crate("use arrow as a;", "arrow"));
+    assert!(uses_crate("use ::arrow as a;", "arrow"));
+    assert!(uses_crate("pub use arrow as a;", "arrow"));
+    assert!(uses_crate("extern crate parquet as p;", "parquet"));
+    assert!(uses_crate("extern crate arrow;", "arrow"));
+    assert!(uses_crate("use arrow;", "arrow"));
+    assert!(uses_crate("use\n    arrow\n    as a;", "arrow"));
+    assert!(uses_crate("use arrow::{array::Int64Array};", "arrow"));
+    assert!(uses_crate("use {arrow, serde};", "arrow"));
+}
+
+#[test]
+fn l_analyseur_de_crate_ignore_les_chemins_de_module() {
+    assert!(!uses_crate(
+        "use crate::store::parquet::read_parquet;",
+        "parquet"
+    ));
+    assert!(!uses_crate(
+        "pub use self::parquet::{read_parquet, ReadOptions};",
+        "parquet"
+    ));
+    assert!(!uses_crate("use super::parquet::write_parquet;", "parquet"));
+    assert!(!uses_crate("mod parquet;", "parquet"));
+    assert!(!uses_crate("// use parquet::x;", "parquet"));
+    assert!(!uses_crate("my_arrow::f();", "arrow"));
+    assert!(!uses_crate("let arrow_count = 1;", "arrow"));
+    // Un alias vers un module local ou un autre nom n'est pas la crate.
+    assert!(!uses_crate("use self::parquet as p;", "parquet"));
+    assert!(!uses_crate("use crate::store::parquet as p;", "parquet"));
+    assert!(!uses_crate("use arrow_schema as a;", "arrow"));
+    assert!(!uses_crate("let user = arrow;", "arrow"));
+    assert!(!uses_crate("// use arrow as a;", "arrow"));
 }
 
 // --- Tests de l'analyseur lui-même (il doit voir les violations qu'il est censé voir) ---

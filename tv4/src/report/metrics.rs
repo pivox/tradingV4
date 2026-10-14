@@ -1,8 +1,9 @@
 //! `metrics.json`, schéma S3 (`tv4-metrics-s3`).
 //!
 //! Rien ne dépend de la machine ni de l'heure : ni chemin de fichier, ni horodatage d'exécution, ni
-//! durée. Le bloc `engine` et `fixture_blake3` sont provisoires : ils passeront dans `manifest.json`
-//! et le `dataset_hash` (`dsh-v1`) en S8.
+//! durée. Le bloc `engine`, `fixture_blake3` et le bloc dataset (`dataset_hash`, ajouté en S4 pour
+//! `tv4 backtest --dataset`) sont provisoires : le `dataset_hash` (`dsh-v1`) passera dans
+//! `manifest.json` en S8.
 
 use serde::Serialize;
 
@@ -33,15 +34,46 @@ pub struct EngineInfo {
 }
 
 /// Données rejouées. `fixture_blake3` est le blake3 des octets du CSV, pas un `dataset_hash`.
+///
+/// Les clés `fixture_blake3` (sortie `--fixture`) et `dataset`, `dataset_hash`, `hash_format`,
+/// `gaps_policy`, `synthetic_bars` (sortie `--dataset`, S4) sont exclusives : la sortie `--fixture`
+/// garde exactement ses sept clés de S3, à l'octet près.
 #[derive(Clone, Debug, PartialEq, Serialize)]
 pub struct DataInfo {
+    /// `fixture` ou `dataset`.
     pub source: &'static str,
-    pub fixture_blake3: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub fixture_blake3: Option<String>,
+    /// Nom du dataset (`datasets/<nom>.json`).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub dataset: Option<String>,
+    /// `blake3:<hex>`
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub dataset_hash: Option<String>,
+    /// `dsh-v1`
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub hash_format: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub gaps_policy: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub synthetic_bars: Option<usize>,
     pub symbol: String,
     pub tf: Timeframe,
+    /// Bougies passées au moteur, synthétiques comprises.
     pub bars: usize,
     pub first_open_time_ms: Ts,
     pub last_open_time_ms: Ts,
+}
+
+/// Référence d'un dataset pour le rapport (évite une fonction à 8 arguments et une dépendance de
+/// `report` vers `store`).
+#[derive(Clone, Debug, PartialEq)]
+pub struct DatasetRef {
+    pub name: String,
+    pub dataset_hash: String,
+    pub hash_format: String,
+    pub gaps_policy: String,
+    pub synthetic_bars: usize,
 }
 
 impl DataInfo {
@@ -51,18 +83,54 @@ impl DataInfo {
         symbol: &str,
         candles: &[Candle],
     ) -> Result<DataInfo, ReportError> {
-        let (Some(first), Some(last)) = (candles.first(), candles.last()) else {
-            return Err(ReportError::NoCandles);
-        };
+        let (first, last) = bounds(candles)?;
         Ok(DataInfo {
             source: "fixture",
-            fixture_blake3,
+            fixture_blake3: Some(fixture_blake3),
+            dataset: None,
+            dataset_hash: None,
+            hash_format: None,
+            gaps_policy: None,
+            synthetic_bars: None,
             symbol: symbol.to_string(),
             tf: Timeframe::M1,
             bars: candles.len(),
-            first_open_time_ms: first.open_time_ms,
-            last_open_time_ms: last.open_time_ms,
+            first_open_time_ms: first,
+            last_open_time_ms: last,
         })
+    }
+
+    /// Description d'un dataset figé : sa référence, le symbole, le timeframe et les bornes des
+    /// bougies passées au moteur (synthétiques comprises).
+    pub fn dataset(
+        dataset: DatasetRef,
+        symbol: &str,
+        tf: Timeframe,
+        candles: &[Candle],
+    ) -> Result<DataInfo, ReportError> {
+        let (first, last) = bounds(candles)?;
+        Ok(DataInfo {
+            source: "dataset",
+            fixture_blake3: None,
+            dataset: Some(dataset.name),
+            dataset_hash: Some(dataset.dataset_hash),
+            hash_format: Some(dataset.hash_format),
+            gaps_policy: Some(dataset.gaps_policy),
+            synthetic_bars: Some(dataset.synthetic_bars),
+            symbol: symbol.to_string(),
+            tf,
+            bars: candles.len(),
+            first_open_time_ms: first,
+            last_open_time_ms: last,
+        })
+    }
+}
+
+/// Premier et dernier `open_time` des bougies, ou [`ReportError::NoCandles`].
+fn bounds(candles: &[Candle]) -> Result<(Ts, Ts), ReportError> {
+    match (candles.first(), candles.last()) {
+        (Some(first), Some(last)) => Ok((first.open_time_ms, last.open_time_ms)),
+        _ => Err(ReportError::NoCandles),
     }
 }
 

@@ -11,6 +11,8 @@
 //!   vers `cli` ;
 //! - `indicators` ne dépend que de `model` ;
 //! - `marketdata` ne dépend que de `model` ;
+//! - `store` ne dépend que de `model` ; `arrow` et `parquet` n'apparaissent que dans
+//!   `store/parquet.rs` ;
 //! - `cli` n'a aucune logique métier ;
 //! - `chrono` est absent de `model`, `engine`, `sim` et `strategy` (en interne, le temps est un `i64`
 //!   en millisecondes UTC).
@@ -27,6 +29,7 @@ pub mod marketdata;
 pub mod model;
 pub mod report;
 pub mod sim;
+pub mod store;
 pub mod strategy;
 
 /// Git sha du commit compilé, fourni par `build.rs` (`unknown` sans git).

@@ -48,8 +48,46 @@ horodatages en secondes Unix UTC.
 - **Dernière bougie 1h partielle** : la bougie 21:00 du 1h couvre des minutes après la fin du 1m
   (21:29). Elle est à exclure de l'oracle d'agrégation de S5.
 
+## Fichiers golden Parquet (S4)
+
+| Fichier | Contenu |
+|---|---|
+| `golden/kraken_BTC-USD_1m_2024-01.parquet` | Fichier Parquet du store : kraken, BTC-USD, 1m, mois 2024-01, 3 lignes |
+| `golden/kraken_BTC-USD_1m_2024-01._manifest.json` | Son manifeste (`closed` vrai, `source` `golden`, `ingested_at` `2026-10-14T00:00:00Z`) |
+
+Contenu : les trois bougies du vecteur de `docs/dataset-hash.md` §7. Ce sont des **données de test, pas
+des données de marché** : la provenance de ces prix est le document de spécification. Les fichiers sont
+à plat sous `fixtures/golden/` (le motif `data/` de `.gitignore` ignorerait un dossier `data`), et les
+tests les copient dans l'arborescence d'une racine temporaire.
+
+Production, une seule fois, par `tv4` lui-même (`write_partition` avec l'instant d'écriture
+`1791936000000`, soit 2026-10-14T00:00:00Z, pour un manifeste déterministe) :
+
+```sh
+TV4_REGENERER_GOLDEN=1 cargo test --locked --test store -- --ignored produire_les_fichiers_golden --nocapture
+```
+
+Empreintes attendues :
+
+| Grandeur | Valeur |
+|---|---|
+| `content_hash` (fenêtre du mois, `skip`) | `blake3:3da10e85c1fdd2673a5cc9a0ea7dbd2bf5c171e3f11c23e04dff603392bdd8ab` |
+| `dataset_hash` sur `[1704067200000, 1704067380000)`, `skip` | `blake3:a15f886ff621e7e10b7d4769793d818b23686441a2ce3d4dd6a4918b740cae8e` |
+| blake3 des octets du Parquet | `fdb3082449843de1c929599cde12d128ea4502c59469212e6fed01bbf3abb87b` |
+| SHA-256 des octets du Parquet | `f463e7f3174b7f1836243592f07fed45339d0ef1232fbaf9ff2bfb0be251e32d` |
+| SHA-256 du manifeste | `f4693555967bd9e4f5243ca3f61e2047d28f4c1d70ccc5d7c9c44efa8370ab63` |
+
+`tv4/tests/store.rs` épingle ces valeurs (`golden_fichiers_epingles` pour les octets,
+`golden_parquet_content_hash_et_dataset_hash` pour les hashes logiques). Une montée d'`arrow` ou de
+`parquet` qui changerait la lecture du fichier ou le hash logique est donc bloquée en CI ; les octets
+du Parquet, eux, peuvent changer avec une montée de version (le footer contient `created_by`), auquel
+cas on régénère et on met à jour les empreintes. Le `content_hash` du mois 2020-01 de
+`kraken_xbtusd_1m.csv` une fois ingéré (`blake3:d94f2eb46e2c4b6738b7ef4ed2441f3928db379e5b29f48f95532ba18c56f353`)
+est aussi épinglé dans `tv4/tests/store.rs`.
+
 ## Règle
 
 Ces fichiers ne se modifient jamais. Un changement = de nouveaux fichiers et de nouvelles empreintes
 (SHA-256 et blake3). `.gitattributes` interdit toute conversion de fins de ligne sur ce dossier, et
-`tv4/tests/fixture_kraken.rs` échoue si un octet change.
+`tv4/tests/fixture_kraken.rs` échoue si un octet change. Les fichiers golden Parquet ne se régénèrent
+que par la commande ci-dessus, avec mise à jour des empreintes du tableau et de `tv4/tests/store.rs`.
