@@ -30,17 +30,17 @@ Conséquence pour tradingV4 : la valeur n'est pas dans le moteur ou les connecte
 ### 3.1 Journal fiscal (impact PnL et jalon 2)
 
 - Le PnL « net » de 04 §1.1 est **avant impôt**. Un PnL net de 10 % devient environ 6,9 % après PFU sur la part convertie en euros. Le verdict ne change pas de signe, mais le benchmark Livret A (net d'impôt) devient relativement plus fort. **Tranché le 13/10 (18:35)** (décision 7 de 08 §B.6) : verdict avant impôt, Livret A net d'impôt en face.
-- Le moteur reste en USDT ; tant qu'on ne repasse pas en EUR, il n'y a pas de fait générateur (règle générale, **à valider** pour le cas précis d'un stablecoin USDT/USDC sous MiCA).
+- Le moteur reste en USDC (décision du 13/10 (22:46)) ; tant qu'on ne repasse pas en EUR (paire USDC-EUR), les échanges crypto ↔ USDC ne sont pas un fait générateur (règle générale, neutralité fiscale **à valider** pour le cas précis de l'USDC sous MiCA).
 - Exigence moteur : un export des **cessions contre EUR** avec valeur globale du portefeuille à chaque cession (nécessaire au calcul PAMP du formulaire 2086). Coût faible si le journal de trades (04 §9.3) garde la valorisation du portefeuille à chaque événement.
 - Risque BNC : un bot qui trade toute l'année peut être vu comme activité habituelle. Ce n'est pas tranché par la volumétrie seule (faisceau d'indices). **À valider** avec un conseiller fiscal avant G6, pas avant.
 
 ### 3.2 Contraintes d'exchange dans le simulateur (jalon 1)
 
-Ajouter à `simulator` (03 §2) : min notional, lot size et tick size par paire, chargés depuis `GET /api/v5/public/instruments` d'OKX et **versionnés avec le dataset** (snapshot daté dans le `dataset_hash`). Un ordre sous le minimum est rejeté et compté, comme les rejets de cash existants (04 §3.1 point 5). Enjeu concret à petit capital : avec 8 positions simultanées et un sizing par risque, certaines paires tombent sous le minimum ; le backtest doit le voir.
+Ajouter à `simulator` (03 §2) : min notional, lot size et tick size par paire, chargés depuis `GET /api/v5/account/instruments` sur `eea.okx.com` (clé en lecture seule : l'API publique des instruments n'est pas filtrée par région, 02 §8) et **versionnés avec le dataset** (snapshot daté dans le `dataset_hash`). Un ordre sous le minimum est rejeté et compté, comme les rejets de cash existants (04 §3.1 point 5). Enjeu concret à petit capital : avec 8 positions simultanées et un sizing par risque, certaines paires tombent sous le minimum ; le backtest doit le voir.
 
 ### 3.3 Sécurité de la clé live (jalon G6)
 
-En plus de « sans droit de retrait » : clé OKX **liée à l'IP publique de la box, obligatoire** (la machine dédiée est à la maison, décision du 13/10 (18:35) ; 08 §C.5). Dérogation seulement si l'IP de la box se révèle non fixe pendant le paper (mesurée dans le Journal) : la liaison est alors remplacée par un canari horaire `GET /account/balance` et une alerte en cas de refus. Secret chiffré au repos (pas dans `.env` versionné), clé distincte par environnement, rotation documentée. Rien de neuf techniquement, mais c'est la leçon 3Commas et ce n'est pas écrit dans 04 §6.2.
+En plus de « sans droit de retrait » : clé OKX **liée à l'IP publique de la box, obligatoire** (la machine dédiée est à la maison, décision du 13/10 (18:35) ; 08 §C.5). Dérogation seulement si l'IP de la box se révèle non fixe pendant le paper (mesurée dans le Journal) : la liaison est alors remplacée par un canari horaire `GET /account/balance` et une alerte en cas de refus ; OKX supprime une clé de trading non liée à une IP après 14 jours d'inactivité (02 §8). Secret chiffré au repos (pas dans `.env` versionné), clé distincte par environnement, rotation documentée. Rien de neuf techniquement, mais c'est la leçon 3Commas et ce n'est pas écrit dans 04 §6.2.
 
 ## 4. Ce qu'il ne faut pas reconstruire
 
