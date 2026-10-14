@@ -1,0 +1,25 @@
+# Build Rust (Cargo.lock est commité, jamais ignoré)
+target/
+
+# Données et sorties du moteur (docs/03-architecture.md §4)
+data/
+runs/
+state/
+notebooks/
+datasets/snapshots/
+
+# Jamais de secret dans le dépôt
+.env
+.env.*
+*.pem
+*.key
+
+# Éditeurs et système
+.idea/
+.vscode/
+*.swp
+.DS_Store
+
+# Couverture
+lcov.info
+*.profraw

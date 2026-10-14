@@ -1,0 +1,25 @@
+# Configuration de clippy (docs/03-architecture.md §3, ligne Qualité).
+
+# `unwrap()` et `expect()` restent tolérés dans les tests (le deny `clippy::unwrap_used` vise le code de la lib).
+allow-unwrap-in-tests = true
+
+# HashMap/HashSet itèrent dans un ordre différent d'un processus à l'autre (graine aléatoire) : interdits
+# dans le chemin de calcul (engine, sim, indicators), sous peine de résultats non reproductibles.
+# clippy.toml est global au paquet : un module qui en a légitimement besoin (marketdata, store)
+# ajoute `#![allow(clippy::disallowed_types)]` en tête de son fichier, avec un commentaire.
+disallowed-types = [
+    { path = "std::collections::HashMap", reason = "ordre d'itération non déterministe : utiliser BTreeMap ou un Vec trié" },
+    { path = "std::collections::HashSet", reason = "ordre d'itération non déterministe : utiliser BTreeSet ou un Vec trié" },
+]
+
+# Sommes et réductions parallèles : l'ordre d'association dépend du découpage des threads, donc les flottants
+# changent d'un run à l'autre (docs/03 §7.6). Réduire dans le worker, collecter dans l'ordre de la grille.
+# rayon n'est une dépendance qu'au jalon 1.5. `allow-invalid = true` est conservé par précaution tant que la
+# crate est absente (clippy 1.97 n'avertit pas non plus sans cette option, vérifié), mais il rend SILENCIEUX
+# un chemin mal orthographié : AU JALON 1.5, en ajoutant rayon, retirer `allow-invalid` (ou vérifier qu'un
+# `par_iter().sum::<f64>()` est bien refusé par clippy), faute de quoi l'interdiction pourrait ne jamais
+# s'appliquer sans que personne le voie.
+disallowed-methods = [
+    { path = "rayon::iter::ParallelIterator::sum", reason = "somme parallèle non déterministe sur les flottants", allow-invalid = true },
+    { path = "rayon::iter::ParallelIterator::reduce", reason = "réduction parallèle non déterministe sur les flottants", allow-invalid = true },
+]

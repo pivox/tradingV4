@@ -1,0 +1,68 @@
+# Workspace tradingV4 : un seul membre, le paquet `tv4` (lib + binaire).
+# Les modules (model, sim, engine...) sont de futures crates (docs/03-architecture.md §2 et §4).
+[workspace]
+members = ["tv4"]
+resolver = "2"
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.97"
+license = "UNLICENSED"
+publish = false
+
+# Versions de docs/03-architecture.md §3.1 (vérifiées le 2026-10-13). Les versions réellement résolues
+# sont figées dans Cargo.lock, qui est commité. Les crates des jalons suivants sont déclarées ici pour
+# garder une seule table de versions, mais ne sont tirées par `tv4/Cargo.toml` que le moment venu.
+# Cargo ne verrouille pas une dépendance qu'aucun membre n'utilise : les crates pas encore utilisées
+# sont donc écrites avec le préfixe `=` (version exacte) pour que la version vérifiée le 13/10 reste
+# figée jusqu'à leur premier usage ; Cargo.lock prend ensuite le relais, et le `=` pourra être retiré.
+[workspace.dependencies]
+# Jalon 1, utilisées dès S1
+clap = { version = "4.6.7", features = ["derive"] }
+serde = { version = "1.0.229", features = ["derive"] }
+# `preserve_order` est INTERDITE : elle ferait perdre le tri des clés des hashes (docs/03 §3.1).
+# Un test de `model` le vérifie, et vérifie aussi l'absence d'indexmap dans Cargo.lock.
+serde_json = "1.0.154"
+toml = "1.1.8"
+blake3 = "1.8.7"
+thiserror = "2.0.21"
+anyhow = "=1.0.104"
+# Jalon 1, étapes suivantes
+arrow = "=60.0.0"
+parquet = "=60.0.0"
+csv = "=1.4.0"
+zip = { version = "=9.0.2", default-features = false, features = ["deflate"] }
+sha2 = "=0.11.1"
+ureq = { version = "=3.4.2", features = ["json"] }
+chrono = { version = "=0.4.45", default-features = false, features = ["std"] }
+tracing = "=0.1.44"
+tracing-subscriber = { version = "=0.3.23", features = ["json"] }
+indicatif = "=0.18.6"
+# Jalon 1.5
+rayon = "=1.12.0"
+# Dev
+criterion = "=0.8.2"
+proptest = "=1.12.0"
+insta = "=1.49.0"
+tempfile = "=3.27.0"
+
+# Lints communs. `clippy::suboptimal_flops` pousse vers `mul_add`, ce qui change les arrondis
+# flottants : désactivé (docs/03 §3 ligne Qualité et §7.4).
+[workspace.lints.clippy]
+suboptimal_flops = "allow"
+
+# Profils de docs/03 §4.
+[profile.dev]
+opt-level = 1
+debug = "line-tables-only"
+
+# Dépendances optimisées même en dev : le décodage Parquet non optimisé domine sinon le run debug.
+[profile.dev.package."*"]
+opt-level = 3
+
+[profile.release]
+lto = "fat"
+codegen-units = 1
+debug = 1               # symboles pour flamegraph
+overflow-checks = true  # jalon 1 : la sécurité vaut bien 2 % de perf

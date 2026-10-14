@@ -1,0 +1,61 @@
+# CI tradingV4 (docs/03-architecture.md §3 ligne Qualité, §4 et §11 S1).
+# Sans filtrage par chemin : chaque push et chaque pull request passe tout le contrôle.
+name: CI
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+  # Ne pas définir RUSTFLAGS ici : une variable d'environnement remplacerait `.cargo/config.toml`
+  # et ferait perdre `-C target-cpu=x86-64-v3`.
+
+jobs:
+  qualite:
+    name: Format, clippy, tests, couverture
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v5
+
+      # Toolchain installée explicitement, au lieu de laisser rustup la déduire de rust-toolchain.toml.
+      # llvm-tools-preview n'est demandé qu'ici : cargo-llvm-cov en a besoin, pas le poste local.
+      - name: Installer Rust 1.97.0
+        uses: dtolnay/rust-toolchain@1.97.0
+        with:
+          toolchain: 1.97.0
+          components: rustfmt, clippy, llvm-tools-preview
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Installer cargo-llvm-cov
+        uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-llvm-cov@0.9.1
+
+      - name: rustfmt
+        run: cargo fmt --all -- --check
+
+      - name: clippy
+        run: cargo clippy --locked --all-targets --all-features -- -D warnings
+
+      - name: Tests
+        run: cargo test --locked --all-targets
+
+      - name: Couverture
+        run: cargo llvm-cov --locked --all-features --workspace --lcov --output-path lcov.info
+
+      - name: Publier la couverture
+        uses: actions/upload-artifact@v4
+        with:
+          name: couverture-lcov
+          path: lcov.info
+          if-no-files-found: error

@@ -31,6 +31,14 @@ Plateforme de trading crypto **spot** sur OKX : moteur de backtest, de paper tra
 - Un seul utilisateur, aucune notification sortante ; IHM accessible par VPN seul ; machine dédiée à la maison.
 - Pilote : au palier 20 %, ligne BTC = max(risque / stop, minimum d'ordre BTC-USDC) avec un risque effectif plafonné à 1,5 % du capital alloué ; univers live du cycle 1 : BTC et ETH en 1d, BTC seul en 4h maker (décision du 14/10 (05:21)).
 
+## Code (moteur Rust `tv4`)
+
+- Workspace Cargo à un membre, `tv4/` (lib + binaire `tv4`), Rust 1.97.0 épinglé par `rust-toolchain.toml` ; arborescence et règle de dépendance entre modules : `docs/03-architecture.md` §2 et §4 (vérifiée par `tv4/tests/architecture.rs`).
+- Avant tout commit, depuis la racine : `cargo fmt --all -- --check`, `cargo clippy --locked --all-targets --all-features -- -D warnings`, `cargo test --locked --all-targets`. La CI (`.github/workflows/ci.yml`) lance les mêmes commandes, plus la couverture `cargo llvm-cov`.
+- `Cargo.lock` est commité. Une crate de `docs/03-architecture.md` §3.1 pas encore utilisée est déclarée avec `=` dans `[workspace.dependencies]` pour garder la version vérifiée jusqu'à son premier usage.
+- Identifiants en anglais ; commentaires, messages d'erreur et documentation en français. `HashMap`/`HashSet` interdits par clippy (ordre non déterministe) ; `unwrap()` interdit dans la lib.
+- Format du hash des données : `docs/dataset-hash.md` (`dsh-v1`), qui fait foi pour l'implémentation de S4 et pour un recalcul en PHP au jalon 2.
+
 ## Règles de travail
 
 - Documentation, commits et échanges en français.

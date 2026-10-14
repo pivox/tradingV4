@@ -1,0 +1,4 @@
+# Cible CPU fixe, jamais `native` : « même binaire » doit rester vrai entre la CI et le poste
+# (docs/03-architecture.md §4). x86-64-v3 = AVX2, BMI2, FMA (Intel depuis Haswell, AMD depuis Zen).
+[build]
+rustflags = ["-C", "target-cpu=x86-64-v3"]
