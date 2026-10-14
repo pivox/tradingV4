@@ -39,7 +39,7 @@ enum Rule {
     Forbidden(&'static [&'static str]),
 }
 
-/// Règles de dépendance de docs/03 §2. `engine` orchestre tout et n'a donc pas de règle ici.
+/// Règles de dépendance de docs/03 §2.
 fn rules() -> Vec<(&'static str, Rule)> {
     vec![
         // `model` ne dépend de rien.
@@ -52,6 +52,12 @@ fn rules() -> Vec<(&'static str, Rule)> {
         ("marketdata", Rule::OnlyAllowed(&["model"])),
         // `sim` ne dépend pas de `strategy` ; il ne remonte pas non plus vers l'orchestration.
         ("sim", Rule::Forbidden(&["strategy", "engine", "cli"])),
+        // `engine` produit un résultat pur (run_cell, docs/03 §6-§7) : il n'écrit rien (c'est `report`)
+        // et ne remonte pas vers la CLI.
+        ("engine", Rule::Forbidden(&["cli", "report"])),
+        // `report` lit les résultats de `engine`/`sim` ; il ne connaît pas les stratégies (id, version
+        // et params lui arrivent dans `RunConfig`) et ne remonte pas vers la CLI.
+        ("report", Rule::Forbidden(&["cli", "strategy"])),
     ]
 }
 
@@ -320,6 +326,17 @@ fn chrono_est_absent_des_modules_de_calcul() {
 fn les_modules_du_jalon_existent() {
     // Garde-fou du test lui-même : si le dossier src bouge, les règles ci-dessus ne liraient plus rien.
     for module in ["model", "marketdata", "indicators", "strategy"] {
+        assert!(
+            !module_files(&src_dir(), module).is_empty(),
+            "aucun fichier pour le module « {module} » dans src"
+        );
+    }
+}
+
+#[test]
+fn les_regles_ne_sont_plus_vides() {
+    // Sans fichier à lire, la règle « sim ne dépend pas de strategy » serait vacuement verte.
+    for module in ["sim", "engine", "report"] {
         assert!(
             !module_files(&src_dir(), module).is_empty(),
             "aucun fichier pour le module « {module} » dans src"

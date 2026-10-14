@@ -6,9 +6,12 @@
 //! - `model` ne dépend de rien ;
 //! - `strategy` ne dépend que de `model` ;
 //! - `sim` ne dépend pas de `strategy` ;
+//! - `engine` produit un résultat pur : il n'écrit rien (c'est `report`) et ne remonte pas vers `cli` ;
+//! - `report` lit les résultats de `engine` et `sim` : il ne connaît pas `strategy` et ne remonte pas
+//!   vers `cli` ;
 //! - `indicators` ne dépend que de `model` ;
 //! - `marketdata` ne dépend que de `model` ;
-//! - `engine` orchestre tout ; `cli` n'a aucune logique métier ;
+//! - `cli` n'a aucune logique métier ;
 //! - `chrono` est absent de `model`, `engine`, `sim` et `strategy` (en interne, le temps est un `i64`
 //!   en millisecondes UTC).
 
@@ -18,9 +21,12 @@
 #![deny(clippy::unwrap_used)]
 
 pub mod cli;
+pub mod engine;
 pub mod indicators;
 pub mod marketdata;
 pub mod model;
+pub mod report;
+pub mod sim;
 pub mod strategy;
 
 /// Git sha du commit compilé, fourni par `build.rs` (`unknown` sans git).

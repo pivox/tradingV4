@@ -146,3 +146,41 @@ fn sma_cross_de_bout_en_bout_sans_moteur() {
         }
     }
 }
+
+#[test]
+fn construit_sma_cross_1m() {
+    let strategy = registry::build(
+        "sma_cross",
+        &toml::from_str::<toml::Value>(
+            &std::fs::read_to_string(concat!(
+                env!("CARGO_MANIFEST_DIR"),
+                "/../config/strategies/sma_cross_1m.toml"
+            ))
+            .unwrap(),
+        )
+        .unwrap(),
+    )
+    .unwrap();
+    assert_eq!(strategy.timeframes(), [Timeframe::M1]);
+    assert_eq!(strategy.warmup_bars(), 240);
+    assert_eq!(
+        strategy.indicators(),
+        [
+            IndicatorSpec {
+                name: "fast",
+                tf: Timeframe::M1,
+                kind: IndicatorKind::Sma { period: 60 }
+            },
+            IndicatorSpec {
+                name: "slow",
+                tf: Timeframe::M1,
+                kind: IndicatorKind::Sma { period: 240 }
+            },
+            IndicatorSpec {
+                name: "atr",
+                tf: Timeframe::M1,
+                kind: IndicatorKind::Atr { period: 14 }
+            },
+        ]
+    );
+}

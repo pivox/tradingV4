@@ -14,7 +14,7 @@ use crate::model::{Candle, FeeSchedule, Timeframe, Ts};
 pub struct BarState {
     /// Instant de clôture de la bougie 1m courante.
     pub now_ms: Ts,
-    /// Cash + quantité × close précédent.
+    /// Cash + quantité × close de la bougie 1m qui vient de clôturer (docs/03 §7.2, écart S3 point 3).
     pub equity: f64,
     /// Cash moins le quote réservé par les limits d'achat en attente.
     pub quote_free: f64,

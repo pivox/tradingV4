@@ -25,7 +25,8 @@ pub const BPS_PER_UNIT: f64 = 10_000.0;
 /// TOML. Partagée par `indicators` et `strategy`, qui ne se voient pas l'un l'autre.
 pub const MAX_INDICATOR_PERIOD: usize = 100_000;
 
-/// Valeur maximale acceptée pour des frais ou un slippage, en points de base (100 %).
+/// Valeur maximale acceptée pour des frais, en points de base (100 %). Le slippage a sa propre borne,
+/// en `f64` (voir [`Slippage::from_bps`]).
 pub const MAX_BPS: u32 = 10_000;
 
 // ---------------------------------------------------------------------------------------------
@@ -76,13 +77,21 @@ pub enum ModelError {
     #[error("aucune grille de frais pour `{exchange}` dans la configuration")]
     FeesNotFound { exchange: ExchangeId },
 
-    /// Frais ou slippage hors bornes.
+    /// Frais hors bornes.
     #[error("`{name}` vaut {value} bps, hors des bornes autorisées (0 à {max})")]
     BpsOutOfRange {
         name: &'static str,
         value: u32,
         max: u32,
     },
+
+    /// Slippage non fini, négatif ou supérieur ou égal à 10 000 bps.
+    #[error("`slippage_bps` vaut {value} : un nombre fini dans [0, 10 000[ est attendu")]
+    SlippageOutOfRange { value: f64 },
+
+    /// Texte de slippage qui n'est pas un nombre.
+    #[error("`slippage_bps` : « {text} » n'est pas un nombre")]
+    SlippageNotANumber { text: String },
 
     /// Le fichier de configuration n'a pas pu être lu.
     #[error("lecture de `{path}` impossible : {source}")]
@@ -434,35 +443,44 @@ impl FeeSchedule {
     }
 }
 
-/// Slippage scalaire en points de base (docs/03 §7.2 : `slippage_bps` du manifeste).
+/// Slippage scalaire en points de base, en `f64` (docs/03 §7.2 : `slippage_bps` du manifeste).
 ///
 /// Il pénalise toujours le trade : un achat market se remplit plus haut, une vente market ou un
-/// stop plus bas. Sérialisé, il donne simplement le nombre de bps.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
+/// stop plus bas. Sérialisé, il donne simplement le nombre de bps (`5.0`, `2.5`).
+///
+/// Le type du slippage (entier ou flottant) est une décision en attente du propriétaire (carte du
+/// 14/10) : le moteur n'utilise que [`Slippage::buy_price`], [`Slippage::sell_price`] et
+/// [`Slippage::rate`], donc seul ce type change si elle est tranchée autrement.
+#[derive(Clone, Copy, Debug, PartialEq, Serialize)]
 #[serde(transparent)]
 pub struct Slippage {
-    bps: u32,
+    bps: f64,
 }
 
 impl Slippage {
     /// Aucun slippage.
-    pub const ZERO: Slippage = Slippage { bps: 0 };
+    pub const ZERO: Slippage = Slippage { bps: 0.0 };
 
-    /// Construit un slippage ; il doit rester strictement inférieur à 10 000 bps, sinon un prix de
-    /// vente deviendrait nul ou négatif.
-    pub fn from_bps(bps: u32) -> Result<Slippage, ModelError> {
-        check_bps("slippage_bps", bps, MAX_BPS - 1)?;
+    /// Construit un slippage ; il doit être fini, positif ou nul, et strictement inférieur à
+    /// 10 000 bps, sinon un prix de vente `open × (1 − s)` deviendrait nul ou négatif. `-0.0` est
+    /// normalisé en `0.0`.
+    pub fn from_bps(bps: f64) -> Result<Slippage, ModelError> {
+        if !(bps.is_finite() && bps >= 0.0 && bps < f64::from(MAX_BPS)) {
+            return Err(ModelError::SlippageOutOfRange { value: bps });
+        }
+        // `-0.0 == 0.0` : cette garde attrape les deux zéros.
+        let bps = if bps == 0.0 { 0.0 } else { bps };
         Ok(Slippage { bps })
     }
 
     /// Valeur en points de base.
-    pub const fn bps(self) -> u32 {
+    pub const fn bps(self) -> f64 {
         self.bps
     }
 
     /// Slippage en fraction du prix (0,0005 pour 5 bps).
     pub fn rate(self) -> f64 {
-        f64::from(self.bps) / BPS_PER_UNIT
+        self.bps / BPS_PER_UNIT
     }
 
     /// Prix payé pour un achat au prix de référence `price` : `price × (1 + slippage)`.
@@ -473,6 +491,21 @@ impl Slippage {
     /// Prix reçu pour une vente au prix de référence `price` : `price × (1 − slippage)`.
     pub fn sell_price(self, price: f64) -> f64 {
         price * (1.0 - self.rate())
+    }
+}
+
+/// Lecture d'un nombre de bps (`5`, `5.0`, `2.5`) : permet à clap d'utiliser `Slippage` comme type
+/// d'argument.
+impl FromStr for Slippage {
+    type Err = ModelError;
+
+    fn from_str(text: &str) -> Result<Slippage, ModelError> {
+        let bps = text
+            .parse::<f64>()
+            .map_err(|_| ModelError::SlippageNotANumber {
+                text: text.to_string(),
+            })?;
+        Slippage::from_bps(bps)
     }
 }
 
@@ -790,8 +823,8 @@ mod tests {
 
     #[test]
     fn slippage_ajuste_les_prix_contre_le_trade() {
-        let s = Slippage::from_bps(5).unwrap();
-        assert_eq!(s.bps(), 5);
+        let s = Slippage::from_bps(5.0).unwrap();
+        assert_eq!(s.bps(), 5.0);
         assert!((s.rate() - 0.0005).abs() < 1e-15);
         assert!((s.buy_price(100.0) - 100.05).abs() < 1e-12);
         assert!((s.sell_price(100.0) - 99.95).abs() < 1e-12);
@@ -800,16 +833,64 @@ mod tests {
     }
 
     #[test]
-    fn slippage_hors_bornes_et_serialisation() {
-        assert!(Slippage::from_bps(9_999).is_ok());
-        assert!(matches!(
-            Slippage::from_bps(10_000),
-            Err(ModelError::BpsOutOfRange { .. })
-        ));
+    fn slippage_fractionnaire() {
+        let s = Slippage::from_bps(2.5).unwrap();
+        assert_eq!(s.rate(), 0.00025);
+        assert!((s.buy_price(100.0) - 100.025).abs() < 1e-12);
+    }
+
+    #[test]
+    fn slippage_hors_bornes() {
+        for refuse in [
+            f64::NAN,
+            f64::INFINITY,
+            f64::NEG_INFINITY,
+            -0.1,
+            10_000.0,
+            1e300,
+        ] {
+            assert!(
+                matches!(
+                    Slippage::from_bps(refuse),
+                    Err(ModelError::SlippageOutOfRange { .. })
+                ),
+                "{refuse}"
+            );
+        }
+        assert!(Slippage::from_bps(0.0).is_ok());
+        assert!(Slippage::from_bps(9_999.5).is_ok());
+        let zero_negatif = Slippage::from_bps(-0.0).unwrap();
+        assert_eq!(zero_negatif.bps().to_bits(), 0, "-0.0 est normalisé");
+    }
+
+    #[test]
+    fn slippage_se_serialise_en_nombre() {
+        let s = Slippage::from_bps(5.0).unwrap();
+        assert_eq!(serde_json::to_string(&s).unwrap(), "5.0");
+        assert_eq!(hash::canonical_json(&s).unwrap(), "5.0");
+        let demi = Slippage::from_bps(2.5).unwrap();
+        assert_eq!(hash::canonical_json(&demi).unwrap(), "2.5");
+    }
+
+    #[test]
+    fn slippage_depuis_une_chaine() {
         assert_eq!(
-            serde_json::to_string(&Slippage::from_bps(5).unwrap()).unwrap(),
-            "5"
+            "5".parse::<Slippage>().unwrap(),
+            "5.0".parse::<Slippage>().unwrap()
         );
+        assert!(matches!(
+            "abc".parse::<Slippage>(),
+            Err(ModelError::SlippageNotANumber { .. })
+        ));
+        for hors in ["-1", "nan"] {
+            assert!(
+                matches!(
+                    hors.parse::<Slippage>(),
+                    Err(ModelError::SlippageOutOfRange { .. })
+                ),
+                "{hors}"
+            );
+        }
     }
 
     // --- Side, MarketEvent ---

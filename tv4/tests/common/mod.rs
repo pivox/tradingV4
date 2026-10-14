@@ -65,3 +65,46 @@ pub fn synthetic_candles(n: usize, seed: u64, start_ms: i64, gap_prob: f64) -> V
     }
     candles
 }
+
+// --- Aides communes aux tests du moteur (S3) ---
+
+use std::path::PathBuf;
+use tv4::model::{ExchangeId, FeeSchedule, Slippage, Timeframe};
+use tv4::strategy::{Strategy, registry};
+
+/// 2024-01-01T00:00:00Z : origine des bougies écrites à la main.
+pub const T0: i64 = 1_704_067_200_000;
+
+/// Chemin d'un fichier du dépôt, relatif à la racine.
+pub fn repo_path(relative: &str) -> PathBuf {
+    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("..")
+        .join(relative)
+}
+
+/// Stratégie `id` construite par le registre depuis un fichier TOML du dépôt.
+pub fn strategy_from_file(id: &str, relative: &str) -> Box<dyn Strategy> {
+    let text = std::fs::read_to_string(repo_path(relative)).expect("fichier de paramètres lisible");
+    let value = toml::from_str::<toml::Value>(&text).expect("TOML valide");
+    registry::build(id, &value).expect("stratégie valide")
+}
+
+/// `sma_cross` 60/240 en 1m (`config/strategies/sma_cross_1m.toml`).
+pub fn sma_cross_1m() -> Box<dyn Strategy> {
+    strategy_from_file("sma_cross", "config/strategies/sma_cross_1m.toml")
+}
+
+/// Grille OKX (20 / 35 bps), lue dans `config/fees.toml`.
+pub fn okx_fees() -> FeeSchedule {
+    FeeSchedule::load(ExchangeId::Okx, &repo_path("config/fees.toml")).expect("frais okx")
+}
+
+pub fn slippage(bps: f64) -> Slippage {
+    Slippage::from_bps(bps).expect("slippage valide")
+}
+
+/// Les 10 000 bougies 1m de `fixtures/kraken_xbtusd_1m.csv`.
+pub fn fixture_1m() -> Vec<Candle> {
+    let file = std::fs::File::open(repo_path("fixtures/kraken_xbtusd_1m.csv")).expect("fixture");
+    tv4::marketdata::kraken::read_all(file, Timeframe::M1).expect("fixture lisible")
+}
