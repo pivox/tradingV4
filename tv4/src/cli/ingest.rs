@@ -256,6 +256,32 @@ fn or_unknown<T: Display>(value: &Option<T>) -> String {
         .map_or_else(|| "?".to_string(), ToString::to_string)
 }
 
+/// TF de décision de la recherche (docs/04 §10, décision 2 : 1d et 4h). Un trimestre s'exclut sur eux,
+/// jamais sur le 1m qui sert aux fills (docs/04 §2.5 et §10, décision 8).
+const DECISION_TFS: [Timeframe; 2] = [Timeframe::H4, Timeframe::D1];
+
+/// Trimestres exclus par TF de décision, pour le journal : `en 4h : 2018-Q1 ; en 1d : aucun`.
+fn excluded_quarters(quality: Option<&QualityReport>) -> String {
+    let par_tf: Vec<String> = DECISION_TFS
+        .iter()
+        .map(|&tf| {
+            let exclus: Vec<&str> = quality
+                .iter()
+                .flat_map(|q| &q.rows)
+                .filter(|r| r.tf == tf && r.excluded)
+                .map(|r| r.quarter.as_str())
+                .collect();
+            let exclus = if exclus.is_empty() {
+                "aucun".to_string()
+            } else {
+                exclus.join(", ")
+            };
+            format!("en {} : {exclus}", tf.as_str())
+        })
+        .collect();
+    par_tf.join(" ; ")
+}
+
 fn seconds(started: Instant) -> String {
     format!("{:.2}", started.elapsed().as_secs_f64())
 }
@@ -563,22 +589,11 @@ fn print_pair(
                 ms.and_then(|t| format_rfc3339_utc(t).ok())
                     .unwrap_or_else(|| "?".to_string())
             };
-            let exclus: Vec<&str> = report
-                .quality
-                .iter()
-                .flat_map(|q| &q.rows)
-                .filter(|r| r.tf == Timeframe::M1 && r.excluded)
-                .map(|r| r.quarter.as_str())
-                .collect();
-            let exclus = if exclus.is_empty() {
-                "aucun".to_string()
-            } else {
-                exclus.join(", ")
-            };
             println!(
-                "  première bougie {}, dernière {} ; trimestres exclus en 1m (> 1 % absent) : {exclus}",
+                "  première bougie {}, dernière {} ; trimestres exclus (> 1 % absent) {}",
                 date(c.first_open_ms),
-                date(c.last_open_ms)
+                date(c.last_open_ms),
+                excluded_quarters(report.quality.as_ref())
             );
         }
     }
@@ -675,6 +690,43 @@ mod tests {
         );
         assert_eq!(rapport.status, PairStatus::Ok);
         assert!(rapport.quality.is_some());
+    }
+
+    fn ligne(tf: Timeframe, quarter: &str, excluded: bool) -> crate::store::QualityRow {
+        crate::store::QualityRow {
+            tf,
+            quarter: quarter.to_string(),
+            expected: 100,
+            present: if excluded { 90 } else { 100 },
+            missing: if excluded { 10 } else { 0 },
+            missing_fraction: if excluded { 0.1 } else { 0.0 },
+            excluded,
+            longest_gap_ms: 0,
+        }
+    }
+
+    #[test]
+    fn trimestres_exclus_imprimes_pour_les_tf_de_decision_seulement() {
+        // Décision 8 de docs/04 §10 : le drapeau du 1m (fills) n'exclut rien, il n'est pas imprimé.
+        let qualite = QualityReport {
+            first_open_time: String::new(),
+            end_time: String::new(),
+            threshold: crate::store::QUALITY_MISSING_THRESHOLD,
+            rows: vec![
+                ligne(Timeframe::M1, "2018-Q1", true),
+                ligne(Timeframe::M1, "2020-Q1", true),
+                ligne(Timeframe::H1, "2018-Q1", true),
+                ligne(Timeframe::H4, "2017-Q4", false),
+                ligne(Timeframe::H4, "2018-Q1", true),
+                ligne(Timeframe::H4, "2018-Q2", true),
+                ligne(Timeframe::D1, "2018-Q1", false),
+            ],
+        };
+        assert_eq!(
+            excluded_quarters(Some(&qualite)),
+            "en 4h : 2018-Q1, 2018-Q2 ; en 1d : aucun"
+        );
+        assert_eq!(excluded_quarters(None), "en 4h : aucun ; en 1d : aucun");
     }
 
     #[test]
