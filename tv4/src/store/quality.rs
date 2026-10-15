@@ -5,7 +5,9 @@
 //! quand plus de 1 % manquent (seuil strict, docs/04 §2.5). Les timeframes supérieurs au 1m ne sont pas
 //! lus dans des fichiers : ils sont déduits de la série 1m en regroupant les minutes présentes par
 //! seau (un seau sans aucune minute est une bougie absente). Le calcul est en une passe par timeframe,
-//! sans copie de la série, et n'utilise que le calendrier entier de `store::time`.
+//! sans copie de la série, et n'utilise que le calendrier entier de `store::time`. Le drapeau n'exclut
+//! un trimestre que pour le TF de décision d'une stratégie (1d, 4h) ; celui du 1m, qui sert aux fills,
+//! est informatif : une minute absente y vaut seulement « pas de fill » (docs/04 §10, décision 8).
 
 use serde::Serialize;
 
@@ -14,8 +16,8 @@ use crate::model::{Timeframe, Ts};
 use super::StoreError;
 use super::time::{MS_PER_DAY, civil_from_days, days_from_civil, format_rfc3339_utc};
 
-/// Seuil de docs/04 §2.5 : un trimestre est exclu pour une (paire, TF) si plus de 1 % des bougies
-/// manquent. Comparaison stricte : exactement 1 % ne l'exclut pas.
+/// Seuil de docs/04 §2.5 : un trimestre est exclu pour une (paire, TF de décision) si plus de 1 % des
+/// bougies manquent. Comparaison stricte : exactement 1 % ne l'exclut pas.
 pub const QUALITY_MISSING_THRESHOLD: f64 = 0.01;
 
 /// Durée d'une bougie 1m en millisecondes.
@@ -33,7 +35,8 @@ pub struct QualityRow {
     pub present: u64,
     pub missing: u64,
     pub missing_fraction: f64,
-    /// Plus de [`QUALITY_MISSING_THRESHOLD`] des bougies manquent.
+    /// Plus de [`QUALITY_MISSING_THRESHOLD`] des bougies manquent. N'exclut le trimestre que si ce TF est
+    /// le TF de décision ; sur le 1m, qui sert aux fills, le drapeau est informatif (docs/04 §10, décision 8).
     pub excluded: bool,
     /// Plus long trou de bougies absentes en millisecondes, attribué au trimestre de la bougie qui le
     /// termine ; 0 sans trou.

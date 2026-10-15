@@ -120,7 +120,7 @@ fn ingest_kraken_sur_un_zip_de_la_fixture() {
         "{stdout}"
     );
     assert!(
-        stdout.contains("trimestres exclus en 1m (> 1 % absent) : 2020-Q1"),
+        stdout.contains("trimestres exclus (> 1 % absent) en 4h : aucun ; en 1d : aucun"),
         "{stdout}"
     );
 

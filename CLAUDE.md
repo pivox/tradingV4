@@ -30,6 +30,7 @@ Plateforme de trading crypto **spot** sur OKX : moteur de backtest, de paper tra
 - Recherche limitée au 1d et au 4h sur OKX (1h en maker seulement, hors cycle 1) ; F1 (cassure Donchian 55 + filtre BTC > SMA200) en tête ; F3 documentée mais rejetée par G0 (seuil de 300 trades en 1d maintenu), repli effectif F4.
 - Un seul utilisateur, aucune notification sortante ; IHM accessible par VPN seul ; machine dédiée à la maison.
 - Pilote : au palier 20 %, ligne BTC = max(risque / stop, minimum d'ordre BTC-USDC) avec un risque effectif plafonné à 1,5 % du capital alloué ; univers live du cycle 1 : BTC et ETH en 1d, BTC seul en 4h maker (décision du 14/10 (05:21)).
+- Qualité des données : un trimestre est exclu pour une (paire, TF de décision) au-delà de 1 % de bougies absentes ; le 1m qui sert aux fills n'exclut rien, une minute absente y vaut « pas de fill » (décision du 15/10 (12:34), `docs/04-protocole-recherche.md` §2.5 et §10 décision 8).
 
 ## Code (moteur Rust `tv4`)
 
