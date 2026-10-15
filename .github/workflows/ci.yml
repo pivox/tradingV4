@@ -15,8 +15,8 @@ concurrency:
 
 env:
   CARGO_TERM_COLOR: always
-  # Ne pas définir RUSTFLAGS ici : une variable d'environnement remplacerait `.cargo/config.toml`
-  # et ferait perdre `-C target-cpu=x86-64-v3`.
+  # Ne définir ni RUSTFLAGS ni CARGO_ENCODED_RUSTFLAGS (même vides) : elles remplaceraient les rustflags
+  # de `.cargo/config.toml` et feraient perdre `-C target-cpu=x86-64-v3`.
 
 jobs:
   qualite:
