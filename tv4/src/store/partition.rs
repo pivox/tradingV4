@@ -1,8 +1,11 @@
-//! Ingestion d'une partition : `write_partition` (docs/03 §5.1, décisions D3, D4 et D5 de S4).
+//! Ingestion d'une partition : `write_partition` et `write_partition_with` (docs/03 §5.1, décisions
+//! D3, D4 et D5 de S4 ; options et bloc `continuity` de S5).
 //!
 //! Le store n'écrit que des bougies réelles, triées, sans doublon, alignées sur le timeframe et
 //! valides (NaN, infini, OHLC incohérent et volume négatif sont refusés ici, à l'écriture, comme
-//! l'exige docs/03 §7.4). Tri, dédoublonnage et contrôle de continuité relèvent de l'ingestion (S5).
+//! l'exige docs/03 §7.4). Tri, dédoublonnage et contrôle de continuité relèvent de l'ingestion
+//! (`marketdata::continuity`, S5) ; le store ne fait que compter, par période, ce que l'ingestion lui
+//! transmet, pour le bloc `continuity` des manifestes.
 
 use std::ops::Range;
 use std::path::Path;
@@ -15,7 +18,7 @@ use super::dsh::{self, HASH_FORMAT};
 use super::durable::write_durable;
 use super::layout::{Partition, Period, resolve_rel};
 use super::lock::PartitionLock;
-use super::manifest::{FileManifest, read_file_manifest, write_file_manifest};
+use super::manifest::{ContinuityCounts, FileManifest, read_file_manifest, write_file_manifest};
 use super::parquet::{ReadOptions, read_parquet, write_parquet};
 use super::time::format_rfc3339_utc;
 
@@ -41,6 +44,32 @@ pub struct WriteOutcome {
     /// `blake3:<hex>`
     pub content_hash: String,
     pub status: WriteStatus,
+    /// Bloc `continuity` écrit ou conservé dans le manifeste (`None` pour un fichier écrit sans bloc).
+    pub continuity: Option<ContinuityCounts>,
+}
+
+/// Listes transmises par l'ingestion pour le bloc `continuity` (horodatages, ordre indifférent).
+#[derive(Clone, Copy, Debug)]
+pub struct ContinuityInput<'a> {
+    /// Doublons exacts retirés.
+    pub duplicates: &'a [Ts],
+    /// Bougies exclues parce que non clôturées.
+    pub rejected_unclosed: &'a [Ts],
+}
+
+/// Options d'écriture d'une partition.
+#[derive(Clone, Copy, Debug)]
+pub struct WriteOptions<'a> {
+    /// Provenance, `[a-z0-9-]{1,32}`.
+    pub source: &'a str,
+    /// Instant d'écriture (`ingested_at`).
+    pub now_ms: Ts,
+    /// Une période est close si sa fin est <= `min(closed_until_ms, now_ms)`. `tv4 ingest kraken` y met
+    /// la fin de couverture du manifeste du zip : un dump qui s'arrête au 30/09 ne clôt pas septembre
+    /// si la couverture s'arrête au milieu du mois.
+    pub closed_until_ms: Ts,
+    /// `Some` : le bloc `continuity` de chaque manifeste écrit est calculé (voir [`ContinuityInput`]).
+    pub continuity: Option<ContinuityInput<'a>>,
 }
 
 /// Longueur maximale de `source`.
@@ -55,6 +84,7 @@ struct Pending {
     /// Clôture à écrire dans le manifeste (pour `Unchanged`, celle du manifeste conservé).
     closed: bool,
     status: WriteStatus,
+    continuity: Option<ContinuityCounts>,
 }
 
 fn check_source(source: &str) -> Result<(), StoreError> {
@@ -147,10 +177,56 @@ fn parquet_has_hash(
         .is_ok_and(|(hex, _)| dsh::prefixed(&hex) == expected))
 }
 
+/// Bloc `continuity` de chaque plage, dans l'ordre de `plages`.
+///
+/// Un trou est compté dans la période de la bougie qui le **termine** : le premier élément d'une période
+/// se compare au dernier de la période précédente dans `columns`, et le tout premier élément n'a pas de
+/// trou. Sa durée est `open_time - open_time_précédent - durée d'une bougie`. Les doublons et les non
+/// clôturées sont comptés dans la période qui contient leur horodatage ; un horodatage dont la période
+/// n'a aucun fichier n'est compté nulle part ici (il reste dans le rapport de la paire).
+fn continuity_by_period(
+    partition: &Partition,
+    columns: &Columns,
+    input: &ContinuityInput<'_>,
+    plages: &[(Period, Range<usize>)],
+) -> Vec<ContinuityCounts> {
+    let times = columns.open_time_ms();
+    let step = partition.tf.ms();
+    let mut counts: Vec<ContinuityCounts> = plages
+        .iter()
+        .map(|(_, range)| {
+            let mut c = ContinuityCounts::default();
+            for index in range.clone().filter(|index| *index > 0) {
+                let delta = times[index] - times[index - 1];
+                if delta > step {
+                    c.gaps += 1;
+                    c.longest_gap_ms = c.longest_gap_ms.max(delta - step);
+                }
+            }
+            c
+        })
+        .collect();
+    let position_of = |ts: Ts| -> Option<usize> {
+        let period = Period::containing(partition.tf, ts).ok()?;
+        plages.iter().position(|(p, _)| *p == period)
+    };
+    for ts in input.duplicates {
+        if let Some(i) = position_of(*ts) {
+            counts[i].duplicates += 1;
+        }
+    }
+    for ts in input.rejected_unclosed {
+        if let Some(i) = position_of(*ts) {
+            counts[i].rejected_unclosed += 1;
+        }
+    }
+    counts
+}
+
 /// Écrit les bougies d'une partition, une période (mois ou année) par fichier, avec manifeste.
 ///
 /// Chaque période présente dans `columns` **remplace** le contenu de son fichier (pas de fusion avec
-/// les lignes déjà stockées : la fusion relève de S5 et S7). `now_ms` est l'instant d'écriture
+/// les lignes déjà stockées : la fusion n'est pas prévue avant S7). `now_ms` est l'instant d'écriture
 /// (horloge injectée, D4) : une période est close quand sa fin est inférieure ou égale à `now_ms`.
 /// `source` est la provenance écrite dans le manifeste.
 ///
@@ -173,29 +249,51 @@ fn parquet_has_hash(
 ///
 /// Conséquence voulue de D4 : une ingestion partielle d'un mois passé (par exemple la fixture, 8
 /// jours de janvier 2020) marque ce mois clos. Le compléter plus tard exige de supprimer le fichier
-/// et son manifeste à la main ; S5 décidera d'un mode de fusion.
-pub fn write_partition(
+/// et son manifeste à la main. S5 n'ajoute pas de fusion : `tv4 ingest kraken` se fait dans une racine de
+/// travail dédiée au dump, qui ne mélange pas les fichiers clos de la fixture ingérée par `ingest csv`.
+///
+/// Options S5 : une période est close quand sa fin est <= `min(closed_until_ms, now_ms)`. Si
+/// `options.continuity` est `Some`, le bloc `continuity` est calculé pour chaque période et fait partie
+/// de la décision `Unchanged` : un bloc différent du manifeste existant réécrit le fichier, **même s'il
+/// est clos** (le contenu réécrit a le même `content_hash`, donc l'immutabilité des données n'est pas
+/// touchée). Ainsi `ingest kraken` après `ingest csv` sur le même contenu ajoute le bloc, et `ingest csv`
+/// après `ingest kraken` laisse le manifeste intact. Sans `continuity`, un manifeste réécrit à contenu
+/// identique garde le bloc existant.
+pub fn write_partition_with(
     root: &Path,
     partition: &Partition,
     columns: &Columns,
-    source: &str,
-    now_ms: Ts,
+    options: &WriteOptions<'_>,
 ) -> Result<Vec<WriteOutcome>, StoreError> {
+    let WriteOptions {
+        source,
+        now_ms,
+        closed_until_ms,
+        continuity,
+    } = *options;
     // Phase 1 : contrôles, verrou, décisions.
     check_source(source)?;
     check_input(partition, columns)?;
     let ingested_at = format_rfc3339_utc(now_ms)?;
     let _verrou = PartitionLock::acquire(root, partition)?;
+    let closed_bound = closed_until_ms.min(now_ms);
+
+    let plages = split_by_period(partition, columns)?;
+    let counts: Option<Vec<ContinuityCounts>> = continuity
+        .as_ref()
+        .map(|input| continuity_by_period(partition, columns, input, &plages));
 
     let mut pending = Vec::new();
-    for (period, range) in split_by_period(partition, columns)? {
+    for (position, (period, range)) in plages.into_iter().enumerate() {
         let (hash_hex, _) = dsh::content_hash(partition, period, &columns.slice(range.clone()))?;
-        let closed = period.window().end_ms() <= now_ms;
+        let closed = period.window().end_ms() <= closed_bound;
+        let computed = counts.as_ref().map(|c| c[position]);
         let file_rel = partition.file_rel(period);
         let manifest_rel = partition.manifest_rel(period);
         let manifest_path = resolve_rel(root, &manifest_rel)?;
         let parquet_path = resolve_rel(root, &file_rel)?;
         let mut closed_out = closed;
+        let mut continuity_out = computed;
         let status = if manifest_path.is_file() {
             let existing = read_file_manifest(&manifest_path)?;
             check_identity(&manifest_rel, &existing, partition, period)?;
@@ -214,9 +312,15 @@ pub fn write_partition(
                 && parquet_has_hash(&parquet_path, partition, period, &existing.content_hash)?;
             // Un fichier déjà clos le reste, même si l'horloge injectée recule.
             closed_out = closed || (same_hash && existing.closed);
-            if parquet_conforme && (existing.closed || !closed) {
+            // Sans calcul de continuité (ingest csv), le bloc d'un contenu identique est conservé.
+            if computed.is_none() && same_hash {
+                continuity_out = existing.continuity;
+            }
+            let continuity_conforme = computed.is_none() || existing.continuity == computed;
+            if parquet_conforme && continuity_conforme && (existing.closed || !closed) {
                 // Le manifeste conservé fait foi.
                 closed_out = existing.closed;
+                continuity_out = existing.continuity;
                 WriteStatus::Unchanged
             } else {
                 WriteStatus::Rewritten
@@ -230,6 +334,7 @@ pub fn write_partition(
             hash_hex,
             closed: closed_out,
             status,
+            continuity: continuity_out,
         });
     }
 
@@ -259,6 +364,7 @@ pub fn write_partition(
                 hash_format: HASH_FORMAT.to_string(),
                 source: source.to_string(),
                 ingested_at: ingested_at.clone(),
+                continuity: item.continuity,
             };
             let manifest_path = resolve_rel(root, &partition.manifest_rel(item.period))?;
             write_file_manifest(&manifest_path, &manifest)?;
@@ -270,9 +376,32 @@ pub fn write_partition(
             closed: item.closed,
             content_hash: dsh::prefixed(&item.hash_hex),
             status: item.status,
+            continuity: item.continuity,
         });
     }
     Ok(outcomes)
+}
+
+/// Écriture sans bloc `continuity`, pour les appelants de S4 (`tv4 ingest csv`) : `closed_until_ms` vaut
+/// `now_ms`. Voir [`write_partition_with`] pour le déroulé et les règles d'immutabilité.
+pub fn write_partition(
+    root: &Path,
+    partition: &Partition,
+    columns: &Columns,
+    source: &str,
+    now_ms: Ts,
+) -> Result<Vec<WriteOutcome>, StoreError> {
+    write_partition_with(
+        root,
+        partition,
+        columns,
+        &WriteOptions {
+            source,
+            now_ms,
+            closed_until_ms: now_ms,
+            continuity: None,
+        },
+    )
 }
 
 /// Contrôle l'identité d'un manifeste existant (exchange, symbole, tf, période, format de hash).
@@ -763,5 +892,231 @@ mod tests {
         assert_eq!(info.row_groups.len(), 1);
         assert_eq!(info.rows, 44_640);
         assert_eq!(info.row_groups[0].rows, 44_640);
+    }
+
+    /// Colonnes 1m aux instants donnés (prix inventés, mêmes que `bougies`).
+    fn colonnes_aux(temps: &[i64]) -> Columns {
+        let candles: Vec<Candle> = temps
+            .iter()
+            .enumerate()
+            .map(|(i, &t)| {
+                let base = 100.0 + (i % 40) as f64 * 0.5;
+                Candle {
+                    open_time_ms: t,
+                    open: base,
+                    high: base + 1.0,
+                    low: base - 1.0,
+                    close: base + 0.25,
+                    volume: 1.0,
+                    trades: Some(1),
+                }
+            })
+            .collect();
+        Columns::from_candles(&candles)
+    }
+
+    fn avec_continuite<'a>(
+        now_ms: i64,
+        closed_until_ms: i64,
+        input: &'a ContinuityInput<'a>,
+    ) -> WriteOptions<'a> {
+        WriteOptions {
+            source: "synthetic",
+            now_ms,
+            closed_until_ms,
+            continuity: Some(*input),
+        }
+    }
+
+    const MINUTE: i64 = 60_000;
+    const SANS_LISTE: ContinuityInput<'static> = ContinuityInput {
+        duplicates: &[],
+        rejected_unclosed: &[],
+    };
+
+    #[test]
+    fn continuite_par_periode_trou_a_cheval_sur_deux_mois() {
+        let dir = tempfile::tempdir().unwrap();
+        let p = partition(Timeframe::M1);
+        // Janvier : 23:50, 23:51, 23:55 (trou de 3 minutes), puis 23:56 à 23:59. Février : 00:09 (trou
+        // de 9 minutes depuis 23:59, à cheval sur le changement de mois), 00:10.
+        let debut = T_2024_02 - 10 * MINUTE;
+        let mut temps = vec![debut, debut + MINUTE];
+        temps.extend((5..10).map(|m| debut + m * MINUTE));
+        temps.extend([T_2024_02 + 9 * MINUTE, T_2024_02 + 10 * MINUTE]);
+        let sorties = write_partition_with(
+            dir.path(),
+            &p,
+            &colonnes_aux(&temps),
+            &avec_continuite(FUTUR, FUTUR, &SANS_LISTE),
+        )
+        .unwrap();
+        let janvier = sorties[0].continuity.unwrap();
+        let fevrier = sorties[1].continuity.unwrap();
+        // Le premier élément de la série n'a pas de trou ; le trou à cheval est compté en février.
+        assert_eq!((janvier.gaps, janvier.longest_gap_ms), (1, 3 * MINUTE));
+        assert_eq!((fevrier.gaps, fevrier.longest_gap_ms), (1, 9 * MINUTE));
+        assert_eq!(janvier.ohlc_errors + fevrier.ohlc_errors, 0);
+        // Le manifeste écrit porte le bloc.
+        let manifeste =
+            read_file_manifest(&resolve_rel(dir.path(), &p.manifest_rel(FEVRIER)).unwrap())
+                .unwrap();
+        assert_eq!(manifeste.continuity, Some(fevrier));
+    }
+
+    #[test]
+    fn continuite_doublons_et_non_cloturees_par_periode() {
+        let dir = tempfile::tempdir().unwrap();
+        let p = partition(Timeframe::M1);
+        let temps = [T_2024_01, T_2024_01 + MINUTE, T_2024_02, T_2024_02 + MINUTE];
+        let doublons = [T_2024_01 + MINUTE, T_2024_01 + MINUTE, T_2024_02];
+        // Une non clôturée en février, une en mars (période sans fichier : comptée nulle part).
+        let non_cloturees = [T_2024_02 + 2 * MINUTE, T_2024_03];
+        let input = ContinuityInput {
+            duplicates: &doublons,
+            rejected_unclosed: &non_cloturees,
+        };
+        let sorties = write_partition_with(
+            dir.path(),
+            &p,
+            &colonnes_aux(&temps),
+            &avec_continuite(FUTUR, FUTUR, &input),
+        )
+        .unwrap();
+        let janvier = sorties[0].continuity.unwrap();
+        let fevrier = sorties[1].continuity.unwrap();
+        assert_eq!((janvier.duplicates, janvier.rejected_unclosed), (2, 0));
+        assert_eq!((fevrier.duplicates, fevrier.rejected_unclosed), (1, 1));
+        assert_eq!(janvier.gaps + fevrier.gaps, 1); // le saut de janvier à février
+    }
+
+    #[test]
+    fn sans_continuite_la_cle_n_est_pas_ecrite() {
+        let dir = tempfile::tempdir().unwrap();
+        let p = partition(Timeframe::M1);
+        let sorties = write_partition(
+            dir.path(),
+            &p,
+            &bougies(T_2024_01, 3, Timeframe::M1),
+            "synthetic",
+            FUTUR,
+        )
+        .unwrap();
+        assert_eq!(sorties[0].continuity, None);
+        let (_, manifeste) = lire(dir.path(), &p, JANVIER);
+        assert!(!String::from_utf8(manifeste).unwrap().contains("continuity"));
+    }
+
+    #[test]
+    fn cloture_bornee_par_closed_until() {
+        let dir = tempfile::tempdir().unwrap();
+        let p = partition(Timeframe::M1);
+        let colonnes = bougies(T_2024_01, 3, Timeframe::M1);
+        let fin = JANVIER.window().end_ms();
+        let ecrire = |now_ms, closed_until_ms| {
+            write_partition_with(
+                dir.path(),
+                &p,
+                &colonnes,
+                &avec_continuite(now_ms, closed_until_ms, &SANS_LISTE),
+            )
+            .unwrap()
+        };
+        // Couverture du dump qui s'arrête avant la fin du mois : non clos malgré une horloge lointaine.
+        assert!(!ecrire(FUTUR, fin - 1)[0].closed);
+        // Couverture qui atteint la fin du mois : clos.
+        assert!(ecrire(FUTUR, fin)[0].closed);
+        // L'instant d'écriture borne aussi : `min(closed_until, now)`. Le fichier déjà clos le reste.
+        let dir2 = tempfile::tempdir().unwrap();
+        let non_clos = write_partition_with(
+            dir2.path(),
+            &p,
+            &colonnes,
+            &avec_continuite(fin - 1, FUTUR, &SANS_LISTE),
+        )
+        .unwrap();
+        assert!(!non_clos[0].closed);
+    }
+
+    #[test]
+    fn bloc_de_continuite_different_reecrit_un_fichier_clos_de_meme_contenu() {
+        let dir = tempfile::tempdir().unwrap();
+        let p = partition(Timeframe::M1);
+        let colonnes = bougies(T_2024_01, 4, Timeframe::M1);
+        let premier = write_partition_with(
+            dir.path(),
+            &p,
+            &colonnes,
+            &avec_continuite(FUTUR, FUTUR, &SANS_LISTE),
+        )
+        .unwrap();
+        assert_eq!(premier[0].status, WriteStatus::Created);
+        assert!(premier[0].closed);
+        // Même contenu, même bloc : rien n'est touché.
+        let avant = lire(dir.path(), &p, JANVIER);
+        let identique = write_partition_with(
+            dir.path(),
+            &p,
+            &colonnes,
+            &avec_continuite(FUTUR + 1000, FUTUR, &SANS_LISTE),
+        )
+        .unwrap();
+        assert_eq!(identique[0].status, WriteStatus::Unchanged);
+        assert_eq!(lire(dir.path(), &p, JANVIER), avant);
+        // Même contenu mais un doublon de plus signalé : le bloc change, le fichier clos est réécrit
+        // avec le même content_hash.
+        let doublons = [T_2024_01];
+        let input = ContinuityInput {
+            duplicates: &doublons,
+            rejected_unclosed: &[],
+        };
+        let change = write_partition_with(
+            dir.path(),
+            &p,
+            &colonnes,
+            &avec_continuite(FUTUR + 2000, FUTUR, &input),
+        )
+        .unwrap();
+        assert_eq!(change[0].status, WriteStatus::Rewritten);
+        assert!(change[0].closed);
+        assert_eq!(change[0].content_hash, premier[0].content_hash);
+        assert_eq!(change[0].continuity.unwrap().duplicates, 1);
+        // Et un contenu différent reste refusé.
+        let refus = write_partition_with(
+            dir.path(),
+            &p,
+            &bougies(T_2024_01, 5, Timeframe::M1),
+            &avec_continuite(FUTUR, FUTUR, &input),
+        );
+        assert!(matches!(refus, Err(StoreError::ClosedFileModified { .. })));
+    }
+
+    #[test]
+    fn ingest_csv_apres_kraken_conserve_le_bloc() {
+        let dir = tempfile::tempdir().unwrap();
+        let p = partition(Timeframe::M1);
+        let colonnes = bougies(T_2024_01, 4, Timeframe::M1);
+        // D'abord sans bloc (ingest csv), puis avec (ingest kraken) : le bloc est ajouté.
+        write_partition(dir.path(), &p, &colonnes, "synthetic", FUTUR).unwrap();
+        let doublons = [T_2024_01];
+        let input = ContinuityInput {
+            duplicates: &doublons,
+            rejected_unclosed: &[],
+        };
+        let ajoute = write_partition_with(
+            dir.path(),
+            &p,
+            &colonnes,
+            &avec_continuite(FUTUR + 1000, FUTUR, &input),
+        )
+        .unwrap();
+        assert_eq!(ajoute[0].status, WriteStatus::Rewritten);
+        assert!(ajoute[0].continuity.is_some());
+        // Puis ingest csv de nouveau : le manifeste reste intact, bloc compris.
+        let avant = lire(dir.path(), &p, JANVIER);
+        let csv = write_partition(dir.path(), &p, &colonnes, "synthetic", FUTUR + 5000).unwrap();
+        assert_eq!(csv[0].status, WriteStatus::Unchanged);
+        assert_eq!(csv[0].continuity, ajoute[0].continuity);
+        assert_eq!(lire(dir.path(), &p, JANVIER), avant);
     }
 }

@@ -19,7 +19,8 @@
 //! | `no_lot_tick_min_size` | ni arrondi lot ou tick, ni `minSz` | S6 et jalon 1.5 |
 //! | `activation_delay_0` | fill à `open[i+1]`, pas à l'ouverture suivante + 1 minute | `sim_rules` S6 |
 //! | `no_volume_rule` | pas de règle de volume (volume 0, part du volume 1m) | S6 et jalon 1.5 |
-//! | `single_tf_1m` | moteur mono-timeframe 1m (côté `engine`) | S5 |
+//!
+//! L'ancien écart `single_tf_1m` (moteur mono-timeframe côté `engine`) est levé en S5.
 //!
 //! La position restante en fin de données est soldée par une clôture forcée au dernier close, avec
 //! slippage et frais taker (par prudence : la sortie serait réelle).

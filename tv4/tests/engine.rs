@@ -3,13 +3,28 @@
 
 mod common;
 
+use std::sync::{Arc, Mutex};
+
 use common::{T0, okx_fees, slippage};
-use tv4::engine::{CellConfig, CellResult, EngineError, run_cell};
+use tv4::engine::{CellConfig, CellResult, EngineError, run_cell, run_cell_mtf};
 use tv4::model::{Candle, Side, Timeframe};
+use tv4::mtf::Mtf;
 use tv4::sim::{ExitReason, SimRules};
 use tv4::strategy::{BarContext, IndicatorKind, IndicatorSpec, OrderKind, Signal, Size, Strategy};
 
 const MINUTE: i64 = 60_000;
+
+/// Ce que la stratégie a vu à un appel, pour chaque timeframe déclaré (dans l'ordre de déclaration).
+#[derive(Clone, Debug)]
+struct Appel {
+    now_ms: i64,
+    /// `ctx.just_closed(tf)`.
+    vient_de_clore: Vec<bool>,
+    /// Nombre de bougies visibles.
+    visibles: Vec<usize>,
+    /// `open_time` de la dernière bougie visible.
+    derniere_ouverture: Vec<Option<i64>>,
+}
 
 /// Stratégie de test : émet les signaux du plan à l'appel numéro `calls`.
 struct Scripted {
@@ -18,6 +33,8 @@ struct Scripted {
     timeframes: Vec<Timeframe>,
     specs: Vec<IndicatorSpec>,
     warmup: usize,
+    /// Journal des appels, lisible après le run.
+    journal: Arc<Mutex<Vec<Appel>>>,
 }
 
 impl Scripted {
@@ -28,7 +45,20 @@ impl Scripted {
             timeframes: vec![Timeframe::M1],
             specs: Vec::new(),
             warmup: 0,
+            journal: Arc::new(Mutex::new(Vec::new())),
         }
+    }
+
+    /// Scripted sur ces timeframes, sans signal.
+    fn sur(timeframes: &[Timeframe], warmup: usize) -> Scripted {
+        let mut strategie = Scripted::new(Vec::new());
+        strategie.timeframes = timeframes.to_vec();
+        strategie.warmup = warmup;
+        strategie
+    }
+
+    fn journal(&self) -> Arc<Mutex<Vec<Appel>>> {
+        Arc::clone(&self.journal)
     }
 }
 
@@ -51,7 +81,25 @@ impl Strategy for Scripted {
     fn warmup_bars(&self) -> usize {
         self.warmup
     }
-    fn on_bar(&mut self, _ctx: &BarContext<'_>, out: &mut Vec<Signal>) {
+    fn on_bar(&mut self, ctx: &BarContext<'_>, out: &mut Vec<Signal>) {
+        self.journal.lock().unwrap().push(Appel {
+            now_ms: ctx.now_ms(),
+            vient_de_clore: self
+                .timeframes
+                .iter()
+                .map(|tf| ctx.just_closed(*tf))
+                .collect(),
+            visibles: self
+                .timeframes
+                .iter()
+                .map(|tf| ctx.candles(*tf).len())
+                .collect(),
+            derniere_ouverture: self
+                .timeframes
+                .iter()
+                .map(|tf| ctx.last(*tf).map(|c| c.open_time_ms))
+                .collect(),
+        });
         for (call, signal) in &self.plan {
             if *call == self.calls {
                 out.push(*signal);
@@ -331,26 +379,199 @@ fn sortie_limit_et_rejets_du_simulateur_comptes() {
 }
 
 #[test]
-fn regle_mono_tf() {
-    let candles = common::synthetic_candles(400, 1, T0, 0.0);
+fn strategie_multi_tf_acceptee() {
+    let candles = common::synthetic_candles(2_000, 1, T0, 0.0);
     let strategy = common::strategy_from_file("sma_cross", "config/strategies/sma_cross.toml");
-    let erreur = run_cell(&candles, strategy, &config(300.0)).unwrap_err();
-    assert!(
-        matches!(erreur, EngineError::UnsupportedTimeframes { .. }),
-        "{erreur:?}"
-    );
-    let message = erreur.to_string();
-    assert!(message.contains("S5"), "{message}");
-    assert!(message.contains("sma_cross_1m.toml"), "{message}");
-    assert!(message.contains("15m"), "{message}");
+    let result = run_cell(&candles, strategy, &config(300.0)).expect("sma_cross 15m acceptée");
+    // 50 bougies 15m de warmup, 15 minutes chacune, sans trou : la 1m 750 est la première jouée.
+    assert_eq!(result.start_index, 50 * 15);
+    assert_eq!(result.bars_in_window, 2_000 - 750);
 
-    let mut deux = Scripted::new(Vec::new());
-    deux.timeframes = vec![Timeframe::M1, Timeframe::M15];
-    let erreur = run_cell(&candles, Box::new(deux), &config(300.0)).unwrap_err();
+    let deux = Scripted::sur(&[Timeframe::M1, Timeframe::M15], 0);
+    let result = run_cell(&candles, Box::new(deux), &config(300.0)).expect("[1m, 15m] acceptée");
+    assert_eq!(result.start_index, 0);
+}
+
+#[test]
+fn timeframe_absent_du_mtf_refuse() {
+    let candles = common::synthetic_candles(300, 1, T0, 0.0);
+    let mtf = Mtf::build(&candles, &[Timeframe::M5]).unwrap();
+    let strategie = Scripted::sur(&[Timeframe::H1], 0);
+    let erreur = run_cell_mtf(
+        &mtf,
+        Box::new(strategie),
+        &config(300.0),
+        &mut tv4::engine::NoopObserver,
+    )
+    .unwrap_err();
     assert!(
-        matches!(erreur, EngineError::UnsupportedTimeframes { .. }),
+        matches!(erreur, EngineError::MissingTimeframe { tf: Timeframe::H1 }),
         "{erreur:?}"
     );
+    assert!(erreur.to_string().contains("1h"), "{erreur}");
+}
+
+/// Débuts de seaux `tf` distincts, calculés par division euclidienne des horodatages (sans `mtf`).
+fn seaux(candles: &[Candle], tf: Timeframe) -> Vec<i64> {
+    let mut out: Vec<i64> = Vec::new();
+    for c in candles {
+        let b = c.open_time_ms - c.open_time_ms.rem_euclid(tf.ms());
+        if out.last() != Some(&b) {
+            out.push(b);
+        }
+    }
+    out
+}
+
+/// Nombre de seaux clôturés à l'instant `now_ms`, par recherche dichotomique sur les horodatages.
+fn clos_a(seaux: &[i64], tf: Timeframe, now_ms: i64) -> usize {
+    seaux.partition_point(|&b| b + tf.ms() <= now_ms)
+}
+
+#[test]
+fn on_bar_appele_seulement_a_la_cloture_du_tf() {
+    // Données synthétiques avec des trous (5 % des minutes sont suivies d'un trou).
+    let candles = common::synthetic_candles(3_000, 11, T0, 0.05);
+    assert!(
+        candles
+            .windows(2)
+            .any(|w| w[1].open_time_ms - w[0].open_time_ms > MINUTE),
+        "le jeu de test doit contenir des trous"
+    );
+    let strategie = Scripted::sur(&[Timeframe::M15], 0);
+    let journal = strategie.journal();
+    let result = run_cell(&candles, Box::new(strategie), &config(300.0)).unwrap();
+    assert_eq!(result.start_index, 0);
+
+    // Attendu, recalculé par horodatages : une 1m est un appel si le nombre de 15m clôturées y augmente.
+    let b15 = seaux(&candles, Timeframe::M15);
+    let mut attendus = Vec::new();
+    let mut avant = 0;
+    for c in &candles {
+        let now = c.open_time_ms + MINUTE;
+        let n = clos_a(&b15, Timeframe::M15, now);
+        if n > avant {
+            attendus.push(now);
+        }
+        avant = n;
+    }
+    let obtenus: Vec<i64> = journal.lock().unwrap().iter().map(|a| a.now_ms).collect();
+    assert_eq!(obtenus, attendus);
+    assert!(attendus.len() > 100, "{} appels", attendus.len());
+    // Chaque appel annonce bien la clôture du 15m.
+    assert!(journal.lock().unwrap().iter().all(|a| a.vient_de_clore[0]));
+}
+
+#[test]
+fn warmup_en_bougies_du_plus_grand_tf() {
+    // 1 500 minutes avec quelques trous : une vingtaine de H1.
+    let candles = common::synthetic_candles(1_500, 5, T0, 0.02);
+    let strategie = Scripted::sur(&[Timeframe::M5, Timeframe::H1], 3);
+    let result = run_cell(&candles, Box::new(strategie), &config(300.0)).unwrap();
+
+    // Attendu : plus petit `i` dont les 3 H1 sont clôturées à la fin de la 1m `i - 1`.
+    let b1h = seaux(&candles, Timeframe::H1);
+    let attendu = (1..candles.len())
+        .find(|&i| clos_a(&b1h, Timeframe::H1, candles[i - 1].open_time_ms + MINUTE) >= 3)
+        .expect("trois H1 dans les données");
+    assert_eq!(result.start_index, attendu);
+    assert_eq!(result.warmup_bars, 3);
+}
+
+#[test]
+fn warmup_multi_tf_indicateur_nan_refuse() {
+    // 700 minutes sans trou, alignées sur l'heure : la H1 numéro 5 se clôt à la 1m 299.
+    let candles = common::synthetic_candles(700, 2, T0, 0.0);
+    let mut strategie = Scripted::sur(&[Timeframe::H1], 5);
+    strategie.specs = vec![IndicatorSpec {
+        name: "sma10",
+        tf: Timeframe::H1,
+        kind: IndicatorKind::Sma { period: 10 },
+    }];
+    let erreur = run_cell(&candles, Box::new(strategie), &config(300.0)).unwrap_err();
+    assert!(
+        matches!(
+            erreur,
+            EngineError::WarmupTooShort {
+                name: "sma10",
+                index: 4
+            }
+        ),
+        "{erreur:?}"
+    );
+
+    // Avec un warmup de 10 bougies H1, la SMA 10 est finie à l'index 9 : le run démarre.
+    let mut assez = Scripted::sur(&[Timeframe::H1], 10);
+    assez.specs = vec![IndicatorSpec {
+        name: "sma10",
+        tf: Timeframe::H1,
+        kind: IndicatorKind::Sma { period: 10 },
+    }];
+    let result = run_cell(&candles, Box::new(assez), &config(300.0)).unwrap();
+    assert_eq!(result.start_index, 600);
+}
+
+#[test]
+fn bougie_tf_incomplete_jamais_vue() {
+    // 2 h 38 de données (minutes 0 à 157) : la H1 02:00 n'est jamais complète, la 15m 02:30 non plus.
+    let candles = common::synthetic_candles(158, 4, T0, 0.0);
+    let strategie = Scripted::sur(&[Timeframe::M15, Timeframe::H1], 0);
+    let journal = strategie.journal();
+    run_cell(&candles, Box::new(strategie), &config(300.0)).unwrap();
+    let appels = journal.lock().unwrap().clone();
+    let derniere_h1 = T0 + 3_600_000;
+    let derniere_15m = T0 + 2 * 3_600_000 + 900_000;
+    for appel in &appels {
+        assert!(
+            appel.visibles[1] <= 2,
+            "H1 visibles : {}",
+            appel.visibles[1]
+        );
+        assert!(
+            appel.visibles[0] <= 10,
+            "15m visibles : {}",
+            appel.visibles[0]
+        );
+        if let Some(ouverture) = appel.derniere_ouverture[1] {
+            assert!(
+                ouverture <= derniere_h1,
+                "H1 {ouverture} vue à {}",
+                appel.now_ms
+            );
+        }
+        if let Some(ouverture) = appel.derniere_ouverture[0] {
+            assert!(
+                ouverture <= derniere_15m,
+                "15m {ouverture} vue à {}",
+                appel.now_ms
+            );
+        }
+    }
+    let dernier = appels.last().unwrap();
+    assert_eq!(dernier.visibles, [10, 2]);
+}
+
+#[test]
+fn just_closed_transmis_au_contexte() {
+    let candles = common::synthetic_candles(60, 6, T0, 0.0);
+    let strategie = Scripted::sur(&[Timeframe::M5, Timeframe::M15], 0);
+    let journal = strategie.journal();
+    run_cell(&candles, Box::new(strategie), &config(300.0)).unwrap();
+    let appels = journal.lock().unwrap().clone();
+    let a = |minute: i64| {
+        appels
+            .iter()
+            .find(|appel| appel.now_ms == T0 + (minute + 1) * MINUTE)
+            .unwrap_or_else(|| panic!("aucun appel à la 1m {minute}"))
+    };
+    // 1m hh:14 : la 5m 00:10 et la 15m 00:00 viennent de se clôturer.
+    assert_eq!(a(14).vient_de_clore, [true, true]);
+    assert_eq!(a(14).visibles, [3, 1]);
+    // 1m hh:09 : seule la 5m 00:05.
+    assert_eq!(a(9).vient_de_clore, [true, false]);
+    assert_eq!(a(9).visibles, [2, 0]);
+    // 1m hh:07 : aucune clôture, la stratégie n'est pas appelée.
+    assert!(appels.iter().all(|appel| appel.now_ms != T0 + 8 * MINUTE));
 }
 
 #[test]

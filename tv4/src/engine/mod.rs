@@ -1,8 +1,9 @@
-//! Moteur de backtest mono-timeframe 1m (docs/03-architecture.md §2, §7.1 et §7.2).
+//! Moteur de backtest multi-timeframe (docs/03-architecture.md §2, §7.1 et §7.2).
 //!
 //! [`run_cell`] est une fonction pure : ni `static mut`, ni `thread_local!`, ni horloge, ni écriture
 //! (c'est le rôle de `report`). Une cellule prend une stratégie fraîche construite par le registre,
-//! calcule les colonnes d'indicateurs hors boucle, puis déroule la boucle 1m sans allocation.
+//! agrège le 1m vers les timeframes qu'elle déclare ([`crate::mtf`]), calcule les colonnes
+//! d'indicateurs de chaque timeframe hors boucle, puis déroule la boucle 1m sans allocation.
 //!
 //! Écarts d'implémentation (S3) à docs/03 :
 //!
@@ -15,12 +16,28 @@
 //!    finie.
 //! 3. `BarState.equity = cash + qty × close[i]`, la clôture de la 1m courante (étape 3, même
 //!    instant).
-//! 4. Les sept écarts de `sim` (voir la doc de ce module), dont `single_tf_1m` : une stratégie qui ne
-//!    déclare pas exactement `[1m]` est refusée ([`EngineError::UnsupportedTimeframes`]) ; l'agrégation
-//!    1m vers TF arrive en S5. La clôture forcée est comptée comme un trade (`n_trades`), avec
+//! 4. Les six écarts de `sim` encore ouverts (voir la doc de ce module) ; `single_tf_1m` est levé en
+//!    S5 (voir plus bas). La clôture forcée est comptée comme un trade (`n_trades`), avec
 //!    `forced_close` et `n_trades_forced`, et son PnL est isolé dans `pnl_marked`.
 //! 5. `ctx.pending()` est toujours vide (aucun ordre ne survit à l'étape 1) et la stratégie voit
 //!    `position.stop == None` : le stop est mémorisé par le simulateur, jamais actif.
+//!
+//! Écarts d'implémentation (S5) à S3 :
+//!
+//! 1. Warmup multi-timeframe. Il se compte en bougies du plus grand timeframe déclaré. La première 1m
+//!    jouée est la plus petite `i` telle que `closed_count[tf_max][i - 1] >= warmup_bars` (avec 0 pour
+//!    `i = 0`) : les `warmup_bars` bougies sont toutes clôturées à la fin de la 1m qui précède. C'est
+//!    la convention S3 généralisée ; pour une stratégie 1m elle redonne `start = warmup_bars` au bit.
+//! 2. Refus de démarrer. Pour chaque indicateur, dans l'ordre de `indicators()`, avec
+//!    `k = closed_count[tf][start]` : [`EngineError::WarmupTooShort`] si `k == 0` (index 0) ou si la
+//!    colonne n'est pas finie à `k - 1`. L'index est celui de la série du timeframe de l'indicateur.
+//! 3. Appel de la stratégie. `on_bar` est appelé à la 1m `i` si `just_closed[i]` contient un timeframe
+//!    déclaré, jamais autrement. Les fills, l'observation intrabar et l'equity ont lieu à chaque 1m.
+//! 4. Garde-fou. [`BarContext::new`](crate::strategy::BarContext::new) refuse une bougie visible non
+//!    clôturée ([`StrategyError::LookAhead`], S2) : avec un `closed_count` fautif, le run échoue
+//!    avant d'appeler la stratégie (cinquième ligne de défense de docs/03 §7.5).
+//! 5. `single_tf_1m` est levé : une stratégie peut déclarer n'importe quel sous-ensemble de
+//!    `Timeframe::ALL`. [`run_cell_mtf`] rejoue sur un [`Mtf`](crate::mtf::Mtf) déjà construit.
 
 #![forbid(unsafe_code)]
 
@@ -29,13 +46,14 @@ mod run;
 pub mod signals;
 
 pub use config::{CellConfig, RunConfig, StrategyRecord};
-pub use run::{CellResult, run_cell, run_cell_observed};
+pub use run::{CellResult, run_cell, run_cell_mtf, run_cell_observed};
 pub use signals::SignalRejections;
 
 use thiserror::Error;
 
 use crate::indicators::IndicatorError;
 use crate::model::{ModelError, Timeframe, Ts};
+use crate::mtf::MtfError;
 use crate::sim::SimError;
 use crate::strategy::StrategyError;
 
@@ -57,7 +75,7 @@ pub enum EngineError {
     #[error("aucune bougie à rejouer")]
     EmptyData,
 
-    #[error("bougie {open_time_ms} : le moteur S3 attend des bougies 1m alignées sur la minute")]
+    #[error("bougie {open_time_ms} : le moteur attend des bougies 1m alignées sur la minute")]
     NotOneMinute { open_time_ms: Ts },
 
     #[error(
@@ -69,13 +87,16 @@ pub enum EngineError {
         open_time_ms: Ts,
     },
 
+    #[error(transparent)]
+    Mtf(#[from] MtfError),
+
+    #[error("le multi-timeframe fourni ne contient pas le timeframe {tf} déclaré par la stratégie")]
+    MissingTimeframe { tf: Timeframe },
+
     #[error(
-        "la stratégie déclare {} ; S3 n'exécute qu'une stratégie mono-timeframe 1m sur les bougies 1m \
-         (agrégation 1m → TF à l'étape S5, docs/03-architecture.md §11) ; pour la fixture : \
-         config/strategies/sma_cross_1m.toml",
-        timeframes_list(.declared)
+        "index de clôture absent à la bougie {index} : le multi-timeframe est incohérent avec les données"
     )]
-    UnsupportedTimeframes { declared: Vec<Timeframe> },
+    MissingClosedCount { index: usize },
 
     #[error("{bars} bougies pour un warmup de {warmup_bars} : il n'en reste aucune à rejouer")]
     NotEnoughBars { warmup_bars: usize, bars: usize },
@@ -84,12 +105,6 @@ pub enum EngineError {
         "l'indicateur `{name}` n'est pas encore valide à l'index {index} : le warmup déclaré est trop court"
     )]
     WarmupTooShort { name: &'static str, index: usize },
-}
-
-/// `1m, 15m` : liste lisible de timeframes pour les messages d'erreur.
-fn timeframes_list(timeframes: &[Timeframe]) -> String {
-    let names: Vec<&str> = timeframes.iter().map(|tf| tf.as_str()).collect();
-    names.join(", ")
 }
 
 /// Crochet appelé exactement deux fois par run, juste avant et juste après la boucle 1m. Il permet

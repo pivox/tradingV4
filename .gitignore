@@ -5,6 +5,7 @@ target/
 data/
 runs/
 state/
+reports/
 notebooks/
 datasets/snapshots/
 

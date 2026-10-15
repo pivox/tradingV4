@@ -3,7 +3,7 @@
 //!
 //! Les sous-commandes pas encore codées sortent en erreur en nommant l'étape du jalon 1 qui les
 //! implémentera (docs/03 §11) ; `backtest` existe depuis S3 (fixture CSV 1m), `ingest csv` et
-//! `dataset build` depuis S4. `grid` arrive au jalon 1.5.
+//! `dataset build` depuis S4, `ingest kraken` depuis S5. `grid` arrive au jalon 1.5.
 //!
 //! La CLI est le seul module qui lit l'horloge système ([`now_ms`]) : le store reçoit l'instant en
 //! paramètre (docs/03 §5.3, écart 5 de S4).
@@ -16,7 +16,7 @@ use crate::model::Ts;
 
 pub use backtest::BacktestArgs;
 pub use dataset::DatasetBuildArgs;
-pub use ingest::IngestCsvArgs;
+pub use ingest::{IngestCsvArgs, IngestKrakenArgs, IngestSummary, ingest_kraken};
 
 mod backtest;
 mod bench;
@@ -72,6 +72,18 @@ pub enum CliError {
     #[error(transparent)]
     Store(#[from] crate::store::StoreError),
 
+    #[error(transparent)]
+    KrakenZip(#[from] crate::marketdata::kraken_zip::KrakenZipError),
+
+    /// Une paire est demandée deux fois sur la ligne de commande de `ingest kraken`.
+    #[error("paire « {pair} » demandée deux fois")]
+    DuplicatePair { pair: String },
+
+    /// Au moins une paire de `ingest kraken` n'a pas été écrite (bloquée, entrée absente, écriture en
+    /// échec) ; les autres l'ont été, et les rapports disent pourquoi.
+    #[error("ingestion incomplète : {failed} ; voir {summary}")]
+    IngestIncomplete { failed: String, summary: String },
+
     /// L'horloge système ne donne pas un instant exploitable.
     #[error("horloge système antérieure à 1970 ou hors plage : impossible de dater l'écriture")]
     Clock,
@@ -82,9 +94,9 @@ pub enum CliError {
     )]
     GapsPolicyUnsupported { path: String },
 
-    /// Le moteur S3 ne rejoue que du 1m.
+    /// L'agrégation part du 1m : un dataset dans un autre timeframe n'est pas rejouable.
     #[error(
-        "dataset `{path}` en {tf} : le moteur S3 ne rejoue que du 1m (agrégation à l'étape S5)"
+        "dataset `{path}` en {tf} : le moteur rejoue des bougies 1m et les agrège vers les timeframes de la stratégie ; construire le dataset en 1m"
     )]
     DatasetTimeframe {
         path: String,
@@ -151,11 +163,11 @@ pub enum Command {
 /// Sources d'ingestion.
 #[derive(Debug, Subcommand)]
 pub enum IngestSource {
-    /// Dumps OHLCVT Kraken.
-    Kraken,
+    /// Dump OHLCVT complet de Kraken (zip, SHA-256 vérifié, rapport de continuité bloquant).
+    Kraken(IngestKrakenArgs),
     /// API REST OKX `history-candles`.
     Okx,
-    /// CSV OHLCVT au format Kraken : ingestion minimale de S4 en attendant `ingest kraken` (S5).
+    /// CSV OHLCVT au format Kraken : ingestion minimale de S4 (fixture), sans contrôle de continuité.
     Csv(IngestCsvArgs),
 }
 
@@ -170,7 +182,7 @@ pub enum DatasetAction {
 pub fn run(command: &Command) -> Result<(), CliError> {
     match command {
         Command::Ingest { source } => match source {
-            IngestSource::Kraken => ingest::kraken(),
+            IngestSource::Kraken(args) => ingest::kraken(args),
             IngestSource::Okx => ingest::okx(),
             IngestSource::Csv(args) => ingest::csv(args),
         },
@@ -189,8 +201,7 @@ mod tests {
     use clap::CommandFactory;
 
     /// Chaque sous-commande vide, la commande tapée et l'étape annoncée.
-    const EMPTY_COMMANDS: [(&[&str], &str, &str); 4] = [
-        (&["tv4", "ingest", "kraken"], "ingest kraken", "S5"),
+    const EMPTY_COMMANDS: [(&[&str], &str, &str); 3] = [
         (&["tv4", "ingest", "okx"], "ingest okx", "S7"),
         (&["tv4", "verify"], "verify", "S8"),
         (&["tv4", "bench"], "bench", "S8"),
@@ -352,6 +363,71 @@ mod tests {
             ])
             .is_err()
         );
+    }
+
+    #[test]
+    fn ingest_kraken_se_parse() {
+        let cli = Cli::try_parse_from([
+            "tv4",
+            "ingest",
+            "kraken",
+            "--zip",
+            "Kraken_OHLCVT_Full.zip",
+            "--sha256",
+            &"BC27".repeat(16),
+            "--pair",
+            "XBTUSD",
+            "--pair",
+            "ETHUSD",
+            "--root",
+            "R",
+        ])
+        .expect("ingest kraken valide");
+        let Command::Ingest {
+            source: IngestSource::Kraken(args),
+        } = cli.command
+        else {
+            panic!("sous-commande attendue : ingest kraken");
+        };
+        assert_eq!(args.zip, std::path::PathBuf::from("Kraken_OHLCVT_Full.zip"));
+        // Le SHA-256 en majuscules est accepté et normalisé en minuscules.
+        assert_eq!(args.sha256.as_str(), "bc27".repeat(16));
+        let paires: Vec<(&str, &str)> = args
+            .pairs
+            .iter()
+            .map(|p| (p.as_str(), p.symbol()))
+            .collect();
+        assert_eq!(paires, [("XBTUSD", "BTC-USD"), ("ETHUSD", "ETH-USD")]);
+        assert_eq!(args.root, std::path::PathBuf::from("R"));
+    }
+
+    #[test]
+    fn ingest_kraken_exige_zip_sha_et_une_paire() {
+        let sha = "ab".repeat(32);
+        let complet = [
+            "tv4", "ingest", "kraken", "--zip", "z", "--sha256", &sha, "--pair", "XBTUSD",
+        ];
+        assert!(Cli::try_parse_from(complet).is_ok());
+        // Chacun des trois arguments obligatoires manque tour à tour.
+        let sans_zip = [
+            "tv4", "ingest", "kraken", "--sha256", &sha, "--pair", "XBTUSD",
+        ];
+        let sans_sha = ["tv4", "ingest", "kraken", "--zip", "z", "--pair", "XBTUSD"];
+        let sans_paire = ["tv4", "ingest", "kraken", "--zip", "z", "--sha256", &sha];
+        for incomplet in [&sans_zip[..], &sans_sha[..], &sans_paire[..]] {
+            assert!(Cli::try_parse_from(incomplet).is_err(), "{incomplet:?}");
+        }
+        // SHA-256 mal formé, paire inconnue : erreurs d'usage.
+        for (extra_sha, paire) in [
+            ("abc", "XBTUSD"),
+            (sha.as_str(), "xbtusd"),
+            (sha.as_str(), "XBTFOO"),
+        ] {
+            let args = [
+                "tv4", "ingest", "kraken", "--zip", "z", "--sha256", extra_sha, "--pair", paire,
+            ];
+            assert!(Cli::try_parse_from(args).is_err(), "{extra_sha} {paire}");
+        }
     }
 
     #[test]

@@ -26,6 +26,11 @@
 //! et le contrôle de continuité (`continuity.rs`, S5) en fait un rapport bloquant. Aucune bougie n'est
 //! jamais synthétisée.
 //!
+//! Deux lecteurs partagent le même décodage : [`KrakenCsvReader`] (validant, une [`Candle`] par ligne,
+//! utilisé par `ingest csv`, la fixture et les tests) et [`KrakenRawReader`] ([`RawRow`] sans contrôle de
+//! valeur, utilisé par `ingest kraken` : `continuity` compte alors toutes les fautes au lieu de s'arrêter
+//! à la première).
+//!
 //! # Numéro de ligne
 //!
 //! Les erreurs portent `line = position().record() + 1`, soit le rang de l'enregistrement à partir de 1.
@@ -42,7 +47,7 @@ use std::path::Path;
 use csv::StringRecord;
 use thiserror::Error;
 
-use crate::model::{Candle, ModelError, Timeframe};
+use crate::model::{Candle, ModelError, Timeframe, Ts};
 
 /// Nombre de champs d'une ligne OHLCVT Kraken.
 pub const FIELD_COUNT: usize = 7;
@@ -104,51 +109,71 @@ pub enum KrakenError {
     },
 }
 
-/// Lecteur en flux : une [`Candle`] par ligne, sans allocation par ligne (l'enregistrement est réutilisé).
+/// Ligne OHLCVT décodée mais non validée : seules les erreurs de format sont rendues par le lecteur
+/// brut. Les contrôles de valeur (fini, positif, OHLC, alignement, volume) sont faits par
+/// `continuity`, qui les compte tous au lieu de s'arrêter au premier.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct RawRow {
+    /// Rang de l'enregistrement à partir de 1 (voir la doc du module).
+    pub line: u64,
+    /// `timestamp × 1000`, contrôlé dans `[0, MAX_TIMESTAMP_S)` secondes.
+    pub open_time_ms: Ts,
+    pub open: f64,
+    pub high: f64,
+    pub low: f64,
+    pub close: f64,
+    pub volume: f64,
+    pub trades: u32,
+}
+
+impl RawRow {
+    /// La bougie correspondante, sans validation.
+    pub fn candle(&self) -> Candle {
+        Candle {
+            open_time_ms: self.open_time_ms,
+            open: self.open,
+            high: self.high,
+            low: self.low,
+            close: self.close,
+            volume: self.volume,
+            trades: Some(self.trades),
+        }
+    }
+}
+
+/// Lecteur en flux de lignes brutes ([`RawRow`]), sans allocation par ligne (l'enregistrement est
+/// réutilisé). Épuisé à la première erreur de format, comme [`KrakenCsvReader`] qui s'appuie dessus.
 ///
-/// L'itérateur est épuisé dès la première erreur. En S5, un `ZipFile` (qui implémente [`Read`]) se
-/// branche directement sur [`KrakenCsvReader::new`].
-pub struct KrakenCsvReader<R: Read> {
+/// Les chaînes `nan`, `NaN` et `inf` se parsent en `f64` : elles passent ici et sont classées « non
+/// fini » par `continuity`.
+pub struct KrakenRawReader<R: Read> {
     csv: csv::Reader<R>,
     record: StringRecord,
-    timeframe: Timeframe,
     records_read: u64,
     finished: bool,
 }
 
-impl<R: Read> KrakenCsvReader<R> {
-    /// Lecteur sur `source`, pour des bougies du `timeframe` donné (contrôle d'alignement).
+impl<R: Read> KrakenRawReader<R> {
+    /// Lecteur brut sur `source`.
     ///
-    /// Pas de `BufReader` : `csv::Reader` a son propre tampon. Le nombre de champs est contrôlé ici
-    /// (`flexible(true)`) pour rendre une erreur [`KrakenError::FieldCount`] lisible.
-    pub fn new(source: R, timeframe: Timeframe) -> Self {
+    /// Pas de `BufReader` : `csv::Reader` a son propre tampon. Le nombre de champs est contrôlé par
+    /// [`parse_raw`] (`flexible(true)`) pour rendre une erreur [`KrakenError::FieldCount`] lisible.
+    pub fn new(source: R) -> Self {
         let csv = csv::ReaderBuilder::new()
             .has_headers(false)
             .flexible(true)
             .from_reader(source);
-        KrakenCsvReader {
+        KrakenRawReader {
             csv,
             record: StringRecord::new(),
-            timeframe,
             records_read: 0,
             finished: false,
         }
     }
 }
 
-impl KrakenCsvReader<File> {
-    /// Ouvre un fichier CSV non compressé.
-    pub fn open(path: &Path, timeframe: Timeframe) -> Result<Self, KrakenError> {
-        let file = File::open(path).map_err(|source| KrakenError::Open {
-            path: path.display().to_string(),
-            source,
-        })?;
-        Ok(KrakenCsvReader::new(file, timeframe))
-    }
-}
-
-impl<R: Read> Iterator for KrakenCsvReader<R> {
-    type Item = Result<Candle, KrakenError>;
+impl<R: Read> Iterator for KrakenRawReader<R> {
+    type Item = Result<RawRow, KrakenError>;
 
     fn next(&mut self) -> Option<Self::Item> {
         if self.finished {
@@ -173,13 +198,65 @@ impl<R: Read> Iterator for KrakenCsvReader<R> {
                     .record
                     .position()
                     .map_or(self.records_read, |p| p.record() + 1);
-                let result = parse_record(&self.record, line, self.timeframe);
+                let result = parse_raw(&self.record, line);
                 if result.is_err() {
                     self.finished = true;
                 }
                 Some(result)
             }
         }
+    }
+}
+
+impl<R: Read> FusedIterator for KrakenRawReader<R> {}
+
+/// Lecteur en flux : une [`Candle`] validée par ligne, construite sur [`KrakenRawReader`].
+///
+/// L'itérateur est épuisé dès la première erreur. Un `ZipFile` (qui implémente [`Read`]) se branche
+/// directement sur [`KrakenCsvReader::new`] ; `tv4 ingest kraken` utilise le lecteur brut.
+pub struct KrakenCsvReader<R: Read> {
+    raw: KrakenRawReader<R>,
+    timeframe: Timeframe,
+    finished: bool,
+}
+
+impl<R: Read> KrakenCsvReader<R> {
+    /// Lecteur sur `source`, pour des bougies du `timeframe` donné (contrôle d'alignement).
+    pub fn new(source: R, timeframe: Timeframe) -> Self {
+        KrakenCsvReader {
+            raw: KrakenRawReader::new(source),
+            timeframe,
+            finished: false,
+        }
+    }
+}
+
+impl KrakenCsvReader<File> {
+    /// Ouvre un fichier CSV non compressé.
+    pub fn open(path: &Path, timeframe: Timeframe) -> Result<Self, KrakenError> {
+        let file = File::open(path).map_err(|source| KrakenError::Open {
+            path: path.display().to_string(),
+            source,
+        })?;
+        Ok(KrakenCsvReader::new(file, timeframe))
+    }
+}
+
+impl<R: Read> Iterator for KrakenCsvReader<R> {
+    type Item = Result<Candle, KrakenError>;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        if self.finished {
+            return None;
+        }
+        let result = match self.raw.next()? {
+            Ok(row) => validate_row(&row, self.timeframe),
+            Err(error) => Err(error),
+        };
+        if result.is_err() {
+            self.finished = true;
+        }
+        Some(result)
     }
 }
 
@@ -199,11 +276,8 @@ fn parse_f64(text: &str, line: u64, field: &'static str) -> Result<f64, KrakenEr
     })
 }
 
-fn parse_record(
-    record: &StringRecord,
-    line: u64,
-    timeframe: Timeframe,
-) -> Result<Candle, KrakenError> {
+/// Décode une ligne : nombre de champs, types, plage de l'horodatage. Aucun contrôle de valeur.
+fn parse_raw(record: &StringRecord, line: u64) -> Result<RawRow, KrakenError> {
     if record.len() != FIELD_COUNT {
         return Err(KrakenError::FieldCount {
             line,
@@ -245,12 +319,34 @@ fn parse_record(
     }
     // Impossible après le contrôle de plage, mais on ne passe pas par `unwrap`.
     let open_time_ms = timestamp_s.checked_mul(1000).ok_or(out_of_range)?;
-    timeframe
-        .check_alignment(open_time_ms)
-        .map_err(|source| KrakenError::Invalid { line, source })?;
+    Ok(RawRow {
+        line,
+        open_time_ms,
+        open,
+        high,
+        low,
+        close,
+        volume,
+        trades,
+    })
+}
 
-    Candle::new(open_time_ms, open, high, low, close, volume, Some(trades))
-        .map_err(|source| KrakenError::Invalid { line, source })
+/// Contrôles de valeur du lecteur validant : alignement sur le timeframe, puis [`Candle::validate`].
+fn validate_row(row: &RawRow, timeframe: Timeframe) -> Result<Candle, KrakenError> {
+    let line = row.line;
+    timeframe
+        .check_alignment(row.open_time_ms)
+        .map_err(|source| KrakenError::Invalid { line, source })?;
+    Candle::new(
+        row.open_time_ms,
+        row.open,
+        row.high,
+        row.low,
+        row.close,
+        row.volume,
+        Some(row.trades),
+    )
+    .map_err(|source| KrakenError::Invalid { line, source })
 }
 
 // Les échantillons ci-dessous sont des échantillons de format, valeurs inventées (prix ronds autour de
@@ -531,5 +627,52 @@ mod tests {
             matches!(error, KrakenError::Csv { line: 2, .. }),
             "{error:?}"
         );
+    }
+
+    #[test]
+    fn le_lecteur_brut_laisse_passer_les_valeurs_invalides() {
+        let text = format!(
+            "{T0},nan,101,99,100,1,1\n{},100,99,101,100,1,1\n{},100,101,99,100,1,1\n{},100,101,99,100,-1,1\n",
+            T0 + 60,
+            T0 + 90,
+            T0 + 120
+        );
+        let rows: Vec<RawRow> = KrakenRawReader::new(text.as_bytes())
+            .collect::<Result<_, _>>()
+            .unwrap();
+        assert_eq!(rows.len(), 4);
+        assert!(rows[0].open.is_nan());
+        assert_eq!(rows[0].line, 1);
+        // low > high, rendu tel quel.
+        assert_eq!((rows[1].high, rows[1].low), (99.0, 101.0));
+        // Non aligné sur la minute, rendu tel quel.
+        assert_eq!(rows[2].open_time_ms, (T0 + 90) * 1000);
+        // Volume négatif, rendu tel quel.
+        assert_eq!(rows[3].volume, -1.0);
+        assert_eq!(rows[3].line, 4);
+        assert_eq!(rows[3].candle().trades, Some(1));
+        // Le lecteur validant refuse la première de ces lignes.
+        assert!(read(&text, Timeframe::M1).is_err());
+    }
+
+    #[test]
+    fn le_lecteur_brut_s_arrete_a_une_erreur_de_format() {
+        let text = format!(
+            "{T0},100,101,99,100,1,1\n{},100,101,99,100,x,1\n{},100,101,99,100,1,1\n",
+            T0 + 60,
+            T0 + 120
+        );
+        let mut reader = KrakenRawReader::new(text.as_bytes());
+        assert!(matches!(reader.next(), Some(Ok(_))));
+        assert!(matches!(
+            reader.next(),
+            Some(Err(KrakenError::InvalidField {
+                line: 2,
+                field: "volume",
+                ..
+            }))
+        ));
+        assert!(reader.next().is_none());
+        assert!(reader.next().is_none());
     }
 }

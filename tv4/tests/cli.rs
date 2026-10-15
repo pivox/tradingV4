@@ -5,6 +5,9 @@ use std::process::{Command, Output};
 
 use tv4::model::hash;
 
+mod common;
+use common::{DATASET_HASH_SKIP, HASH_FIXTURE_MOIS};
+
 fn tv4(args: &[&str]) -> Output {
     Command::new(env!("CARGO_BIN_EXE_tv4"))
         .args(args)
@@ -37,8 +40,7 @@ fn le_sha_vient_de_git_quand_git_est_disponible() {
 
 #[test]
 fn les_sous_commandes_vides_sortent_en_erreur_avec_leur_etape() {
-    let cas: [(&[&str], &str); 4] = [
-        (&["ingest", "kraken"], "S5"),
+    let cas: [(&[&str], &str); 3] = [
         (&["ingest", "okx"], "S7"),
         (&["verify"], "S8"),
         (&["bench"], "S8"),
@@ -146,18 +148,39 @@ fn deux_process_meme_metrics() {
 }
 
 #[test]
-fn backtest_refuse_le_15m() {
+fn backtest_15m_sur_la_fixture() {
+    // L'écart `single_tf_1m` est levé en S5 : sma_cross 15m (20/50) tourne sur la fixture 1m.
     let dossier = tempfile::tempdir().unwrap();
     let sortie_dir = dossier.path().join("run");
     let sortie = tv4_owned(&backtest_args(
         "config/strategies/sma_cross.toml",
         &sortie_dir,
     ));
-    assert_eq!(sortie.status.code(), Some(1));
-    let erreur = String::from_utf8_lossy(&sortie.stderr);
-    assert!(erreur.contains("S5"), "{erreur}");
-    assert!(erreur.contains("sma_cross_1m.toml"), "{erreur}");
-    assert!(!sortie_dir.join("metrics.json").exists());
+    assert_eq!(
+        sortie.status.code(),
+        Some(0),
+        "{}",
+        String::from_utf8_lossy(&sortie.stderr)
+    );
+    let valeur: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(sortie_dir.join("metrics.json")).unwrap())
+            .unwrap();
+    // 50 bougies 15m de warmup : la première 1m jouée est la 482e, la fixture ayant des minutes absentes.
+    assert_eq!(valeur["window"]["start_index"], 482);
+    assert_eq!(valeur["window"]["bars"], 9_518);
+    assert_eq!(valeur["config"]["strategy"]["params"]["tf"], "15m");
+    // Valeurs de l'oracle Python indépendant (tests/backtest_fixture.rs les épingle trade par trade).
+    assert_eq!(valeur["n_trades"], 10);
+    assert_eq!(valeur["pnl_net"].as_f64(), Some(-7.401437247087472));
+    assert_eq!(valeur["cash_final"].as_f64(), Some(292.5985627529125));
+    assert_eq!(
+        valeur["config_hash"],
+        "e85b28f7cff8f25137970a52a8f5cde0c429cc3cbeee7505f83bd1eed497646a"
+    );
+    // Six écarts : `single_tf_1m` n'y figure plus.
+    let ecarts = valeur["s3_deviations"].as_array().unwrap();
+    assert_eq!(ecarts.len(), 6);
+    assert!(ecarts.iter().all(|e| e != "single_tf_1m"));
 }
 
 #[test]
@@ -206,10 +229,6 @@ fn backtest_fichier_absent() {
 
 // --- tv4 ingest csv, dataset build, backtest --dataset (S4) ---
 
-const HASH_FIXTURE_MOIS: &str =
-    "blake3:d94f2eb46e2c4b6738b7ef4ed2441f3928db379e5b29f48f95532ba18c56f353";
-const DATASET_HASH_SKIP: &str =
-    "blake3:943075a3c2fe27072d3c2a9a1113580fbfcb04542c6ae2e7a82db44aaf54a495";
 const DATASET_HASH_FFILL: &str =
     "blake3:0685813dbc5085b4e87715cf5e7d54041bf478e7079d3b7cbcb68b6826e3697b";
 const PARQUET_REL: &str = "data/candles/kraken/BTC-USD/1m/2020-01.parquet";
@@ -280,6 +299,11 @@ fn build_fenetre(root: &Path, name: &str, policy: &str, from: &str, to: &str) ->
 
 /// `tv4 backtest --dataset` : sortie dans `out`.
 fn backtest_dataset(root: &Path, manifest: &str, out: &Path) -> Output {
+    backtest_dataset_params(root, manifest, out, PARAMS_1M)
+}
+
+/// Comme [`backtest_dataset`], avec le fichier de paramètres de `sma_cross` au choix.
+fn backtest_dataset_params(root: &Path, manifest: &str, out: &Path, params: &str) -> Output {
     tv4(&[
         "backtest",
         "--root",
@@ -289,7 +313,7 @@ fn backtest_dataset(root: &Path, manifest: &str, out: &Path) -> Output {
         "--strategy",
         "sma_cross",
         "--params",
-        &repo(PARAMS_1M),
+        &repo(params),
         "--fees-file",
         &repo("config/fees.toml"),
         "--out",
@@ -578,6 +602,37 @@ fn backtest_ffill_rejoue_les_bougies_synthetiques() {
     assert_eq!(metrics["data"]["synthetic_bars"], 1_370);
     assert_eq!(metrics["data"]["gaps_policy"], "ffill");
     assert_eq!(metrics["data"]["dataset_hash"], DATASET_HASH_FFILL);
+}
+
+#[test]
+fn backtest_ffill_multi_tf_inclut_les_bougies_synthetiques() {
+    // Revue S5-R6 (E5) : les 1 370 minutes synthétiques du dataset `ffill` entrent dans l'agrégation
+    // 15m comme les autres (volume 0, prix de la clôture précédente). Valeurs de l'oracle Python
+    // indépendant (`replay` appliqué à la fixture dont les trous sont remplis à la main).
+    let racine = racine_prete();
+    let r = racine.path();
+    let sortie = build(r, "fixture_ffill", "ffill");
+    assert_eq!(sortie.status.code(), Some(0), "{}", texte(&sortie).1);
+
+    let out = r.join("run15");
+    let sortie = backtest_dataset_params(
+        r,
+        "datasets/fixture_ffill.json",
+        &out,
+        "config/strategies/sma_cross.toml",
+    );
+    assert_eq!(sortie.status.code(), Some(0), "{}", texte(&sortie).1);
+    let metrics = json(&out.join("metrics.json"));
+    assert_eq!(metrics["data"]["bars"], 11_370);
+    assert_eq!(metrics["data"]["synthetic_bars"], 1_370);
+    // Sans trou, 50 bougies 15m = 750 minutes : start_index 750, et non 482 comme en politique `skip`.
+    assert_eq!(metrics["window"]["start_index"], 750);
+    assert_eq!(metrics["window"]["bars"], 10_620);
+    assert_eq!(metrics["n_trades"], 10);
+    assert_eq!(metrics["signals"]["emitted"], 20);
+    assert_eq!(metrics["pnl_net"].as_f64(), Some(-7.330802213582558));
+    assert_eq!(metrics["cash_final"].as_f64(), Some(292.66919778641744));
+    assert_eq!(metrics["fees_total"].as_f64(), Some(18.99174758766156));
 }
 
 #[test]
