@@ -1,4 +1,4 @@
-//! `metrics.json`, schéma S3 (`tv4-metrics-s3`).
+//! `metrics.json`, schéma S6 (`tv4-metrics-s6`).
 //!
 //! Rien ne dépend de la machine ni de l'heure : ni chemin de fichier, ni horodatage d'exécution, ni
 //! durée. Le bloc `engine`, `fixture_blake3` et le bloc dataset (`dataset_hash`, ajouté en S4 pour
@@ -9,20 +9,35 @@ use serde::Serialize;
 
 use crate::engine::{CellResult, RunConfig, SignalRejections};
 use crate::model::{Candle, Timeframe, Ts};
+use crate::sim::SimCounters;
 
 use super::ReportError;
 
 /// Identifiant du schéma.
-pub const SCHEMA: &str = "tv4-metrics-s3";
+pub const SCHEMA: &str = "tv4-metrics-s6";
 
-/// Écarts temporaires de S3 (docs/03 §7.2, détail dans la doc de `sim` et de `engine`).
-pub const S3_DEVIATIONS: [&str; 6] = [
-    "stops_inactive",
-    "risk_sizing_on_signal_close",
+/// Écarts du simulateur encore ouverts (docs/03 §7.2, détail dans la doc de `sim`).
+///
+/// - `market_buy_cash_margin` : un achat market est plafonné à `cash × (1 − marge) / (px × (1 + taker))`.
+/// - `stop_slippage_fixed` : le slippage de stop est un scalaire plus `stop_stress_bps` à 0 jusqu'à S10
+///   (issue #12), pas une distribution.
+/// - `instrument_minimums_unvalidated` : les minimums d'instrument sont à 0 (S9, issue #11).
+/// - `no_maker_fill_probability` : une limit traversée d'un tick est remplie en entier, sans modèle de
+///   file d'attente.
+/// - `exit_volume_rule_counted_not_rejected` : la règle des 0,5 % du volume quote ne refuse que les
+///   achats ; une sortie au-delà est exécutée au prix plein et comptée (`exits_over_volume_share`).
+///   Précision de docs/04 §3.1 point 4 à valider par le propriétaire.
+/// - `limit_gap_fill_optimistic` : une limit déjà au repos qu'un gap traverse est remplie à
+///   `min(L, open)` (`max(L, open)` en vente), et une limit déjà marketable à son activation est
+///   facturée maker ; un carnet continu la prendrait à `L`, ou en taker. Règles de l'issue S6, à arbitrer
+///   par le propriétaire.
+pub const SIM_DEVIATIONS: [&str; 6] = [
     "market_buy_cash_margin",
-    "no_lot_tick_min_size",
-    "activation_delay_0",
-    "no_volume_rule",
+    "stop_slippage_fixed",
+    "instrument_minimums_unvalidated",
+    "no_maker_fill_probability",
+    "exit_volume_rule_counted_not_rejected",
+    "limit_gap_fill_optimistic",
 ];
 
 /// Version du moteur qui a produit le fichier.
@@ -170,13 +185,11 @@ pub struct Metrics {
     pub slippage_total: f64,
     pub equity_final: f64,
     pub cash_final: f64,
-    pub entries_capped_by_cash: u64,
-    pub stop_breaches_ignored: u64,
     pub fills: u64,
-    pub fills_rejected_insufficient_cash: u64,
-    pub orders_unfilled_at_end: u64,
+    /// Compteurs du simulateur, tous les `u64` nommés de [`SimCounters`].
+    pub sim: SimCounters,
     pub signals: SignalsInfo,
-    pub s3_deviations: [&'static str; 6],
+    pub sim_deviations: [&'static str; 6],
 }
 
 impl Metrics {
@@ -203,18 +216,15 @@ impl Metrics {
             slippage_total: result.slippage_total,
             equity_final: result.equity_final,
             cash_final: result.cash_final,
-            entries_capped_by_cash: result.sim.entries_capped_by_cash,
-            stop_breaches_ignored: result.sim.stop_breaches_ignored,
             fills: result.sim.fills,
-            fills_rejected_insufficient_cash: result.sim.fills_rejected_insufficient_cash,
-            orders_unfilled_at_end: result.sim.orders_unfilled_at_end,
+            sim: result.sim,
             signals: SignalsInfo {
                 emitted: result.signals_emitted,
                 accepted: result.signals_accepted,
                 rejected: result.rejections.total(),
                 rejected_by_reason: result.rejections,
             },
-            s3_deviations: S3_DEVIATIONS,
+            sim_deviations: SIM_DEVIATIONS,
         }
     }
 }

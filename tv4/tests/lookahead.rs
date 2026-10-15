@@ -22,7 +22,7 @@ use common::{SplitMix64, T0, fixture_1m, okx_fees, slippage, synthetic_candles};
 use proptest::prelude::*;
 use tv4::engine::{CellConfig, CellResult, EngineError, NoopObserver, run_cell, run_cell_mtf};
 use tv4::indicators::{Atr, Sma, batch};
-use tv4::model::{Candle, Timeframe, Ts};
+use tv4::model::{Candle, InstrumentRules, Timeframe, Ts};
 use tv4::mtf::{ClosedRule, Mtf, is_closed};
 use tv4::sim::{ExitReason, SimRules};
 use tv4::strategy::{
@@ -38,6 +38,7 @@ fn config() -> CellConfig<'static> {
         slippage: slippage(10.0),
         initial_cash: 1_000.0,
         sim_rules: SimRules::default(),
+        instrument: InstrumentRules::new(0.01, 1e-8, 0.0, 0.0).expect("instrument valide"),
     }
 }
 
@@ -406,14 +407,16 @@ impl Strategy for Canari {
 }
 
 /// Fills d'un run, `(ms, sens, prix, quantité)` au bit, jusqu'à `limite_ms` inclus. La clôture forcée
-/// de fin de données n'est pas un fill de la stratégie : elle est exclue.
+/// de fin de données n'est pas un fill de la stratégie : elle est exclue. Les stops en font partie : un
+/// stop rempli à la 1m `j` dépend légitimement du low de `j`, donc les appelants ne comparent que des
+/// fills strictement antérieurs à la première 1m perturbée.
 fn fills(result: &CellResult, limite_ms: Ts) -> Vec<(Ts, char, u64, u64)> {
     let mut out = Vec::new();
     for t in &result.trades {
         if t.entry_ms <= limite_ms {
             out.push((t.entry_ms, 'A', t.entry_price.to_bits(), t.qty.to_bits()));
         }
-        if t.exit_reason == ExitReason::Signal && t.exit_ms <= limite_ms {
+        if t.exit_reason != ExitReason::ForcedClose && t.exit_ms <= limite_ms {
             out.push((t.exit_ms, 'V', t.exit_price.to_bits(), t.qty.to_bits()));
         }
     }
@@ -500,7 +503,9 @@ proptest! {
             &original,
             &perturbe,
             candles[i].open_time_ms + MINUTE,
-            candles[i + 1].open_time_ms,
+            // Un fill à la 1m `j` dépend de son high, de son low et de son volume (stop, limit, règle de
+            // volume) : seuls les fills strictement antérieurs à `j > i` sont comparés.
+            candles[i].open_time_ms,
         )?;
     }
 }
@@ -522,7 +527,8 @@ fn perturbation_k_dernieres_bougies() {
             &original,
             &perturbe,
             candles[i].open_time_ms + MINUTE,
-            candles[i + 1].open_time_ms,
+            // La première 1m perturbée est `i + 1` : les fills de cette 1m en dépendent légitimement.
+            candles[i + 1].open_time_ms - 1,
         )
         .unwrap_or_else(|e| panic!("k = {k} : {e}"));
         // Sensibilité : à partir de 60 minutes perturbées, des bougies M5 perturbées sont clôturées et

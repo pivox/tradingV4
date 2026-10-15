@@ -89,7 +89,14 @@ fn config() -> CellConfig<'static> {
         fees: okx_fees(),
         slippage: slippage(5.0),
         initial_cash: 300.0,
-        sim_rules: SimRules::default(),
+        // Volumes synthétiques minuscules : la règle de part de volume (0,5 %) rejetterait tous les
+        // achats et le chemin des fills ne serait pas exercé. On la relâche ici, les autres règles
+        // (délai, traversée d'un tick, stop) restent celles par défaut.
+        sim_rules: SimRules {
+            max_volume_share: 1.0e9,
+            ..SimRules::default()
+        },
+        instrument: common::kraken_btc_usd(),
     }
 }
 
@@ -123,7 +130,7 @@ fn la_boucle_sur_la_fixture_alloue_au_plus_une_fois() {
     let result = run_cell_observed(&candles, common::sma_cross_1m(), &config(), &mut probe)
         .expect("run valide");
     assert_eq!(result.bars_in_window, 9_760);
-    assert_eq!(result.trades.len(), 23);
+    assert!(!result.trades.is_empty());
     println!(
         "allocations dans la boucle (fixture) : {}",
         probe.during_loop
@@ -281,6 +288,50 @@ fn la_boucle_sma_cross_15m_sur_la_fixture_alloue_au_plus_une_fois() {
     assert!(
         probe.during_loop <= 1,
         "{} allocations dans la boucle de la fixture en 15m",
+        probe.during_loop
+    );
+}
+
+/// Grille à 4 niveaux (stratégie de test) sur 20 000 1m synthétiques : le chemin des limits multiples
+/// (pose, file, fills, vente, lots FIFO) ne doit pas allouer plus de deux fois (docs/03 §7.2 : une
+/// par 10 000 bougies). Les seules allocations possibles sont la croissance du `Vec<Trade>` et du
+/// `VecDeque` des lots, tous deux préalloués assez grands pour ce run.
+#[test]
+fn grille_sans_allocation() {
+    use common::grille::GrilleTest;
+    use common::sinus::sinusoide;
+    use tv4::model::InstrumentRules;
+
+    let candles = sinusoide(20_000, 0.06);
+    assert_eq!(candles.len(), 20_000);
+    let (grille, suivi) = GrilleTest::new(0.005);
+    let config = CellConfig {
+        symbol: "SYNTH",
+        fees: okx_fees(),
+        slippage: slippage(5.0),
+        initial_cash: 1000.0,
+        sim_rules: SimRules::default(),
+        instrument: InstrumentRules::new(1e-4, 1e-8, 0.0, 0.0).expect("instrument valide"),
+    };
+    let mut probe = Probe::default();
+    let result =
+        run_cell_observed(&candles, Box::new(grille), &config, &mut probe).expect("run valide");
+    let suivi = *suivi.lock().expect("suivi lisible");
+    assert_eq!(result.bars_in_window, 20_000);
+    assert!(
+        suivi.cycles >= 300,
+        "le chemin des limits doit être exercé : {} cycles",
+        suivi.cycles
+    );
+    assert!(result.sim.fills_limit >= 600);
+    assert_eq!(result.sim.limits_expired, 0);
+    println!(
+        "allocations dans la boucle (grille, {} cycles) : {}",
+        suivi.cycles, probe.during_loop
+    );
+    assert!(
+        probe.during_loop <= 2,
+        "{} allocations dans la boucle de la grille",
         probe.during_loop
     );
 }

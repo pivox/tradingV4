@@ -1,0 +1,14 @@
+---
+source: tv4/tests/golden.rs
+expression: texte
+---
+cash_final = 1004.7840722064427
+pnl_net = 4.7840722064427155
+pnl_realized = 4.784072206442856
+pnl_marked = 0.0
+forced_close = false
+n_trades = 70
+sim.fills = 80
+sim.fills_limit = 80
+sim.orders_unfilled_at_end = 4
+cycles = 40

@@ -1,5 +1,10 @@
-//! Tests d'intégration du moteur S3 sur des bougies écrites à la main ou synthétiques
+//! Tests d'intégration du moteur sur des bougies écrites à la main ou synthétiques
 //! (docs/03-architecture.md §7.2 et §7.5).
+//!
+//! Les nombres à la main de S3 sont conservés grâce à des règles réglées « à la S3 » : activation
+//! sans délai (fill à l'open de la 1m suivante), aucune limite de volume et une taille `Quote(100.1)`
+//! qui donne exactement une unité à 100.1 (open 100 + 10 bps). Le chemin par défaut (délai d'une
+//! minute, règle de volume) est couvert par `tests/sim_timing.rs` et par les tests du simulateur.
 
 mod common;
 
@@ -7,7 +12,7 @@ use std::sync::{Arc, Mutex};
 
 use common::{T0, okx_fees, slippage};
 use tv4::engine::{CellConfig, CellResult, EngineError, run_cell, run_cell_mtf};
-use tv4::model::{Candle, Side, Timeframe};
+use tv4::model::{Candle, InstrumentRules, Side, Timeframe};
 use tv4::mtf::Mtf;
 use tv4::sim::{ExitReason, SimRules};
 use tv4::strategy::{BarContext, IndicatorKind, IndicatorSpec, OrderKind, Signal, Size, Strategy};
@@ -111,7 +116,7 @@ impl Strategy for Scripted {
 
 fn enter(stop: f64) -> Signal {
     Signal::EnterLong {
-        size: Size::RiskPct(0.01),
+        size: Size::Quote(100.1),
         kind: OrderKind::Market,
         stop: Some(stop),
         take_profit: None,
@@ -155,7 +160,12 @@ fn config(cash: f64) -> CellConfig<'static> {
         fees: okx_fees(),
         slippage: slippage(10.0),
         initial_cash: cash,
-        sim_rules: SimRules::default(),
+        sim_rules: SimRules {
+            activation_delay_bars: 0,
+            max_volume_share: 1e9,
+            ..SimRules::default()
+        },
+        instrument: InstrumentRules::new(0.01, 1e-8, 0.0, 0.0).expect("instrument valide"),
     }
 }
 
@@ -265,117 +275,148 @@ fn cloture_forcee_comptee() {
 }
 
 #[test]
-fn signaux_non_geres_rejetes_et_comptes() {
+fn signaux_s6_acceptes_et_refus_comptes() {
+    let entree = |size, kind, stop, take_profit| Signal::EnterLong {
+        size,
+        kind,
+        stop,
+        take_profit,
+        tag: "t",
+    };
+    let place = |side, price, size, slot| Signal::PlaceLimit {
+        side,
+        price,
+        size,
+        ttl_bars: 2,
+        slot,
+        tag: "t",
+    };
     let plan = vec![
-        // limit_order_unsupported
+        // invalid_risk_sizing : stop au-dessus du close de b0 (99,5)
         (
             0,
-            Signal::EnterLong {
-                size: Size::RiskPct(0.01),
-                kind: OrderKind::Limit {
-                    price: 99.0,
-                    ttl_bars: 3,
-                },
-                stop: Some(95.0),
-                take_profit: None,
-                tag: "t",
-            },
-        ),
-        // take_profit_unsupported
-        (
-            0,
-            Signal::EnterLong {
-                size: Size::RiskPct(0.01),
-                kind: OrderKind::Market,
-                stop: Some(95.0),
-                take_profit: Some(120.0),
-                tag: "t",
-            },
-        ),
-        // size_unsupported
-        (
-            0,
-            Signal::EnterLong {
-                size: Size::PctEquity(0.2),
-                kind: OrderKind::Market,
-                stop: Some(95.0),
-                take_profit: None,
-                tag: "t",
-            },
+            entree(Size::RiskPct(0.01), OrderKind::Market, Some(150.0), None),
         ),
         // risk_without_stop
         (
             0,
-            Signal::EnterLong {
-                size: Size::RiskPct(0.01),
-                kind: OrderKind::Market,
-                stop: None,
-                take_profit: None,
-                tag: "t",
-            },
+            entree(Size::RiskPct(0.01), OrderKind::Market, None, None),
         ),
-        // invalid_risk_sizing : stop au-dessus du close de b0 (99,5)
-        (0, enter(150.0)),
-        (0, Signal::MoveStop { stop: 95.0 }),
-        (0, Signal::CancelPending),
+        // invalid_size
+        (0, entree(Size::Quote(-1.0), OrderKind::Market, None, None)),
+        // invalid_ttl
         (
             0,
-            Signal::PlaceLimit {
-                side: Side::Buy,
-                price: 99.0,
-                size: Size::Quote(10.0),
-                ttl_bars: 2,
-                slot: 1,
-                tag: "t",
-            },
+            entree(
+                Size::Quote(10.0),
+                OrderKind::Limit {
+                    price: 99.0,
+                    ttl_bars: 0,
+                },
+                None,
+                None,
+            ),
         ),
+        // invalid_price
+        (
+            0,
+            entree(
+                Size::Quote(10.0),
+                OrderKind::Limit {
+                    price: f64::NAN,
+                    ttl_bars: 2,
+                },
+                None,
+                None,
+            ),
+        ),
+        // move_stop_without_position
+        (0, Signal::MoveStop { stop: 95.0 }),
+        // acceptés : annulation sans ordre, limit de grille
+        (0, Signal::CancelPending),
+        (0, place(Side::Buy, 99.0, Size::Quote(10.0), 1)),
+        // slot_already_open
+        (0, place(Side::Buy, 98.0, Size::Quote(10.0), 1)),
+        // invalid_slot
+        (0, place(Side::Buy, 98.0, Size::Quote(10.0), 0)),
+        // place_limit_risk_pct
+        (0, place(Side::Buy, 98.0, Size::RiskPct(0.01), 2)),
+        // sell_without_free_qty : aucune position
+        (0, place(Side::Sell, 101.0, Size::Quote(10.0), 3)),
+        // accepté, puis cancel_unknown_slot
         (0, Signal::CancelSlot { slot: 1 }),
+        (0, Signal::CancelSlot { slot: 7 }),
+        // exit_without_position
+        (0, exit()),
+        // insufficient_quote : 5 000 pour 1 000 de cash
+        (0, place(Side::Buy, 98.0, Size::Quote(5_000.0), 2)),
+        // accepté, puis entry_while_long
+        (0, enter(89.5)),
+        (0, enter(89.5)),
     ];
     let result = run(plan, &hand_candles());
     let r = result.rejections;
-    assert_eq!(r.limit_order_unsupported, 1);
-    assert_eq!(r.take_profit_unsupported, 1);
-    assert_eq!(r.size_unsupported, 1);
-    assert_eq!(r.risk_without_stop, 1);
     assert_eq!(r.invalid_risk_sizing, 1);
-    assert_eq!(r.move_stop_unsupported, 1);
-    assert_eq!(r.cancel_pending_unsupported, 1);
-    assert_eq!(r.place_limit_unsupported, 1);
-    assert_eq!(r.cancel_slot_unsupported, 1);
-    assert_eq!(r.total(), 9);
-    assert!(result.trades.is_empty());
-    assert_eq!(result.signals_emitted, 9);
+    assert_eq!(r.risk_without_stop, 1);
+    assert_eq!(r.invalid_size, 1);
+    assert_eq!(r.invalid_ttl, 1);
+    assert_eq!(r.invalid_price, 1);
+    assert_eq!(r.move_stop_without_position, 1);
+    assert_eq!(r.slot_already_open, 1);
+    assert_eq!(r.invalid_slot, 1);
+    assert_eq!(r.place_limit_risk_pct, 1);
+    assert_eq!(r.sell_without_free_qty, 1);
+    assert_eq!(r.cancel_unknown_slot, 1);
+    assert_eq!(r.exit_without_position, 1);
+    assert_eq!(r.insufficient_quote, 1);
+    assert_eq!(r.entry_while_long, 1);
+    assert_eq!(r.total(), 14);
+    assert_eq!(result.signals_emitted, 18);
+    assert_eq!(result.signals_accepted, 4);
     assert_eq!(result.signals_emitted, result.signals_accepted + r.total());
+    // L'entrée market est remplie à b1 ; la limit de grille a été annulée avant de pouvoir l'être.
+    assert_eq!(result.trades.len(), 1);
+    assert_eq!(result.sim.orders_cancelled, 1);
+    assert_eq!(result.sim.fills_limit, 0);
 }
 
 #[test]
 fn sortie_limit_et_rejets_du_simulateur_comptes() {
+    let sortie_limit = Signal::ExitLong {
+        kind: OrderKind::Limit {
+            price: 105.0,
+            ttl_bars: 5,
+        },
+        tag: "limit",
+    };
     let plan = vec![
-        (
-            0,
-            Signal::ExitLong {
-                kind: OrderKind::Limit {
-                    price: 101.0,
-                    ttl_bars: 2,
-                },
-                tag: "t",
-            },
-        ),
         // Deux entrées sur la même bougie : la seconde est refusée par le simulateur.
         (0, enter(89.5)),
         (0, enter(89.5)),
-        // Entrée alors que la position est longue.
-        (2, enter(89.5)),
-        // Deux sorties : la seconde est un doublon.
-        (3, exit()),
-        (3, exit()),
+        // Entrée alors que la position est longue (remplie à b1).
+        (1, enter(89.5)),
+        // Sortie limit à 105, puis une sortie market : doublon.
+        (1, sortie_limit),
+        (1, exit()),
+        // La limit est remplie à b2 : plus de position.
+        (2, exit()),
     ];
     let result = run(plan, &hand_candles());
     let r = result.rejections;
-    assert_eq!(r.limit_order_unsupported, 1);
     assert_eq!(r.entry_while_long, 2);
     assert_eq!(r.duplicate_exit, 1);
+    assert_eq!(r.exit_without_position, 1);
     assert_eq!(result.signals_emitted, result.signals_accepted + r.total());
+    // Sortie limit exécutée : maker, au prix max(105, open b2 = 105).
+    assert_eq!(result.trades.len(), 1);
+    let t = result.trades[0];
+    assert_eq!(t.exit_price, 105.0);
+    assert_eq!(t.exit_ref_price, 105.0);
+    assert_eq!(t.exit_ms, T0 + 2 * MINUTE);
+    assert_eq!(t.exit_reason, ExitReason::Signal);
+    assert_eq!(result.sim.fills_limit, 1);
+    close_to(t.exit_fee, 105.0 * 0.002);
+    assert!(!result.forced_close);
 }
 
 #[test]

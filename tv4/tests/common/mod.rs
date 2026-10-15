@@ -8,6 +8,10 @@
 
 use tv4::model::Candle;
 
+pub mod grille;
+pub mod scripte;
+pub mod sinus;
+
 /// SplitMix64 standard : générateur de 64 bits, déterministe, sans dépendance.
 pub struct SplitMix64(pub u64);
 
@@ -69,7 +73,7 @@ pub fn synthetic_candles(n: usize, seed: u64, start_ms: i64, gap_prob: f64) -> V
 // --- Aides communes aux tests du moteur (S3) ---
 
 use std::path::PathBuf;
-use tv4::model::{ExchangeId, FeeSchedule, Slippage, Timeframe};
+use tv4::model::{ExchangeId, FeeSchedule, InstrumentRules, Slippage, Timeframe};
 use tv4::strategy::{Strategy, registry};
 
 /// 2024-01-01T00:00:00Z : origine des bougies écrites à la main.
@@ -97,6 +101,16 @@ pub fn sma_cross_1m() -> Box<dyn Strategy> {
 /// Grille OKX (20 / 35 bps), lue dans `config/fees.toml`.
 pub fn okx_fees() -> FeeSchedule {
     FeeSchedule::load(ExchangeId::Okx, &repo_path("config/fees.toml")).expect("frais okx")
+}
+
+/// Contraintes Kraken BTC-USD (tick 0,1, lot 1e-8), lues dans `config/instruments.toml`.
+pub fn kraken_btc_usd() -> InstrumentRules {
+    InstrumentRules::load(
+        ExchangeId::Kraken,
+        "BTC-USD",
+        &repo_path("config/instruments.toml"),
+    )
+    .expect("instrument kraken")
 }
 
 pub fn slippage(bps: f64) -> Slippage {

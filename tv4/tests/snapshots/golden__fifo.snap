@@ -1,0 +1,15 @@
+---
+source: tv4/tests/golden.rs
+expression: "resume(&r, true)"
+---
+cash_final = 1005.5604302500001
+pnl_net = 5.560430250000081
+pnl_realized = 4.1414999999999935
+pnl_marked = 1.4189302500000025
+forced_close = true
+n_trades = 3
+sim.fills = 4
+sim.fills_limit = 3
+trade lot=0 entree=2 Maker ref=100.0 prix=100.0 sortie=5 LimitSell Maker ref=103.0 prix=103.0 qty=1.0 pnl_net=2.593999999999994 mfe=3.5 mae=-1.0
+trade lot=1 entree=2 Maker ref=99.5 prix=99.5 sortie=5 LimitSell Maker ref=103.0 prix=103.0 qty=0.5 pnl_net=1.5474999999999994 mfe=2.0 mae=-0.25
+trade lot=1 entree=2 Maker ref=99.5 prix=99.5 sortie=7 ForcedClose Taker ref=103.0 prix=102.897 qty=0.5 pnl_net=1.4189302500000025 mfe=2.0 mae=-0.25

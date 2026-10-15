@@ -1,6 +1,7 @@
-//! Rapports d'un run (docs/03-architecture.md §2). En S3 : `metrics.json`, écrit de façon atomique ;
-//! [`write_json_atomic`] sert aussi aux rapports d'ingestion de `tv4 ingest kraken` (S5).
-//! Les rapports complets (`trades.csv`, `equity.csv`, `manifest.json`, verdict) arrivent en S8.
+//! Rapports d'un run (docs/03-architecture.md §2). `metrics.json` (S3) et `trades.csv` (écrit dès S6,
+//! voir [`writers`]) sont écrits de façon atomique ; [`write_json_atomic`] sert aussi aux rapports
+//! d'ingestion de `tv4 ingest kraken` (S5). Les rapports complets (`equity.csv`, `manifest.json`,
+//! verdict) arrivent en S8.
 //!
 //! Le module lit les résultats de `engine` ; il ne connaît pas les stratégies (id, version et
 //! paramètres lui arrivent dans `RunConfig`) et ne remonte pas vers la CLI.
@@ -8,6 +9,7 @@
 #![forbid(unsafe_code)]
 
 pub mod metrics;
+pub mod writers;
 
 use std::fs::{self, File};
 use std::io::Write;
@@ -19,6 +21,7 @@ use thiserror::Error;
 use crate::model::{ModelError, hash};
 
 pub use metrics::{DataInfo, DatasetRef, EngineInfo, Metrics};
+pub use writers::write_trades_csv;
 
 /// Erreurs d'écriture d'un rapport.
 #[derive(Debug, Error)]
@@ -35,6 +38,9 @@ pub enum ReportError {
 
     #[error("aucune bougie : les bornes des données sont inconnues")]
     NoCandles,
+
+    #[error("production du CSV impossible : {0}")]
+    Csv(String),
 }
 
 /// Écrit `value` en JSON canonique (clés triées), suivi d'un `\n`, dans `dir/name`.
@@ -46,17 +52,22 @@ pub fn write_json_atomic<T: Serialize>(
     name: &str,
     value: &T,
 ) -> Result<PathBuf, ReportError> {
+    let mut text = hash::canonical_json(value)?;
+    text.push('\n');
+    write_bytes_atomic(dir, name, text.as_bytes())
+}
+
+/// Écrit `bytes` dans `dir/name` de façon atomique (même schéma que [`write_json_atomic`]).
+fn write_bytes_atomic(dir: &Path, name: &str, bytes: &[u8]) -> Result<PathBuf, ReportError> {
     let io = |path: &Path| {
         let path = path.display().to_string();
         move |source| ReportError::Io { path, source }
     };
-    let mut text = hash::canonical_json(value)?;
-    text.push('\n');
     fs::create_dir_all(dir).map_err(io(dir))?;
     let final_path = dir.join(name);
     let tmp_path = dir.join(format!("{name}.tmp"));
     let mut file = File::create(&tmp_path).map_err(io(&tmp_path))?;
-    file.write_all(text.as_bytes()).map_err(io(&tmp_path))?;
+    file.write_all(bytes).map_err(io(&tmp_path))?;
     file.sync_all().map_err(io(&tmp_path))?;
     drop(file);
     fs::rename(&tmp_path, &final_path).map_err(io(&final_path))?;

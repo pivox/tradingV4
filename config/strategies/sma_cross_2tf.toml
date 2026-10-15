@@ -1,0 +1,11 @@
+# sma_cross en deux timeframes (docs/03 §11, S6) : entrée sur croisement 20/50 en 15m, seulement si la
+# dernière clôture 1h est au-dessus de sa SMA 24. Sortie sur croisement baissier, stop à 2 ATR14 15m.
+# Ce n'est pas une hypothèse de recherche : aucune fiche H-NNN, aucun run sur DEV (docs/04 §4.3).
+tf = "15m"
+fast = 20
+slow = 50
+stop_atr_mult = 2.0
+
+[trend]
+tf = "1h"
+sma = 24
