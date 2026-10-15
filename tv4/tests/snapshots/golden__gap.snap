@@ -2,12 +2,13 @@
 source: tv4/tests/golden.rs
 expression: "resume(&r, true)"
 ---
-cash_final = 1022.75777773412
-pnl_net = 22.757777734120054
-pnl_realized = 22.757777734119998
+cash_final = 1020.2707431429315
+pnl_net = 20.27074314293145
+pnl_realized = 20.270743142931565
 pnl_marked = 0.0
 forced_close = false
 n_trades = 1
 sim.fills = 2
 sim.fills_limit = 2
-trade lot=0 entree=2 Maker ref=99.0 prix=98.0 sortie=4 Signal Maker ref=102.0 prix=103.0 qty=4.94949494 pnl_net=22.757777734119998 mfe=27.222222170000002 mae=-2.47474747
+sim.limits_marketable_at_arrival = 2
+trade lot=0 entree=2 Taker ref=98.0 prix=98.09799999999998 sortie=4 Signal Taker ref=103.0 prix=102.897 qty=4.94949494 pnl_net=20.270743142931565 mfe=26.737171665880076 mae=-2.9597979741199247

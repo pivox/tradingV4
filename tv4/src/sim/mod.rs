@@ -14,12 +14,16 @@
 //!
 //! Étapes de `on_bar` (E6) :
 //!
-//! 0. annulations et expirations effectives, puis `MoveStop` effectif ;
+//! 0. annulations et expirations effectives, puis `MoveStop` effectif, puis résolution du prix à
+//!    l'arrivée des limits qui deviennent actives (marketables ou au repos) ;
 //! 1. volume nul : aucun fill (la 1m ne met à jour que MFE et MAE) ;
 //! 2. ordres market actifs, dans l'ordre d'arrivée, à l'open ;
 //! 3. MFE et MAE des lots ouverts ;
-//! 4. limits d'achat actives et franchies d'au moins `limit_cross_ticks` ticks ;
-//! 5. stop, ventes limit et take-profit selon [`IntrabarRule`] ;
+//! 4. limits d'achat actives : prises en taker si elles étaient marketables à l'arrivée et que l'open
+//!    les franchit encore, sinon remplies à `L` en maker quand la 1m les traverse d'au moins
+//!    `limit_cross_ticks` ticks ;
+//! 5. stop, ventes limit et take-profit selon [`IntrabarRule`] (mêmes règles de prix pour les ventes
+//!    limit et le take-profit) ;
 //! 6. réservations recalculées, contrôle du cash, invariants de debug.
 //!
 //! Écarts d'implémentation (S6) à docs/03, détail dans docs/03 §7.2 :
@@ -44,9 +48,15 @@
 //!    de distribution au jalon 1, aucun générateur aléatoire dans le simulateur (calibration en S10).
 //! 9. Les minimums d'instrument de Kraken sont à 0 : à valider (S9, issue #11).
 //! 10. Une limit traversée d'un tick est remplie en entier : pas de modèle de file d'attente.
-//! 11. Optimisme des limits (issue S6, `limit_gap_fill_optimistic`) : une limit déjà au repos qu'un gap
-//!     traverse est remplie au meilleur prix `min(L, open)` (`max(L, open)` en vente), et une limit déjà
-//!     marketable à son activation est facturée maker. Un carnet continu la prendrait à `L`, ou en taker.
+//! 11. Limits pessimistes (règles `s6.1`, proposées au propriétaire le 15/10 ; remplacent la règle de l'issue S6
+//!     `min(L, open)` / `max(L, open)` en maker) : une limit s'applique à tout ordre limit, y compris le
+//!     take-profit. Son prix de référence à l'arrivée `P_arr` est l'open de la 1m d'activation, ou le
+//!     close de la dernière 1m antérieure si la minute manque. Marketable à l'arrivée (achat `P_arr < L`,
+//!     vente `P_arr > L`), elle est prise en taker à la première 1m à volume dont l'open franchit encore
+//!     `L`, à `min(open × (1 + s), L)` (`max(open × (1 − s), L)` en vente) ; si l'open ne la franchit
+//!     plus, elle passe au repos. Au repos, elle est remplie à `L` exactement, en maker, par la première
+//!     1m à volume qui la traverse d'au moins `limit_cross_ticks` ticks, même si l'open est déjà
+//!     au-delà de `L`. Le prix d'un fill au repos peut donc sortir de `[low, high]` (gap).
 //! 12. MFE et MAE d'un lot comptent les extrêmes de toute la 1m de fill, y compris ceux qui précèdent le
 //!     fill d'une limit (MFE surestimé d'un lot ouvert par une limit d'achat) ou suivent la sortie d'un
 //!     stop ou d'un take-profit. Convention de la spécification, gardée pour que l'oracle reste exact.
@@ -82,7 +92,7 @@ pub use orders::{Instruction, OrderPrice, PendingView, Rejection, SizeSpec, Subm
 pub use portfolio::{ExitReason, Liquidity, PositionView, Trade};
 pub use rules::{IntrabarRule, MIN_CASH_MARGIN, SIM_RULES_VERSION, SimRules};
 
-use orders::{Order, OrderType, Origin};
+use orders::{Arrival, Order, OrderType, Origin};
 use portfolio::Lot;
 
 /// Durée d'une 1m en millisecondes.
@@ -138,6 +148,9 @@ pub struct SimCounters {
     pub entries_dropped_while_long: u64,
     pub exits_dropped_flat: u64,
     pub exits_over_volume_share: u64,
+    /// Fills de limit (achat, vente ou take-profit) exécutés en taker parce que l'ordre était
+    /// marketable à son arrivée et que l'open franchissait encore sa limite.
+    pub limits_marketable_at_arrival: u64,
     pub limits_expired: u64,
     pub orders_cancelled: u64,
     pub sells_cancelled_by_exit: u64,
@@ -215,6 +228,18 @@ pub struct Simulator {
     stop_signal_ms: Ts,
     take_profit: Option<f64>,
     tp_signal_ms: Ts,
+    /// Instant à partir duquel le take-profit est « arrivé » : la 1m qui suit le fill de l'entrée (la 1m
+    /// de fill elle-même si `tp_ignored_on_fill_bar` est faux).
+    tp_active_from_ms: Ts,
+    /// Situation du take-profit par rapport à son prix à l'arrivée.
+    tp_arrival: Arrival,
+    /// Vrai pour la 1m où une entrée limit AU REPOS (maker, remplie en cours de 1m) a armé son take-profit :
+    /// le TP est posé après le fill, jamais avant l'achat, donc son touché dans cette 1m est ignoré quel que
+    /// soit `tp_ignored_on_fill_bar` (lecture pessimiste de l'ambiguïté du TP de la 1m de fill).
+    tp_blocked_fill_bar: bool,
+    /// Close de la dernière 1m passée à `on_bar` : prix à l'arrivée d'un ordre dont la minute
+    /// d'activation manque dans la série.
+    last_close: Option<f64>,
     /// `(niveau, effectif à partir de, signal_ms)` d'un `MoveStop` pas encore effectif.
     stop_update: Option<(f64, Ts, Ts)>,
     pending: Vec<Order>,
@@ -233,6 +258,20 @@ fn cross_threshold(cross_ticks: u32) -> f64 {
         0.0
     } else {
         f64::from(cross_ticks) - STEP_SNAP
+    }
+}
+
+/// Un ordre limit est marketable à l'arrivée si le prix de référence franchit déjà sa limite (inégalité
+/// stricte) : achat `p_arr < limite`, vente `p_arr > limite`.
+fn arrival_state(side: Side, p_arr: f64, limit: f64) -> Arrival {
+    let marketable = match side {
+        Side::Buy => p_arr < limit,
+        Side::Sell => p_arr > limit,
+    };
+    if marketable {
+        Arrival::Marketable
+    } else {
+        Arrival::Resting
     }
 }
 
@@ -296,6 +335,10 @@ impl Simulator {
             stop_signal_ms: 0,
             take_profit: None,
             tp_signal_ms: 0,
+            tp_active_from_ms: 0,
+            tp_arrival: Arrival::Unresolved,
+            tp_blocked_fill_bar: false,
+            last_close: None,
             stop_update: None,
             pending: Vec::with_capacity(rules.max_pending),
             lots: VecDeque::with_capacity(LOTS_CAPACITY),
@@ -739,7 +782,9 @@ impl Simulator {
     /// Déroule les étapes 0 à 6 de la 1m `candle` (voir la doc du module).
     pub fn on_bar(&mut self, candle: &Candle) -> Result<(), SimError> {
         let t = candle.open_time_ms;
+        self.tp_blocked_fill_bar = false;
         self.step_cancel_expire(t);
+        self.step_arrival(candle);
         if self.rules.zero_volume_no_fill && candle.volume == 0.0 {
             // Étape 1 : rien n'est exécuté, seuls le compteur et les excursions bougent.
             if self.qty_lots > 0 || self.pending.iter().any(|o| o.active_from_ms <= t) {
@@ -754,6 +799,7 @@ impl Simulator {
             self.step_exits(candle, vol_limit, market_bought || limit_bought)?;
         }
         self.recompute_reservations();
+        self.last_close = Some(candle.close);
         if !(self.cash.is_finite() && self.cash >= 0.0) {
             return Err(SimError::NegativeCash {
                 open_time_ms: t,
@@ -801,6 +847,28 @@ impl Simulator {
                 self.counters.move_stops_dropped_flat += 1;
             }
             self.stop_update = None;
+        }
+    }
+
+    /// Fin de l'étape 0 : fixe, pour chaque limit qui devient active à cette 1m (et pour le take-profit
+    /// arrivé), si elle est marketable à l'arrivée. Cela se fait sur toute 1m, volume nul compris : le
+    /// prix à l'arrivée est celui de la minute d'activation, pas celui de la première 1m qui peut remplir.
+    fn step_arrival(&mut self, candle: &Candle) {
+        let t = candle.open_time_ms;
+        for order in &mut self.pending {
+            if order.arrival != Arrival::Unresolved || order.is_market() || order.active_from_ms > t
+            {
+                continue;
+            }
+            let p_arr = fills::arrival_price(order.active_from_ms, candle, self.last_close);
+            order.arrival = arrival_state(order.side(), p_arr, order.limit);
+        }
+        if self.tp_arrival == Arrival::Unresolved
+            && self.tp_active_from_ms <= t
+            && let Some(tp) = self.take_profit
+        {
+            let p_arr = fills::arrival_price(self.tp_active_from_ms, candle, self.last_close);
+            self.tp_arrival = arrival_state(Side::Sell, p_arr, tp);
         }
     }
 
@@ -930,7 +998,10 @@ impl Simulator {
         }
     }
 
-    /// Étape 4 : limits d'achat actives et franchies. Rend vrai si au moins un achat a été rempli.
+    /// Étape 4 : limits d'achat actives. Une limit marketable à l'arrivée que l'open franchit encore est
+    /// prise en taker à `min(open × (1 + s), L)` ; sinon (au repos, ou devenue au repos à cette 1m) elle
+    /// est remplie à `L` en maker si le plus bas franchit `L` d'au moins `limit_cross_ticks` ticks.
+    /// Rend vrai si au moins un achat a été rempli.
     fn step_limit_buys(&mut self, candle: &Candle, vol_limit: f64) -> Result<bool, SimError> {
         let t = candle.open_time_ms;
         let tick = self.instrument.tick_size;
@@ -938,11 +1009,24 @@ impl Simulator {
         let mut k = 0;
         while let Some(candidate) = self.pending.get(k) {
             // Lecture par référence : la file est parcourue à chaque 1m, la copie d'un `Order` entier
-            // n'a lieu que pour un ordre réellement croisé.
-            let crossed = candidate.kind == OrderType::LimitBuy
-                && candidate.active_from_ms <= t
-                && candle.low <= fills::buy_cross_level(candidate.limit, tick, self.kt);
-            if !crossed {
+            // n'a lieu que pour un ordre réellement rempli.
+            if candidate.kind != OrderType::LimitBuy || candidate.active_from_ms > t {
+                k += 1;
+                continue;
+            }
+            debug_assert!(
+                candidate.arrival != Arrival::Unresolved,
+                "limit active sans prix à l'arrivée"
+            );
+            let marketable = candidate.arrival == Arrival::Marketable;
+            let taker = marketable && candle.open < candidate.limit;
+            let resting_cross =
+                candle.low <= fills::buy_cross_level(candidate.limit, tick, self.kt);
+            if marketable && !taker {
+                // L'open ne franchit plus la limite : l'ordre est au repos à partir de cette 1m.
+                self.pending[k].arrival = Arrival::Resting;
+            }
+            if !(taker || resting_cross) {
                 k += 1;
                 continue;
             }
@@ -953,18 +1037,40 @@ impl Simulator {
                 self.counters.entries_dropped_while_long += 1;
                 continue;
             }
-            let price = fills::limit_buy_price(order.limit, candle.open);
-            debug_assert!(
-                candle.low <= price && price <= candle.high,
-                "fill d'une limit d'achat hors de [low, high]"
-            );
+            let price = if taker {
+                let price = fills::marketable_buy_price(order.limit, candle.open, self.slippage);
+                debug_assert!(
+                    candle.open <= price && price <= order.limit,
+                    "fill taker d'une limit d'achat hors de [open, limite]"
+                );
+                price
+            } else {
+                // Au repos : exactement `L`, même si un gap place toute la 1m sous `L` (le prix peut
+                // alors sortir de `[low, high]`).
+                order.limit
+            };
             let qty = self.qty_of(order.lots);
             if qty * price > vol_limit {
                 self.counters.buys_rejected_volume_share += 1;
                 continue;
             }
             let cost = qty * price;
-            let fee = cost * self.maker;
+            let (fee, slippage, ref_price, liquidity) = if taker {
+                (
+                    cost * self.taker,
+                    qty * (price - candle.open),
+                    candle.open,
+                    Liquidity::Taker,
+                )
+            } else {
+                (cost * self.maker, 0.0, order.limit, Liquidity::Maker)
+            };
+            // La réservation couvre les frais maker : en taker, le cash libre (hors réservations des
+            // autres ordres) peut ne pas couvrir le fill, qui est alors abandonné comme un achat market.
+            if taker && self.cash - (cost + fee) < self.quote_reserved {
+                self.counters.buys_rejected_insufficient_cash += 1;
+                continue;
+            }
             self.fill_buy(
                 &order,
                 candle,
@@ -973,13 +1079,14 @@ impl Simulator {
                     price,
                     cost,
                     fee,
-                    slippage: 0.0,
-                    ref_price: order.limit,
-                    liquidity: Liquidity::Maker,
+                    slippage,
+                    ref_price,
+                    liquidity,
                     capped: order.capped,
                 },
             )?;
             self.counters.fills_limit += 1;
+            self.counters.limits_marketable_at_arrival += u64::from(taker);
             bought = true;
         }
         Ok(bought)
@@ -995,11 +1102,19 @@ impl Simulator {
         let pos = self.qty_lots > 0;
         let tick = self.instrument.tick_size;
         let stop_hit = pos && self.stop.is_some_and(|s| candle.low <= s);
+        let tp_marketable = pos && self.tp_arrival == Arrival::Marketable;
+        let tp_taker = tp_marketable && self.take_profit.is_some_and(|tp| candle.open > tp);
+        if tp_marketable && !tp_taker {
+            // L'open ne franchit plus le take-profit : il est au repos à partir de cette 1m.
+            self.tp_arrival = Arrival::Resting;
+        }
         let tp_cross = pos
-            && self
-                .take_profit
-                .is_some_and(|tp| candle.high >= fills::sell_cross_level(tp, tick, self.kt));
-        let tp_ok = tp_cross && !(self.rules.tp_ignored_on_fill_bar && buy_filled_this_bar);
+            && (tp_taker
+                || self
+                    .take_profit
+                    .is_some_and(|tp| candle.high >= fills::sell_cross_level(tp, tick, self.kt)));
+        let tp_ignored = self.rules.tp_ignored_on_fill_bar || self.tp_blocked_fill_bar;
+        let tp_ok = tp_cross && !(tp_ignored && buy_filled_this_bar);
         if tp_cross && !tp_ok {
             self.counters.take_profits_ignored_fill_bar += 1;
         }
@@ -1011,7 +1126,7 @@ impl Simulator {
         }
         self.fill_limit_sells(candle, vol_limit)?;
         if self.qty_lots > 0 && tp_ok {
-            self.execute_take_profit(candle, vol_limit)?;
+            self.execute_take_profit(candle, vol_limit, tp_taker)?;
         }
         if self.qty_lots > 0 && stop_hit {
             self.execute_stop(candle, vol_limit)?;
@@ -1019,31 +1134,51 @@ impl Simulator {
         Ok(())
     }
 
-    /// Ventes limit actives et franchies, dans l'ordre d'arrivée.
+    /// Ventes limit actives, dans l'ordre d'arrivée : taker à `max(open × (1 − s), L)` si marketable à
+    /// l'arrivée et que l'open franchit encore `L`, sinon maker à `L` quand le plus haut la franchit
+    /// d'au moins `limit_cross_ticks` ticks.
     fn fill_limit_sells(&mut self, candle: &Candle, vol_limit: f64) -> Result<(), SimError> {
         let t = candle.open_time_ms;
         let tick = self.instrument.tick_size;
         let mut k = 0;
         while let Some(candidate) = self.pending.get(k) {
-            let crossed = candidate.kind == OrderType::LimitSell
-                && candidate.active_from_ms <= t
-                && candle.high >= fills::sell_cross_level(candidate.limit, tick, self.kt);
-            if !crossed {
+            if candidate.kind != OrderType::LimitSell || candidate.active_from_ms > t {
+                k += 1;
+                continue;
+            }
+            debug_assert!(
+                candidate.arrival != Arrival::Unresolved,
+                "limit active sans prix à l'arrivée"
+            );
+            let marketable = candidate.arrival == Arrival::Marketable;
+            let taker = marketable && candle.open > candidate.limit;
+            let resting_cross =
+                candle.high >= fills::sell_cross_level(candidate.limit, tick, self.kt);
+            if marketable && !taker {
+                self.pending[k].arrival = Arrival::Resting;
+            }
+            if !(taker || resting_cross) {
                 k += 1;
                 continue;
             }
             let order = self.pending.remove(k);
             self.reservations_dirty = true;
             self.recompute_reservations();
-            let price = fills::limit_sell_price(order.limit, candle.open);
-            debug_assert!(
-                candle.low <= price && price <= candle.high,
-                "fill d'une limit de vente hors de [low, high]"
-            );
+            let price = if taker {
+                let price = fills::marketable_sell_price(order.limit, candle.open, self.slippage);
+                debug_assert!(
+                    order.limit <= price && price <= candle.open,
+                    "fill taker d'une limit de vente hors de [limite, open]"
+                );
+                price
+            } else {
+                order.limit
+            };
             if self.qty_of(order.lots) * price > vol_limit {
                 self.counters.exits_over_volume_share += 1;
             }
             self.counters.fills_limit += 1;
+            self.counters.limits_marketable_at_arrival += u64::from(taker);
             let reason = if order.origin == Origin::Exit {
                 ExitReason::Signal
             } else {
@@ -1053,14 +1188,14 @@ impl Simulator {
                 Sale {
                     lots: order.lots,
                     price,
-                    rate: self.maker,
-                    ref_price: order.limit,
+                    rate: if taker { self.taker } else { self.maker },
+                    ref_price: if taker { candle.open } else { order.limit },
                     reason,
                     signal_ms: order.signal_ms,
                     exit_ms: t,
                     tag: order.tag,
                 },
-                false,
+                taker,
             )?;
         }
         Ok(())
@@ -1095,35 +1230,47 @@ impl Simulator {
         )
     }
 
-    /// Take-profit franchi : exécuté à `max(tp, open)`, maker.
-    fn execute_take_profit(&mut self, candle: &Candle, vol_limit: f64) -> Result<(), SimError> {
+    /// Take-profit franchi : comme une vente limit, taker à `max(open × (1 − s), tp)` s'il était
+    /// marketable à l'arrivée et que l'open le franchit encore (`taker`), sinon maker à `tp`.
+    fn execute_take_profit(
+        &mut self,
+        candle: &Candle,
+        vol_limit: f64,
+        taker: bool,
+    ) -> Result<(), SimError> {
         let Some(tp) = self.take_profit else {
             return Err(SimError::InvariantViolated {
                 open_time_ms: candle.open_time_ms,
             });
         };
-        let price = fills::limit_sell_price(tp, candle.open);
-        debug_assert!(
-            candle.low <= price && price <= candle.high,
-            "fill d'un take-profit hors de [low, high]"
-        );
+        let price = if taker {
+            let price = fills::marketable_sell_price(tp, candle.open, self.slippage);
+            debug_assert!(
+                tp <= price && price <= candle.open,
+                "fill taker d'un take-profit hors de [tp, open]"
+            );
+            price
+        } else {
+            tp
+        };
         if self.qty_of(self.qty_lots) * price > vol_limit {
             self.counters.exits_over_volume_share += 1;
         }
         self.cancel_limit_sells();
         self.counters.take_profits_triggered += 1;
+        self.counters.limits_marketable_at_arrival += u64::from(taker);
         self.sell_lots(
             Sale {
                 lots: self.qty_lots,
                 price,
-                rate: self.maker,
-                ref_price: tp,
+                rate: if taker { self.taker } else { self.maker },
+                ref_price: if taker { candle.open } else { tp },
                 reason: ExitReason::TakeProfit,
                 signal_ms: self.tp_signal_ms,
                 exit_ms: candle.open_time_ms,
                 tag: "take_profit",
             },
-            false,
+            taker,
         )
     }
 
@@ -1192,6 +1339,20 @@ impl Simulator {
             self.take_profit = order.take_profit;
             self.stop_signal_ms = order.signal_ms;
             self.tp_signal_ms = order.signal_ms;
+            // Le take-profit arrive à la 1m suivante : celle du fill l'ignore (ou, si cette règle est
+            // levée, il arrive à l'open de cette même 1m). Exception pessimiste : une entrée limit au repos
+            // (maker) est remplie en cours de 1m, le TP est posé après le fill et ne peut pas être pris à
+            // l'open de cette 1m (avant l'achat) : même traitement que `tp_ignored_on_fill_bar`.
+            self.tp_arrival = Arrival::Unresolved;
+            self.tp_blocked_fill_bar = entry.liquidity == Liquidity::Maker;
+            if self.rules.tp_ignored_on_fill_bar || self.tp_blocked_fill_bar {
+                self.tp_active_from_ms = t.saturating_add(MINUTE_MS);
+            } else {
+                self.tp_active_from_ms = t;
+                if let Some(tp) = order.take_profit {
+                    self.tp_arrival = arrival_state(Side::Sell, candle.open, tp);
+                }
+            }
         }
         self.counters.fills += 1;
         self.counters.entries_capped_by_cash += u64::from(entry.capped);

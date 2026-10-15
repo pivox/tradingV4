@@ -144,6 +144,21 @@ pub(super) enum OrderType {
     LimitSell,
 }
 
+/// État d'une limit (ou du take-profit) au regard de son prix à l'arrivée (règle « limits
+/// pessimistes », docs/03 §7.2 écart 11).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum Arrival {
+    /// Pas encore vu : l'ordre n'est pas actif, ou la 1m qui le décide n'est pas passée.
+    Unresolved,
+    /// Marketable à l'arrivée (achat : `P_arr < L`, vente : `P_arr > L`) et pas encore exécuté : il prend
+    /// la liquidité (taker) dès la première 1m à volume dont l'open franchit encore `L`, sinon il passe au
+    /// repos.
+    Marketable,
+    /// Au repos : rempli à `L` exactement, en maker, par une 1m qui le traverse d'au moins
+    /// `limit_cross_ticks` ticks.
+    Resting,
+}
+
 /// Ordre en attente. `Copy` : la file est un `Vec` préalloué, aucun ordre n'alloue.
 #[derive(Clone, Copy, Debug)]
 pub(super) struct Order {
@@ -172,6 +187,8 @@ pub(super) struct Order {
     /// `Enter` seulement.
     pub stop: Option<f64>,
     pub take_profit: Option<f64>,
+    /// Limits : situation par rapport au prix à l'arrivée. `Unresolved` pour un market.
+    pub arrival: Arrival,
 }
 
 impl Order {
@@ -201,6 +218,7 @@ impl Order {
             equity_at_signal: 0.0,
             stop: None,
             take_profit: None,
+            arrival: Arrival::Unresolved,
         }
     }
 

@@ -108,7 +108,7 @@ fn close_to(a: f64, b: f64) {
 fn regles_par_defaut_valides() {
     let r = SimRules::default();
     assert!(r.validate().is_ok());
-    assert_eq!(r.version, "s6");
+    assert_eq!(r.version, "s6.1");
     assert_eq!(r.max_pending, 64);
     assert_eq!(r.market_buy_cash_margin, 0.05);
     assert_eq!(r.activation_delay_bars, 1);
@@ -323,7 +323,7 @@ fn limit_achat_traverse_d_un_tick() {
     sim.on_bar(&bar(2, 99.5, 99.8, 99.0, 99.4)).unwrap();
     assert_eq!(sim.pending_len(), 1);
     assert_eq!(sim.qty(), 0.0);
-    // low == L − tick : fill à min(L, open) = L.
+    // low == L − tick : ordre au repos, fill à L.
     sim.on_bar(&bar(3, 99.4, 99.5, 98.9, 99.0)).unwrap();
     assert_eq!(sim.pending_len(), 0);
     assert_eq!(sim.qty(), 1.0);
@@ -379,19 +379,177 @@ fn limit_cross_ticks_zero_n_accepte_pas_un_low_hors_de_portee() {
     assert_eq!(sim.qty(), 0.0);
 }
 
-#[test]
-fn limit_achat_gap_au_meilleur_prix() {
-    let mut sim = sim_defaults(1000.0);
+/// Limit d'achat à 99 posée à la clôture de la 1m 0, active à l'open de la 1m 2.
+fn achat_a_99(slippage: Slippage, cash: f64) -> Simulator {
+    let mut sim = sim_with(SimRules::default(), slippage, cash);
     sim.on_bar(&flat(0, 100.0)).unwrap();
     sim.submit(place(Side::Buy, 99.0, 99.0, 1, 100), at(0))
         .unwrap();
     sim.on_bar(&flat(1, 100.0)).unwrap();
-    // L'open est sous la limite : fill à l'open (meilleur prix).
+    sim
+}
+
+/// Limits pessimistes : un achat au repos (P_arr = 100 >= L) qu'un gap traverse est rempli à `L`
+/// exactement, en maker, même si l'open de la 1m est déjà sous `L` et que le fill sort de `[low, high]`.
+#[test]
+fn limit_achat_au_repos_traverse_par_un_gap_rempli_a_la_limite_en_maker() {
+    let mut sim = achat_a_99(bps(10.0), 1000.0);
+    // 1m d'activation : open 100, l'ordre n'est pas marketable.
+    sim.on_bar(&flat(2, 100.0)).unwrap();
+    assert_eq!(sim.qty(), 0.0);
+    // Gap : toute la 1m est sous la limite.
+    sim.on_bar(&bar(3, 98.0, 98.5, 97.5, 98.2)).unwrap();
+    assert_eq!(sim.qty(), 1.0);
+    assert_eq!(sim.counters().limits_marketable_at_arrival, 0);
+    assert_eq!(sim.counters().fills_limit, 1);
+    let out = sim.finish(&flat(3, 98.2)).unwrap();
+    let t = out.trades[0];
+    assert_eq!(t.entry_price, 99.0);
+    assert_eq!(t.entry_ref_price, 99.0);
+    assert_eq!(t.entry_liquidity, Liquidity::Maker);
+    assert_eq!(t.entry_slippage, 0.0);
+    close_to(t.entry_fee, 99.0 * 0.002);
+}
+
+/// Limits pessimistes : un achat marketable à l'arrivée (open d'activation 98 < L = 99) prend la
+/// liquidité, à `open × (1 + s)`, en taker.
+#[test]
+fn limit_achat_marketable_a_l_arrivee_rempli_a_l_open_en_taker() {
+    let mut sim = achat_a_99(bps(10.0), 1000.0);
     sim.on_bar(&bar(2, 98.0, 98.5, 97.5, 98.2)).unwrap();
     assert_eq!(sim.qty(), 1.0);
+    assert_eq!(sim.counters().limits_marketable_at_arrival, 1);
+    assert_eq!(sim.counters().fills_limit, 1);
+    assert_eq!(sim.counters().fills_market, 0);
+    let out = sim.finish(&flat(2, 98.2)).unwrap();
+    let t = out.trades[0];
+    assert_eq!(t.entry_price, 98.0 * (1.0 + 10.0 / 10_000.0));
+    assert_eq!(t.entry_ref_price, 98.0);
+    assert_eq!(t.entry_liquidity, Liquidity::Taker);
+    close_to(t.entry_slippage, 98.0 * 0.001);
+    close_to(t.entry_fee, t.entry_price * 0.0035);
+}
+
+/// Sans slippage, un achat marketable est pris à l'open (gap sous la limite), en taker.
+#[test]
+fn limit_achat_marketable_sans_slippage_a_l_open() {
+    let mut sim = achat_a_99(Slippage::ZERO, 1000.0);
+    sim.on_bar(&bar(2, 98.0, 98.5, 97.5, 98.2)).unwrap();
     let out = sim.finish(&flat(2, 98.2)).unwrap();
     assert_eq!(out.trades[0].entry_price, 98.0);
-    assert_eq!(out.trades[0].entry_ref_price, 99.0);
+    assert_eq!(out.trades[0].entry_liquidity, Liquidity::Taker);
+    assert_eq!(out.trades[0].entry_slippage, 0.0);
+}
+
+/// Le prix d'un achat marketable est plafonné par `L` quand `open × (1 + s) > L`.
+#[test]
+fn limit_achat_marketable_plafonne_par_la_limite() {
+    let mut sim = sim_with(SimRules::default(), bps(20.0), 1000.0);
+    sim.on_bar(&flat(0, 100.0)).unwrap();
+    sim.submit(place(Side::Buy, 98.1, 98.1, 1, 100), at(0))
+        .unwrap();
+    sim.on_bar(&flat(1, 100.0)).unwrap();
+    // 98.0 × 1,002 = 98.196 > 98.1 : plafonné à la limite, toujours taker.
+    sim.on_bar(&bar(2, 98.0, 98.5, 97.5, 98.2)).unwrap();
+    assert_eq!(sim.counters().limits_marketable_at_arrival, 1);
+    let out = sim.finish(&flat(2, 98.2)).unwrap();
+    let t = out.trades[0];
+    assert_eq!(t.entry_price, 98.1);
+    assert_eq!(t.entry_liquidity, Liquidity::Taker);
+    close_to(t.entry_slippage, 0.1);
+    close_to(t.entry_fee, 98.1 * 0.0035);
+}
+
+/// P_arr est le close de la dernière 1m antérieure quand la minute d'activation manque (la 1m 2 est
+/// absente de la série).
+#[test]
+fn prix_d_arrivee_pris_sur_le_close_precedent_quand_la_minute_manque() {
+    // Close de la 1m 1 à 100 >= L : au repos. La 1m 3 ouvre à 98 (sous L) mais l'ordre n'est pas
+    // marketable : rempli à L en maker.
+    let mut sim = achat_a_99(Slippage::ZERO, 1000.0);
+    sim.on_bar(&bar(3, 98.0, 98.5, 97.5, 98.2)).unwrap();
+    assert_eq!(sim.counters().limits_marketable_at_arrival, 0);
+    let out = sim.finish(&flat(3, 98.2)).unwrap();
+    assert_eq!(out.trades[0].entry_price, 99.0);
+    assert_eq!(out.trades[0].entry_liquidity, Liquidity::Maker);
+
+    // Close de la 1m 1 à 98.5 < L : marketable. La 1m 3 ouvre à 98 : taker à l'open.
+    let mut sim = sim_with(SimRules::default(), Slippage::ZERO, 1000.0);
+    sim.on_bar(&flat(0, 100.0)).unwrap();
+    sim.submit(place(Side::Buy, 99.0, 99.0, 1, 100), at(0))
+        .unwrap();
+    sim.on_bar(&bar(1, 100.0, 100.0, 98.5, 98.5)).unwrap();
+    sim.on_bar(&bar(3, 98.0, 98.5, 97.5, 98.2)).unwrap();
+    assert_eq!(sim.counters().limits_marketable_at_arrival, 1);
+    let out = sim.finish(&flat(3, 98.2)).unwrap();
+    assert_eq!(out.trades[0].entry_price, 98.0);
+    assert_eq!(out.trades[0].entry_liquidity, Liquidity::Taker);
+}
+
+/// Marketable à l'arrivée, mais à la première 1m à volume l'open ne franchit plus `L` : l'ordre passe
+/// au repos pour de bon (rempli à `L` en maker, jamais en taker à une 1m ultérieure).
+#[test]
+fn limit_marketable_dont_l_open_ne_franchit_plus_devient_au_repos() {
+    let mut sim = achat_a_99(bps(10.0), 1000.0);
+    // 1m d'activation à volume nul : open 98 < L, donc marketable à l'arrivée, mais rien n'est exécuté.
+    sim.on_bar(&bar_v(2, 98.0, 98.0, 98.0, 98.0, 0.0)).unwrap();
+    assert_eq!(sim.qty(), 0.0);
+    assert_eq!(sim.pending_len(), 1);
+    // Première 1m à volume : open 100 >= L, le plus bas ne traverse pas : au repos.
+    sim.on_bar(&bar(3, 100.0, 100.5, 99.5, 100.0)).unwrap();
+    assert_eq!(sim.qty(), 0.0);
+    assert_eq!(sim.pending_len(), 1);
+    // Gap sous la limite ensuite : rempli à L en maker, pas à l'open en taker.
+    sim.on_bar(&bar(4, 98.5, 98.8, 98.0, 98.4)).unwrap();
+    assert_eq!(sim.counters().limits_marketable_at_arrival, 0);
+    let out = sim.finish(&flat(4, 98.4)).unwrap();
+    assert_eq!(out.trades[0].entry_price, 99.0);
+    assert_eq!(out.trades[0].entry_liquidity, Liquidity::Maker);
+}
+
+/// Marketable à l'arrivée, première 1m à volume après une 1m à volume nul : l'open la franchit encore,
+/// taker à l'open de cette 1m.
+#[test]
+fn limit_marketable_apres_une_minute_a_volume_nul_rempli_en_taker() {
+    let mut sim = achat_a_99(Slippage::ZERO, 1000.0);
+    sim.on_bar(&bar_v(2, 98.0, 98.0, 98.0, 98.0, 0.0)).unwrap();
+    assert_eq!(sim.qty(), 0.0);
+    sim.on_bar(&bar(3, 97.0, 97.5, 96.5, 97.2)).unwrap();
+    assert_eq!(sim.counters().limits_marketable_at_arrival, 1);
+    let out = sim.finish(&flat(3, 97.2)).unwrap();
+    assert_eq!(out.trades[0].entry_price, 97.0);
+    assert_eq!(out.trades[0].entry_liquidity, Liquidity::Taker);
+}
+
+/// Un achat marketable est soumis à la règle de volume comme un achat market.
+#[test]
+fn limit_achat_marketable_soumis_a_la_regle_de_volume() {
+    let mut sim = achat_a_99(Slippage::ZERO, 1000.0);
+    // Volume 1 : 0,5 % de 1 × 97,5 = 0,4875 < 98.
+    sim.on_bar(&bar_v(2, 98.0, 98.5, 97.5, 98.2, 1.0)).unwrap();
+    assert_eq!(sim.qty(), 0.0);
+    assert_eq!(sim.counters().buys_rejected_volume_share, 1);
+    assert_eq!(sim.counters().limits_marketable_at_arrival, 0);
+    assert_eq!(sim.pending_len(), 0);
+}
+
+/// La réservation couvre les frais maker : un fill taker que le cash libre ne couvre pas est abandonné
+/// et compté comme un achat market sans cash.
+#[test]
+fn limit_achat_marketable_sans_cash_pour_les_frais_taker_est_abandonne() {
+    // 99 × 1,002 = 99.198 réservés sur 99.2 de cash ; un fill à 98.9 coûte 98.9 × 1,0035 = 99.246.
+    let mut sim = achat_a_99(Slippage::ZERO, 99.2);
+    sim.on_bar(&bar(2, 98.9, 99.0, 98.5, 98.9)).unwrap();
+    assert_eq!(sim.qty(), 0.0);
+    assert_eq!(sim.counters().buys_rejected_insufficient_cash, 1);
+    assert_eq!(sim.counters().limits_marketable_at_arrival, 0);
+    assert_eq!(sim.cash(), 99.2);
+    assert_eq!(sim.pending_len(), 0);
+    // Un open plus bas laisse assez de cash : 98.0 × 1,0035 = 98.343.
+    let mut sim = achat_a_99(Slippage::ZERO, 99.2);
+    sim.on_bar(&bar(2, 98.0, 98.5, 97.5, 98.2)).unwrap();
+    assert_eq!(sim.qty(), 1.0);
+    assert_eq!(sim.counters().limits_marketable_at_arrival, 1);
 }
 
 /// Position d'une unité achetée au marché à l'open de la 1m 2, sans slippage.
@@ -407,7 +565,7 @@ fn long_one() -> Simulator {
 
 #[test]
 fn limit_vente_symetrique() {
-    // Toucher exact puis traversée d'un tick : fill à max(L, open) = L.
+    // Au repos : toucher exact sans fill, puis traversée d'un tick : fill à L, maker.
     let mut sim = long_one();
     sim.submit(
         Instruction::Exit {
@@ -434,13 +592,25 @@ fn limit_vente_symetrique() {
     assert_eq!(t.exit_liquidity, Liquidity::Maker);
     assert_eq!(t.exit_reason, ExitReason::Signal);
     close_to(t.exit_fee, 102.0 * 0.002);
+}
 
-    // Gap au-dessus de la limite : fill à l'open.
-    let mut sim = long_one();
+/// Position d'une unité, comme [`long_one`], avec le slippage donné (entrée market à 100 × (1 + s)).
+fn long_one_with(slippage: Slippage) -> Simulator {
+    let mut sim = sim_with(SimRules::default(), slippage, 1000.0);
+    sim.on_bar(&flat(0, 100.0)).unwrap();
+    sim.submit(enter(slippage.buy_price(100.0), None, None), at(0))
+        .unwrap();
+    sim.on_bar(&flat(1, 100.0)).unwrap();
+    sim.on_bar(&flat(2, 100.0)).unwrap();
+    assert_eq!(sim.qty(), 1.0);
+    sim
+}
+
+fn sortie_limit(sim: &mut Simulator, price: f64) {
     sim.submit(
         Instruction::Exit {
             price: OrderPrice::Limit {
-                price: 102.0,
+                price,
                 ttl_bars: 50,
             },
             tag: "sortie",
@@ -448,11 +618,310 @@ fn limit_vente_symetrique() {
         at(2),
     )
     .unwrap();
+}
+
+/// Vente au repos (P_arr = 100 <= L = 102) qu'un gap traverse : remplie à `L`, maker.
+#[test]
+fn limit_vente_au_repos_traversee_par_un_gap_remplie_a_la_limite_en_maker() {
+    let mut sim = long_one();
+    sortie_limit(&mut sim, 102.0);
+    sim.on_bar(&flat(3, 100.0)).unwrap();
+    sim.on_bar(&flat(4, 100.0)).unwrap();
+    assert_eq!(sim.qty(), 1.0);
+    sim.on_bar(&bar(5, 103.0, 103.5, 102.6, 103.2)).unwrap();
+    assert_eq!(sim.qty(), 0.0);
+    assert_eq!(sim.counters().limits_marketable_at_arrival, 0);
+    let out = sim.finish(&flat(5, 103.2)).unwrap();
+    let t = out.trades[0];
+    assert_eq!(t.exit_price, 102.0);
+    assert_eq!(t.exit_ref_price, 102.0);
+    assert_eq!(t.exit_liquidity, Liquidity::Maker);
+    assert_eq!(t.exit_slippage, 0.0);
+    close_to(t.exit_fee, 102.0 * 0.002);
+}
+
+/// Vente marketable à l'arrivée (open d'activation 103 > L = 102) : taker à `open × (1 − s)`.
+#[test]
+fn limit_vente_marketable_a_l_arrivee_remplie_a_l_open_en_taker() {
+    let mut sim = long_one_with(bps(10.0));
+    sortie_limit(&mut sim, 102.0);
+    sim.on_bar(&flat(3, 100.0)).unwrap();
+    sim.on_bar(&bar(4, 103.0, 103.5, 102.6, 103.2)).unwrap();
+    assert_eq!(sim.qty(), 0.0);
+    assert_eq!(sim.counters().limits_marketable_at_arrival, 1);
+    assert_eq!(sim.counters().fills_limit, 1);
+    let out = sim.finish(&flat(4, 103.2)).unwrap();
+    let t = out.trades[0];
+    assert_eq!(t.exit_price, 103.0 * (1.0 - 10.0 / 10_000.0));
+    assert_eq!(t.exit_ref_price, 103.0);
+    assert_eq!(t.exit_liquidity, Liquidity::Taker);
+    assert_eq!(t.exit_reason, ExitReason::Signal);
+    close_to(t.exit_slippage, 103.0 * 0.001);
+    close_to(t.exit_fee, t.exit_price * 0.0035);
+}
+
+/// Le prix d'une vente marketable est plafonné par `L` (plancher du prix reçu) quand `open × (1 − s) < L`.
+#[test]
+fn limit_vente_marketable_plafonnee_par_la_limite() {
+    let mut sim = long_one_with(bps(20.0));
+    // 103.0 × 0,998 = 102.794 < 102.9 : la limite est le prix.
+    sortie_limit(&mut sim, 102.9);
     sim.on_bar(&flat(3, 100.0)).unwrap();
     sim.on_bar(&bar(4, 103.0, 103.5, 102.6, 103.2)).unwrap();
     let out = sim.finish(&flat(4, 103.2)).unwrap();
-    assert_eq!(out.trades[0].exit_price, 103.0);
-    assert_eq!(out.trades[0].exit_ref_price, 102.0);
+    assert_eq!(out.trades[0].exit_price, 102.9);
+    assert_eq!(out.trades[0].exit_liquidity, Liquidity::Taker);
+    close_to(out.trades[0].exit_slippage, 0.1);
+}
+
+/// Vente marketable (P_arr = 103 > L) dont l'open ne franchit plus `L` à la première 1m à volume :
+/// elle passe au repos et se remplit à `L` en maker.
+#[test]
+fn limit_vente_marketable_dont_l_open_ne_franchit_plus_devient_au_repos() {
+    let mut sim = long_one();
+    sortie_limit(&mut sim, 102.0);
+    sim.on_bar(&flat(3, 100.0)).unwrap();
+    sim.on_bar(&bar_v(4, 103.0, 103.0, 103.0, 103.0, 0.0))
+        .unwrap();
+    assert_eq!(sim.qty(), 1.0);
+    // Open 101 <= L : au repos ; le plus haut ne la traverse pas.
+    sim.on_bar(&bar(5, 101.0, 101.5, 100.5, 101.0)).unwrap();
+    assert_eq!(sim.qty(), 1.0);
+    // Gap au-dessus ensuite : rempli à L en maker, pas à l'open.
+    sim.on_bar(&bar(6, 104.0, 104.5, 103.5, 104.2)).unwrap();
+    assert_eq!(sim.counters().limits_marketable_at_arrival, 0);
+    let out = sim.finish(&flat(6, 104.2)).unwrap();
+    assert_eq!(out.trades[0].exit_price, 102.0);
+    assert_eq!(out.trades[0].exit_liquidity, Liquidity::Maker);
+}
+
+/// Take-profit au repos (P_arr = open de la 1m qui suit le fill = 101 <= 102) qu'un gap traverse :
+/// rempli au TP, maker.
+#[test]
+fn tp_au_repos_traverse_par_un_gap_rempli_au_tp_en_maker() {
+    let mut sim = entree_avec(SimRules::default(), bps(5.0), 95.0, Some(102.0));
+    sim.on_bar(&bar(2, 100.0, 100.5, 99.5, 100.2)).unwrap();
+    sim.on_bar(&bar(3, 101.0, 101.5, 100.8, 101.2)).unwrap();
+    assert_eq!(sim.qty(), 1.0);
+    sim.on_bar(&bar(4, 103.0, 103.5, 102.6, 103.2)).unwrap();
+    assert_eq!(sim.qty(), 0.0);
+    assert_eq!(sim.counters().take_profits_triggered, 1);
+    assert_eq!(sim.counters().limits_marketable_at_arrival, 0);
+    let out = sim.finish(&flat(4, 103.2)).unwrap();
+    let t = out.trades[0];
+    assert_eq!(t.exit_reason, ExitReason::TakeProfit);
+    assert_eq!(t.exit_price, 102.0);
+    assert_eq!(t.exit_ref_price, 102.0);
+    assert_eq!(t.exit_liquidity, Liquidity::Maker);
+    assert_eq!(t.exit_slippage, 0.0);
+}
+
+/// Take-profit marketable à l'arrivée (open de la 1m qui suit le fill = 103 > 102) : taker à
+/// `open × (1 − s)`.
+#[test]
+fn tp_marketable_a_l_arrivee_rempli_a_l_open_en_taker() {
+    let mut sim = entree_avec(SimRules::default(), bps(5.0), 95.0, Some(102.0));
+    sim.on_bar(&bar(2, 100.0, 100.5, 99.5, 100.2)).unwrap();
+    sim.on_bar(&bar(3, 103.0, 103.5, 102.6, 103.2)).unwrap();
+    assert_eq!(sim.qty(), 0.0);
+    assert_eq!(sim.counters().take_profits_triggered, 1);
+    assert_eq!(sim.counters().limits_marketable_at_arrival, 1);
+    assert_eq!(
+        sim.counters().fills_limit,
+        0,
+        "le TP n'est pas dans fills_limit"
+    );
+    let out = sim.finish(&flat(3, 103.2)).unwrap();
+    let t = out.trades[0];
+    assert_eq!(t.exit_reason, ExitReason::TakeProfit);
+    assert_eq!(t.exit_price, 103.0 * (1.0 - 5.0 / 10_000.0));
+    assert_eq!(t.exit_ref_price, 103.0);
+    assert_eq!(t.exit_liquidity, Liquidity::Taker);
+    close_to(t.exit_slippage, 103.0 * 0.0005);
+}
+
+/// Take-profit marketable à l'arrivée mais l'open de la première 1m à volume ne le franchit plus : au
+/// repos, maker à `tp`.
+#[test]
+fn tp_marketable_dont_l_open_ne_franchit_plus_devient_au_repos() {
+    let mut sim = entree_avec(SimRules::default(), bps(5.0), 95.0, Some(102.0));
+    sim.on_bar(&bar(2, 100.0, 100.5, 99.5, 100.2)).unwrap();
+    sim.on_bar(&bar_v(3, 103.0, 103.0, 103.0, 103.0, 0.0))
+        .unwrap();
+    assert_eq!(sim.qty(), 1.0);
+    // Open 101, le plus haut franchit le TP : maker à 102, pas taker.
+    sim.on_bar(&bar(4, 101.0, 102.5, 100.5, 102.0)).unwrap();
+    assert_eq!(sim.qty(), 0.0);
+    assert_eq!(sim.counters().limits_marketable_at_arrival, 0);
+    let out = sim.finish(&flat(4, 102.0)).unwrap();
+    assert_eq!(out.trades[0].exit_price, 102.0);
+    assert_eq!(out.trades[0].exit_liquidity, Liquidity::Maker);
+}
+
+/// Le take-profit passe au repos dès la 1m où l'open ne franchit plus son niveau, même quand le touché
+/// de cette 1m est ignoré parce qu'un achat y est rempli (la règle 3 « évalue déjà j » sans exception) :
+/// le touché ignoré est compté, puis la sortie de la 1m suivante est maker à `tp`, pas taker.
+#[test]
+fn tp_marketable_demote_au_repos_dans_une_1m_ou_son_touche_est_ignore() {
+    let mut sim = entree_avec(SimRules::default(), bps(5.0), 90.0, Some(102.0));
+    sim.on_bar(&bar(2, 100.0, 100.5, 99.5, 100.2)).unwrap();
+    // Limit d'achat à 99, active à open[4].
+    sim.submit(place(Side::Buy, 99.0, 99.0, 1, 50), at(2))
+        .unwrap();
+    // Le TP arrive à open[3] = 103 > 102 : marketable (volume 0, aucun fill).
+    sim.on_bar(&bar_v(3, 103.0, 103.0, 103.0, 103.0, 0.0))
+        .unwrap();
+    // open[4] = 101 ne franchit plus le TP : au repos. L'achat à 99 est rempli (low 98.5), donc le
+    // touché du TP (high 102.5) est ignoré et compté.
+    sim.on_bar(&bar(4, 101.0, 102.5, 98.5, 101.5)).unwrap();
+    assert_eq!(sim.counters().take_profits_ignored_fill_bar, 1);
+    assert_eq!(sim.counters().fills_limit, 1);
+    assert!(sim.qty() > 1.0);
+    // open[5] = 103 > 102 : TP au repos touché, maker à 102 (gap), jamais taker.
+    sim.on_bar(&bar(5, 103.0, 103.5, 102.6, 103.2)).unwrap();
+    assert_eq!(sim.qty(), 0.0);
+    assert_eq!(sim.counters().limits_marketable_at_arrival, 0);
+    let out = sim.finish(&flat(5, 103.2)).unwrap();
+    let t = out.trades[0];
+    assert_eq!(t.exit_reason, ExitReason::TakeProfit);
+    assert_eq!(t.exit_price, 102.0);
+    assert_eq!(t.exit_liquidity, Liquidity::Maker);
+}
+
+/// Avec `tp_ignored_on_fill_bar = false`, le take-profit arrive à l'open de la 1m de fill de l'entrée
+/// (écart 11, lecture retenue) : marketable si cet open est au-dessus du TP, il sort alors en taker à
+/// `max(open × (1 − s), tp)` et non en maker à `tp` (un prix sous le low de la 1m).
+#[test]
+fn tp_sans_ignore_arrive_a_l_open_de_la_1m_de_fill() {
+    let rules = SimRules {
+        tp_ignored_on_fill_bar: false,
+        ..SimRules::default()
+    };
+    let mut sim = entree_avec(rules, bps(5.0), 90.0, Some(102.0));
+    // Entrée à l'open 103 (+ slippage) ; le TP à 102 est déjà sous le marché à son arrivée.
+    sim.on_bar(&bar(2, 103.0, 103.5, 102.6, 103.2)).unwrap();
+    assert_eq!(sim.qty(), 0.0);
+    assert_eq!(sim.counters().limits_marketable_at_arrival, 1);
+    assert_eq!(sim.counters().take_profits_ignored_fill_bar, 0);
+    let out = sim.finish(&flat(2, 103.2)).unwrap();
+    let t = out.trades[0];
+    assert_eq!(t.exit_reason, ExitReason::TakeProfit);
+    assert_eq!(t.exit_ref_price, 103.0);
+    assert_eq!(t.exit_price, 103.0 * (1.0 - 5.0 / 10_000.0));
+    assert_eq!(t.exit_liquidity, Liquidity::Taker);
+    assert_eq!(t.exit_ms, t.entry_ms, "sortie dans la 1m de fill");
+}
+
+/// Avec `tp_ignored_on_fill_bar = false`, une entrée limit AU REPOS remplie en cours de 1m (maker) pose son
+/// take-profit après le fill : il n'est jamais vendu à l'open de cette 1m (avant l'achat, prix optimiste),
+/// son touché y est ignoré et compté, et il arrive à la 1m suivante (lecture pessimiste de l'écart 11).
+#[test]
+fn tp_sans_ignore_entree_limit_au_repos_arrive_a_la_1m_suivante() {
+    let rules = SimRules {
+        tp_ignored_on_fill_bar: false,
+        ..SimRules::default()
+    };
+    let mut sim = sim_with(rules, bps(10.0), 1000.0);
+    sim.on_bar(&flat(0, 100.0)).unwrap();
+    sim.submit(
+        Instruction::Enter {
+            size: SizeSpec::Quote(500.0),
+            price: OrderPrice::Limit {
+                price: 98.0,
+                ttl_bars: 10,
+            },
+            stop: Some(90.0),
+            take_profit: Some(99.5),
+            tag: "entree",
+        },
+        at(0),
+    )
+    .unwrap();
+    sim.on_bar(&flat(1, 100.0)).unwrap();
+    // 1m 2 : P_arr = 100 > 98, au repos ; low 97,5 traverse L : fill maker à 98 exactement, en cours de 1m.
+    // Le TP (99,5) est sous l'open de cette 1m mais n'existait pas à l'open : ni taker à l'open, ni touché.
+    sim.on_bar(&bar(2, 100.0, 100.2, 97.5, 99.0)).unwrap();
+    assert!(
+        sim.qty() > 0.0,
+        "position ouverte, TP pas pris dans la 1m de fill"
+    );
+    assert_eq!(sim.counters().fills_limit, 1);
+    assert_eq!(sim.counters().take_profits_ignored_fill_bar, 1);
+    assert_eq!(sim.counters().limits_marketable_at_arrival, 0);
+    // 1m 3 : le TP arrive, P_arr = open = 100,1 > 99,5 : marketable, open > TP : taker.
+    sim.on_bar(&bar(3, 100.1, 100.3, 99.8, 100.0)).unwrap();
+    assert_eq!(sim.qty(), 0.0);
+    assert_eq!(sim.counters().limits_marketable_at_arrival, 1);
+    let out = sim.finish(&flat(3, 100.0)).unwrap();
+    let t = out.trades[0];
+    assert_eq!(t.entry_price, 98.0);
+    assert_eq!(t.entry_liquidity, Liquidity::Maker);
+    assert_eq!(t.exit_reason, ExitReason::TakeProfit);
+    assert_eq!(t.exit_ref_price, 100.1);
+    assert_eq!(t.exit_price, 100.1 * (1.0 - 10.0 / 10_000.0));
+    assert_eq!(t.exit_liquidity, Liquidity::Taker);
+    assert_eq!(t.exit_ms, T0 + 3 * 60_000);
+}
+
+/// Contrôle : une entrée limit marketable à l'arrivée (taker à l'open) garde un TP qui arrive à l'open de la
+/// 1m de fill quand `tp_ignored_on_fill_bar` est faux, comme une entrée au marché.
+#[test]
+fn tp_sans_ignore_entree_limit_taker_arrive_a_l_open_de_la_1m_de_fill() {
+    let rules = SimRules {
+        tp_ignored_on_fill_bar: false,
+        ..SimRules::default()
+    };
+    let mut sim = sim_with(rules, bps(10.0), 1000.0);
+    sim.on_bar(&flat(0, 100.0)).unwrap();
+    sim.submit(
+        Instruction::Enter {
+            size: SizeSpec::Quote(500.0),
+            price: OrderPrice::Limit {
+                price: 100.0,
+                ttl_bars: 10,
+            },
+            stop: Some(90.0),
+            take_profit: Some(99.0),
+            tag: "entree",
+        },
+        at(0),
+    )
+    .unwrap();
+    sim.on_bar(&flat(1, 100.0)).unwrap();
+    // 1m 2 : open 99,5, P_arr < L = 100 : marketable, open < L : taker à min(99,5 x 1,001, 100) ; le TP à 99
+    // est sous l'open : il sort dans la même 1m en taker.
+    sim.on_bar(&bar(2, 99.5, 99.8, 98.5, 99.2)).unwrap();
+    assert_eq!(sim.qty(), 0.0);
+    assert_eq!(sim.counters().take_profits_ignored_fill_bar, 0);
+    assert_eq!(sim.counters().limits_marketable_at_arrival, 2);
+}
+
+/// Le compteur additionne les fills taker de limits : achat, vente.
+#[test]
+fn compteur_limits_marketables_a_l_arrivee() {
+    let mut sim = achat_a_99(Slippage::ZERO, 1000.0);
+    sim.on_bar(&bar(2, 98.0, 98.5, 97.5, 98.2)).unwrap();
+    assert_eq!(sim.counters().limits_marketable_at_arrival, 1);
+    // Vente limit à 97, active à open[4] ; open[4] = 99 > 97 : taker.
+    sim.submit(
+        Instruction::Exit {
+            price: OrderPrice::Limit {
+                price: 97.0,
+                ttl_bars: 50,
+            },
+            tag: "sortie",
+        },
+        at(2),
+    )
+    .unwrap();
+    sim.on_bar(&flat(3, 98.0)).unwrap();
+    sim.on_bar(&bar(4, 99.0, 99.5, 98.5, 99.0)).unwrap();
+    assert_eq!(sim.qty(), 0.0);
+    let out = sim.finish(&flat(4, 99.0)).unwrap();
+    assert_eq!(out.counters.limits_marketable_at_arrival, 2);
+    assert_eq!(out.counters.fills_limit, 2);
+    assert_eq!(out.trades[0].exit_price, 99.0);
+    assert_eq!(out.trades[0].exit_liquidity, Liquidity::Taker);
 }
 
 #[test]
