@@ -62,7 +62,7 @@ mod tests {
     fn construit_sma_cross_depuis_le_fichier_de_config() {
         let strategy = build("sma_cross", &reference()).unwrap();
         assert_eq!(strategy.id(), "sma_cross");
-        assert_eq!(strategy.version(), "1.0.0");
+        assert_eq!(strategy.version(), "1.1.0");
         assert_eq!(strategy.timeframes(), [Timeframe::M15]);
         assert_eq!(
             strategy.indicators(),

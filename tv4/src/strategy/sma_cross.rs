@@ -1,7 +1,12 @@
-//! Croisement de deux moyennes mobiles simples, mono-timeframe (docs/03-architecture.md §6).
+//! Croisement de deux moyennes mobiles simples (docs/03-architecture.md §6), avec un filtre de tendance
+//! optionnel sur un timeframe plus grand (S6).
 //!
 //! Stratégie de démonstration de la tranche verticale : ce n'est pas une hypothèse de recherche
 //! (aucune fiche pré-enregistrée, docs/04 §4.3).
+//!
+//! Sans section `[trend]`, la stratégie est mono-timeframe et son comportement est celui de la
+//! version 1.0.0. Avec `[trend]`, une entrée n'est permise que si la dernière clôture du timeframe de
+//! tendance est au-dessus de sa SMA ; la sortie n'est jamais filtrée.
 
 use super::{
     BarContext, IndicatorKind, IndicatorSpec, OrderKind, Signal, Size, Strategy, StrategyError,
@@ -12,11 +17,19 @@ use serde::{Deserialize, Serialize};
 /// Identifiant dans le registre.
 pub const ID: &str = "sma_cross";
 /// Version de la logique, entre dans le `config_hash`.
-pub const VERSION: &str = "1.0.0";
+pub const VERSION: &str = "1.1.0";
 /// Période de l'ATR qui place le stop.
 pub const ATR_PERIOD: usize = 14;
 /// Fraction de l'equity risquée par trade.
 pub const RISK_PCT: f64 = 0.01;
+
+/// Filtre de tendance : timeframe plus grand que celui du croisement, et période de sa SMA.
+#[derive(Deserialize, Serialize, Clone, Copy, Debug, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct TrendParams {
+    pub tf: Timeframe,
+    pub sma: usize,
+}
 
 /// Paramètres lus depuis `config/strategies/sma_cross.toml`.
 #[derive(Deserialize, Serialize, Clone, Debug, PartialEq)]
@@ -26,11 +39,16 @@ pub struct SmaCrossParams {
     pub fast: usize,
     pub slow: usize,
     pub stop_atr_mult: f64,
+    /// Filtre de tendance ; absent, la clé n'entre pas dans le JSON des paramètres (donc le hash).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub trend: Option<TrendParams>,
 }
 
 /// Entre long quand la SMA rapide passe au-dessus de la lente, sort quand elle repasse dessous.
 pub struct SmaCross {
     p: SmaCrossParams,
+    /// Timeframes déclarés : `[tf]` ou `[tf, trend.tf]`.
+    tfs: Vec<Timeframe>,
     /// JSON des paramètres, calculé une fois à la construction (une allocation par run).
     params_json: serde_json::Value,
     /// Écart `fast - slow` de la dernière bougie valide ; `None` en warmup.
@@ -64,13 +82,44 @@ impl SmaCross {
                 p.stop_atr_mult
             )));
         }
+        let mut tfs = vec![p.tf];
+        if let Some(trend) = p.trend {
+            if trend.tf <= p.tf {
+                return Err(invalid(format!(
+                    "`trend.tf` ({}) doit être strictement plus grand que `tf` ({})",
+                    trend.tf, p.tf
+                )));
+            }
+            if trend.sma < 1 || trend.sma > MAX_INDICATOR_PERIOD {
+                return Err(invalid(format!(
+                    "`trend.sma` ({}) doit être entre 1 et {MAX_INDICATOR_PERIOD}",
+                    trend.sma
+                )));
+            }
+            tfs.push(trend.tf);
+        }
         let params_json = serde_json::to_value(&p)
             .map_err(|source| StrategyError::ParamsJson { id: ID, source })?;
         Ok(SmaCross {
             p,
+            tfs,
             params_json,
             prev_diff: None,
         })
+    }
+}
+
+impl SmaCross {
+    /// Sans filtre, toujours vrai. Avec filtre : la dernière clôture du timeframe de tendance est
+    /// strictement au-dessus de sa SMA, qui doit être finie.
+    fn trend_allows(&self, ctx: &BarContext<'_>) -> bool {
+        let Some(trend) = self.p.trend else {
+            return true;
+        };
+        match (ctx.ind(trend.tf, "trend").last(), ctx.last(trend.tf)) {
+            (Some(&sma), Some(c)) => sma.is_finite() && c.close > sma,
+            _ => false,
+        }
     }
 }
 
@@ -88,11 +137,11 @@ impl Strategy for SmaCross {
     }
 
     fn timeframes(&self) -> &[Timeframe] {
-        std::slice::from_ref(&self.p.tf)
+        &self.tfs
     }
 
     fn indicators(&self) -> Vec<IndicatorSpec> {
-        vec![
+        let mut specs = vec![
             IndicatorSpec {
                 name: "fast",
                 tf: self.p.tf,
@@ -112,13 +161,27 @@ impl Strategy for SmaCross {
                 tf: self.p.tf,
                 kind: IndicatorKind::Atr { period: ATR_PERIOD },
             },
-        ]
+        ];
+        if let Some(trend) = self.p.trend {
+            specs.push(IndicatorSpec {
+                name: "trend",
+                tf: trend.tf,
+                kind: IndicatorKind::Sma { period: trend.sma },
+            });
+        }
+        specs
     }
 
     /// La SMA lente est valide à l'index `slow - 1` et l'ATR de Wilder d'origine à l'index 13 :
-    /// `max(slow, 14)` bougies suffisent pour que tout soit non NaN.
+    /// `max(slow, 14)` bougies suffisent pour que tout soit non NaN. Avec un filtre de tendance, le
+    /// warmup se compte en bougies du plus grand timeframe (docs/03 §7.2, écart S5 point 1) : on prend
+    /// `max(trend.sma, slow, 14)`, conservateur (S6 écart 9).
     fn warmup_bars(&self) -> usize {
-        self.p.slow.max(ATR_PERIOD)
+        let base = self.p.slow.max(ATR_PERIOD);
+        match self.p.trend {
+            Some(trend) => base.max(trend.sma),
+            None => base,
+        }
     }
 
     fn on_bar(&mut self, ctx: &BarContext<'_>, out: &mut Vec<Signal>) {
@@ -143,8 +206,9 @@ impl Strategy for SmaCross {
         let stop = c.close - self.p.stop_atr_mult * atr;
         match (self.prev_diff, ctx.position().is_none()) {
             (Some(p), true) if p <= 0.0 && d > 0.0 => {
-                // Un stop non positif n'a pas de sens pour un long spot : pas d'entrée.
-                if stop > 0.0 {
+                // Un stop non positif n'a pas de sens pour un long spot : pas d'entrée. Le filtre de
+                // tendance n'est évalué qu'à ce moment, après le croisement et le stop.
+                if stop > 0.0 && self.trend_allows(ctx) {
                     out.push(Signal::EnterLong {
                         size: Size::RiskPct(RISK_PCT),
                         kind: OrderKind::Market,
@@ -179,6 +243,21 @@ mod tests {
             fast: 20,
             slow: 50,
             stop_atr_mult: 2.0,
+            trend: None,
+        })
+        .unwrap()
+    }
+
+    fn strategy_2tf() -> SmaCross {
+        SmaCross::new(SmaCrossParams {
+            tf: Timeframe::M15,
+            fast: 20,
+            slow: 50,
+            stop_atr_mult: 2.0,
+            trend: Some(TrendParams {
+                tf: Timeframe::H1,
+                sma: 24,
+            }),
         })
         .unwrap()
     }
@@ -412,6 +491,7 @@ mod tests {
             fast: 2,
             slow: 5,
             stop_atr_mult: 1.0,
+            trend: None,
         })
         .unwrap();
         assert_eq!(small.warmup_bars(), 14, "max(slow, ATR_PERIOD)");
@@ -419,6 +499,173 @@ mod tests {
         assert_eq!(
             s.params_json(),
             serde_json::json!({"fast": 20, "slow": 50, "stop_atr_mult": 2.0, "tf": "15m"})
+        );
+    }
+
+    /// Deux pas 15m sur colonnes à la main, avec une bougie 1h dont le close est `h1_close` et la SMA de
+    /// tendance `h1_sma` (la bougie 1h est close à `now_ms`). Le croisement haussier (d : -1 puis +1) a lieu au pas 1 ; `position` donne
+    /// l'état du portefeuille.
+    fn run_2tf(
+        strategy: &mut SmaCross,
+        fast: [f64; 2],
+        slow: [f64; 2],
+        h1_close: f64,
+        h1_sma: f64,
+        position: Option<Position>,
+    ) -> Vec<Vec<Signal>> {
+        let candles = candles(2);
+        let atr = [2.5, 2.5];
+        let columns: [&[f64]; 3] = [&fast, &slow, &atr];
+        let names = ["fast", "slow", "atr"];
+        let base = TfView::new(Timeframe::M15, &candles, &names, &columns).unwrap();
+        let mut h1 = candles_h1(1);
+        h1[0].close = h1_close;
+        let trend_col = [h1_sma];
+        let trend_columns: [&[f64]; 1] = [&trend_col];
+        let trend_names = ["trend"];
+        let base_h1 = TfView::new(Timeframe::H1, &h1, &trend_names, &trend_columns).unwrap();
+        let fees = FeeSchedule::new(ExchangeId::Okx, 20, 35).unwrap();
+        let mut all = Vec::new();
+        for i in 0..2 {
+            let state = BarState {
+                now_ms: T0 + 3_600_000 + i as i64 * M15,
+                equity: 300.0,
+                quote_free: 300.0,
+                qty_free: 0.0,
+                position,
+                fees,
+            };
+            let views = [
+                base.with_closed(i + 1).unwrap(),
+                base_h1.with_closed(1).unwrap(),
+            ];
+            let mask = Timeframe::M15.bit();
+            let ctx = BarContext::new("BTC-USDC", state, &[], &views, mask).unwrap();
+            let mut out = Vec::new();
+            strategy.on_bar(&ctx, &mut out);
+            all.push(out);
+        }
+        all
+    }
+
+    fn candles_h1(count: usize) -> Vec<Candle> {
+        (0..count)
+            .map(|i| Candle {
+                open_time_ms: T0 + i as i64 * 3_600_000,
+                open: 100.0,
+                high: 101.0,
+                low: 99.0,
+                close: 100.0,
+                volume: 1.0,
+                trades: None,
+            })
+            .collect()
+    }
+
+    #[test]
+    fn sma_cross_tendance_parametres() {
+        let s = strategy();
+        assert_eq!(
+            s.params_json(),
+            serde_json::json!({"fast": 20, "slow": 50, "stop_atr_mult": 2.0, "tf": "15m"}),
+            "sans [trend], la clé est absente"
+        );
+        assert_eq!(s.timeframes(), [Timeframe::M15]);
+        let s = strategy_2tf();
+        assert_eq!(s.timeframes(), [Timeframe::M15, Timeframe::H1]);
+        assert_eq!(s.warmup_bars(), 50);
+        assert_eq!(
+            s.params_json(),
+            serde_json::json!({
+                "fast": 20, "slow": 50, "stop_atr_mult": 2.0, "tf": "15m",
+                "trend": {"sma": 24, "tf": "1h"}
+            })
+        );
+        let kinds: Vec<_> = s.indicators().iter().map(|i| (i.name, i.tf)).collect();
+        assert_eq!(
+            kinds,
+            [
+                ("fast", Timeframe::M15),
+                ("slow", Timeframe::M15),
+                ("atr", Timeframe::M15),
+                ("trend", Timeframe::H1)
+            ]
+        );
+        // Le warmup suit la plus grande des périodes.
+        let long_trend = SmaCross::new(SmaCrossParams {
+            trend: Some(TrendParams {
+                tf: Timeframe::H1,
+                sma: 200,
+            }),
+            ..strategy().p
+        })
+        .unwrap();
+        assert_eq!(long_trend.warmup_bars(), 200);
+        // Un timeframe de tendance pas plus grand que celui du croisement, ou une période hors bornes.
+        for (tf, sma) in [
+            (Timeframe::M15, 24),
+            (Timeframe::M5, 24),
+            (Timeframe::H1, 0),
+            (Timeframe::H1, MAX_INDICATOR_PERIOD + 1),
+        ] {
+            let erreur = SmaCross::new(SmaCrossParams {
+                trend: Some(TrendParams { tf, sma }),
+                ..strategy().p
+            });
+            assert!(
+                matches!(erreur, Err(StrategyError::InvalidParams { .. })),
+                "{tf} / {sma}"
+            );
+        }
+    }
+
+    #[test]
+    fn sma_cross_tendance_filtre_l_entree() {
+        // Croisement haussier au pas 1, tendance sous sa SMA : aucun signal.
+        let mut s = strategy_2tf();
+        let out = run_2tf(&mut s, [9.0, 11.0], [10.0, 10.0], 100.0, 101.0, None);
+        assert!(out.iter().all(Vec::is_empty));
+        assert_eq!(s.prev_diff, Some(1.0), "prev_diff avance malgré le filtre");
+        // Au-dessus : l'entrée passe.
+        let mut s = strategy_2tf();
+        let out = run_2tf(&mut s, [9.0, 11.0], [10.0, 10.0], 102.0, 101.0, None);
+        assert!(out[0].is_empty());
+        assert_eq!(
+            out[1],
+            [Signal::EnterLong {
+                size: Size::RiskPct(0.01),
+                kind: OrderKind::Market,
+                stop: Some(95.0),
+                take_profit: None,
+                tag: "cross_up",
+            }]
+        );
+        // Égalité stricte : pas d'entrée. SMA de tendance NaN : pas d'entrée.
+        for (close, sma) in [(101.0, 101.0), (102.0, NAN)] {
+            let mut s = strategy_2tf();
+            let out = run_2tf(&mut s, [9.0, 11.0], [10.0, 10.0], close, sma, None);
+            assert!(out.iter().all(Vec::is_empty), "{close} / {sma}");
+        }
+    }
+
+    #[test]
+    fn sma_cross_tendance_ne_filtre_pas_la_sortie() {
+        let mut s = strategy_2tf();
+        let out = run_2tf(
+            &mut s,
+            [11.0, 9.0],
+            [10.0, 10.0],
+            100.0,
+            101.0,
+            Some(long_position()),
+        );
+        assert!(out[0].is_empty());
+        assert_eq!(
+            out[1],
+            [Signal::ExitLong {
+                kind: OrderKind::Market,
+                tag: "cross_down"
+            }]
         );
     }
 }

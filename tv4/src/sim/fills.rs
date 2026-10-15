@@ -1,112 +1,92 @@
-//! Fonctions pures de fill market (docs/03-architecture.md §7.2 et §7.4).
+//! Fonctions pures de prix de fill et de franchissement (docs/04-protocole-recherche.md §3.1,
+//! docs/03-architecture.md §7.2 et §7.4).
 //!
 //! L'ordre des opérations flottantes est imposé et ne change pas (aucun `mul_add`) : c'est lui qui
 //! rend le résultat identique d'un process à l'autre.
 
 use crate::model::Slippage;
 
-/// Résultat du calcul d'un achat market.
-#[derive(Clone, Copy, Debug, PartialEq)]
-pub(super) struct BuyFill {
-    /// Quantité achetée, éventuellement plafonnée par le cash.
-    pub qty: f64,
-    /// Prix payé par unité, slippage compris.
-    pub price: f64,
-    /// `qty × price`, frais exclus.
-    pub cost: f64,
-    /// Frais taker : `cost × taker`.
-    pub fee: f64,
-    /// Coût du slippage : `qty × (price − référence)`.
-    pub slippage: f64,
-    /// Vrai si la quantité demandée a été réduite par le plafond de cash.
-    pub capped: bool,
+/// Prix d'un achat market à l'open `open` : `open × (1 + slippage)`.
+pub(super) fn market_buy_price(open: f64, slippage: Slippage) -> f64 {
+    slippage.buy_price(open)
 }
 
-/// Achat market à l'open `open`, plafonné à `cash × (1 − margin) / (px × (1 + taker))`.
-///
-/// Rend `None` si la quantité finale n'est pas finie et strictement positive.
-pub(super) fn buy_fill(
-    cash: f64,
-    requested: f64,
-    open: f64,
-    slippage: Slippage,
-    taker: f64,
-    margin: f64,
-) -> Option<BuyFill> {
-    let price = slippage.buy_price(open);
-    let cap = cash * (1.0 - margin) / (price * (1.0 + taker));
-    let capped = cap < requested;
-    let qty = if capped { cap } else { requested };
-    if !(qty.is_finite() && qty > 0.0) {
-        return None;
-    }
-    let cost = qty * price;
-    let fee = cost * taker;
-    Some(BuyFill {
-        qty,
-        price,
-        cost,
-        fee,
-        slippage: qty * (price - open),
-        capped,
-    })
+/// Prix d'une vente market à l'open (ou d'une clôture forcée au close) : `ref × (1 − slippage)`.
+pub(super) fn market_sell_price(reference: f64, slippage: Slippage) -> f64 {
+    slippage.sell_price(reference)
 }
 
-/// Résultat du calcul d'une vente market.
-#[derive(Clone, Copy, Debug, PartialEq)]
-pub(super) struct SellFill {
-    /// Prix reçu par unité, slippage compris.
-    pub price: f64,
-    /// `qty × price`, frais exclus.
-    pub proceeds: f64,
-    /// Frais taker : `proceeds × taker`.
-    pub fee: f64,
-    /// Coût du slippage : `qty × (référence − price)`.
-    pub slippage: f64,
+/// Prix de fill d'une limit d'achat : `min(limite, open)`, le gap sous la limite donne le meilleur prix.
+pub(super) fn limit_buy_price(limit: f64, open: f64) -> f64 {
+    if limit <= open { limit } else { open }
 }
 
-/// Vente market de `qty` au prix de référence `reference` (l'open d'un fill de signal, le close de
-/// la dernière bougie pour la clôture forcée).
-pub(super) fn sell_fill(qty: f64, reference: f64, slippage: Slippage, taker: f64) -> SellFill {
-    let price = slippage.sell_price(reference);
-    let proceeds = qty * price;
-    let fee = proceeds * taker;
-    SellFill {
-        price,
-        proceeds,
-        fee,
-        slippage: qty * (reference - price),
-    }
+/// Prix de fill d'une limit de vente (et d'un take-profit) : `max(limite, open)`.
+pub(super) fn limit_sell_price(limit: f64, open: f64) -> f64 {
+    if limit >= open { limit } else { open }
+}
+
+/// Niveau de référence d'un stop franchi : le pire des deux pour le trader, `min(stop, open)`.
+pub(super) fn stop_reference(stop: f64, open: f64) -> f64 {
+    if stop <= open { stop } else { open }
+}
+
+/// Prix de fill d'un stop : la référence moins le slippage de stop (`stop_rate` = slippage + stress).
+pub(super) fn stop_price(reference: f64, stop_rate: f64) -> f64 {
+    reference * (1.0 - stop_rate)
+}
+
+/// Niveau que le plus bas doit atteindre pour remplir une limit d'achat : `limite − tick × kt`, avec
+/// `kt` légèrement sous le nombre de ticks pour qu'un franchissement exact soit accepté malgré l'erreur
+/// de représentation.
+pub(super) fn buy_cross_level(limit: f64, tick: f64, kt: f64) -> f64 {
+    limit - tick * kt
+}
+
+/// Niveau que le plus haut doit atteindre pour remplir une limit de vente ou un take-profit.
+pub(super) fn sell_cross_level(limit: f64, tick: f64, kt: f64) -> f64 {
+    limit + tick * kt
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    #[test]
-    fn achat_a_la_main() {
-        let s = Slippage::from_bps(10.0).unwrap();
-        let fill = buy_fill(1000.0, 1.0, 100.0, s, 0.0035, 0.05).unwrap();
-        assert!((fill.price - 100.1).abs() < 1e-9);
-        assert!((fill.fee - 0.35035).abs() < 1e-9);
-        assert!((fill.slippage - 0.1).abs() < 1e-9);
-        assert!(!fill.capped);
+    fn bps(value: f64) -> Slippage {
+        Slippage::from_bps(value).unwrap()
     }
 
     #[test]
-    fn quantite_nulle_ou_non_finie_refusee() {
-        let s = Slippage::ZERO;
-        assert!(buy_fill(100.0, 0.0, 10.0, s, 0.0, 0.05).is_none());
-        assert!(buy_fill(100.0, f64::NAN, 10.0, s, 0.0, 0.05).is_none());
-        assert!(buy_fill(0.0, 1.0, 10.0, s, 0.0, 0.05).is_none());
+    fn prix_market_avec_slippage() {
+        assert!((market_buy_price(100.0, bps(10.0)) - 100.1).abs() < 1e-9);
+        assert!((market_sell_price(110.0, bps(10.0)) - 109.89).abs() < 1e-9);
+        assert_eq!(market_buy_price(100.0, Slippage::ZERO), 100.0);
     }
 
     #[test]
-    fn vente_a_la_main() {
-        let s = Slippage::from_bps(10.0).unwrap();
-        let fill = sell_fill(1.0, 110.0, s, 0.0035);
-        assert!((fill.price - 109.89).abs() < 1e-9);
-        assert!((fill.fee - 0.384615).abs() < 1e-9);
-        assert!((fill.slippage - 0.11).abs() < 1e-9);
+    fn prix_limit_au_meilleur_des_deux() {
+        // Achat : un gap sous la limite donne l'open.
+        assert_eq!(limit_buy_price(99.0, 98.0), 98.0);
+        assert_eq!(limit_buy_price(99.0, 100.0), 99.0);
+        assert_eq!(limit_buy_price(99.0, 99.0), 99.0);
+        // Vente : un gap au-dessus de la limite donne l'open.
+        assert_eq!(limit_sell_price(102.0, 103.0), 103.0);
+        assert_eq!(limit_sell_price(102.0, 101.0), 102.0);
+    }
+
+    #[test]
+    fn stop_au_pire_du_niveau_et_de_l_open() {
+        assert_eq!(stop_reference(99.0, 100.5), 99.0);
+        assert_eq!(stop_reference(99.0, 98.0), 98.0);
+        assert_eq!(stop_price(99.0, 0.0005), 99.0 * (1.0 - 0.0005));
+    }
+
+    #[test]
+    fn niveaux_de_franchissement() {
+        let kt = 1.0 - 1e-6;
+        let bas = buy_cross_level(99.0, 0.1, kt);
+        assert!((98.9..99.0).contains(&bas));
+        let haut = sell_cross_level(102.0, 0.1, kt);
+        assert!(102.0 < haut && haut <= 102.1);
     }
 }

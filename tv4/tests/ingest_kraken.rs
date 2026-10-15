@@ -265,24 +265,59 @@ fn preuve_s5_zip_dataset_backtest_reproduit_s3() {
             .to_string(),
         "--fees-file".to_string(),
         repo_path("config/fees.toml").display().to_string(),
+        "--instruments-file".to_string(),
+        repo_path("config/instruments.toml").display().to_string(),
         "--out".to_string(),
         sortie_run.display().to_string(),
     ]);
     assert_eq!(run.status.code(), Some(0), "{}", texte(&run).1);
     let metrics = json(&sortie_run.join("metrics.json"));
-    assert_eq!(metrics["n_trades"], 23);
-    assert_eq!(metrics["pnl_net"].as_f64(), Some(-15.408523707748486));
-    assert_eq!(metrics["cash_final"].as_f64(), Some(284.5914762922515));
-    assert_eq!(
-        metrics["config_hash"],
-        "3d45e8898218e61e8cf41ced0befe350412d7d0bc6e0f21dab2c3234f8c5f411"
-    );
+    // Les valeurs de l'oracle S6 sont dans `preuve_s5_valeurs_figees` ; la preuve
+    // d'égalité entre chemins de données reste active ci-dessous.
+    assert!(metrics["n_trades"].as_u64().unwrap() > 0);
     assert_eq!(metrics["data"]["dataset_hash"], DATASET_HASH_SKIP);
+    let direct = tmp.path().join("run_fixture_1m");
+    let run = tv4(&[
+        "backtest".to_string(),
+        "--fixture".to_string(),
+        repo_path("fixtures/kraken_xbtusd_1m.csv")
+            .display()
+            .to_string(),
+        "--strategy".to_string(),
+        "sma_cross".to_string(),
+        "--params".to_string(),
+        repo_path("config/strategies/sma_cross_1m.toml")
+            .display()
+            .to_string(),
+        "--fees-file".to_string(),
+        repo_path("config/fees.toml").display().to_string(),
+        "--instruments-file".to_string(),
+        repo_path("config/instruments.toml").display().to_string(),
+        "--out".to_string(),
+        direct.display().to_string(),
+    ]);
+    assert_eq!(run.status.code(), Some(0), "{}", texte(&run).1);
+    let d = json(&direct.join("metrics.json"));
+    for cle in [
+        "n_trades",
+        "pnl_net",
+        "cash_final",
+        "fees_total",
+        "config_hash",
+    ] {
+        assert_eq!(metrics[cle], d[cle], "{cle}");
+    }
+    // trades.csv (S6) : identique à l'octet entre `ingest kraken` + dataset et `--fixture`.
+    let csv_dataset = std::fs::read(sortie_run.join("trades.csv")).unwrap();
+    let csv_direct = std::fs::read(direct.join("trades.csv")).unwrap();
+    assert!(csv_direct.len() > 200);
+    assert_eq!(csv_dataset, csv_direct);
 
     // Passe B : le même dataset rejoué en 15m (agrégation 1m vers 15m dans le moteur) donne les mêmes
     // résultats que `--fixture`, au bit.
     let params_15m = repo_path("config/strategies/sma_cross.toml");
     let fees = repo_path("config/fees.toml");
+    let instruments = repo_path("config/instruments.toml");
     let depuis_dataset = tmp.path().join("run15_dataset");
     let run = tv4(&[
         "backtest".to_string(),
@@ -296,6 +331,8 @@ fn preuve_s5_zip_dataset_backtest_reproduit_s3() {
         params_15m.display().to_string(),
         "--fees-file".to_string(),
         fees.display().to_string(),
+        "--instruments-file".to_string(),
+        instruments.display().to_string(),
         "--out".to_string(),
         depuis_dataset.display().to_string(),
     ]);
@@ -313,6 +350,8 @@ fn preuve_s5_zip_dataset_backtest_reproduit_s3() {
         params_15m.display().to_string(),
         "--fees-file".to_string(),
         fees.display().to_string(),
+        "--instruments-file".to_string(),
+        instruments.display().to_string(),
         "--out".to_string(),
         depuis_csv.display().to_string(),
     ]);
@@ -328,15 +367,56 @@ fn preuve_s5_zip_dataset_backtest_reproduit_s3() {
     ] {
         assert_eq!(a[cle], b[cle], "{cle}");
     }
-    // Et ces résultats sont ceux de l'oracle Python indépendant, pas seulement ceux du moteur.
-    assert_eq!(a["n_trades"], 10);
-    assert_eq!(a["pnl_net"].as_f64(), Some(-7.401437247087472));
-    assert_eq!(a["cash_final"].as_f64(), Some(292.5985627529125));
-    assert_eq!(
-        a["config_hash"],
-        "e85b28f7cff8f25137970a52a8f5cde0c429cc3cbeee7505f83bd1eed497646a"
-    );
     assert_eq!(a["window"], b["window"]);
+}
+
+/// Valeurs de l'oracle S6 du `--fixture` 1m (`sma_cross.fixture_1m_defauts` : 3 trades, pnl_net
+/// -3.198931025058812, cash_final 296.8010689749412, config_hash 138bd048…) et 15m
+/// (`sma_cross.fixture_15m_defauts` : 2 trades, pnl_net -4.517856616208519, cash_final
+/// 295.4821433837915, config_hash de26831f…), recoupées au bit avec le moteur par la revue du 15/10.
+/// Avant S6 : 23 trades, -15.408523707748486, 284.5914762922515, `3d45e889…` en 1m ; 10 trades,
+/// -7.401437247087472, 292.5985627529125, `e85b28f7…` en 15m.
+#[test]
+fn preuve_s5_valeurs_figees() {
+    let tmp = dossier();
+    let lancer = |params: &str, nom: &str| {
+        let out = tmp.path().join(nom);
+        let run = tv4(&[
+            "backtest".to_string(),
+            "--fixture".to_string(),
+            repo_path("fixtures/kraken_xbtusd_1m.csv")
+                .display()
+                .to_string(),
+            "--strategy".to_string(),
+            "sma_cross".to_string(),
+            "--params".to_string(),
+            repo_path(params).display().to_string(),
+            "--fees-file".to_string(),
+            repo_path("config/fees.toml").display().to_string(),
+            "--instruments-file".to_string(),
+            repo_path("config/instruments.toml").display().to_string(),
+            "--out".to_string(),
+            out.display().to_string(),
+        ]);
+        assert_eq!(run.status.code(), Some(0), "{}", texte(&run).1);
+        json(&out.join("metrics.json"))
+    };
+    let m1 = lancer("config/strategies/sma_cross_1m.toml", "run1m");
+    assert_eq!(m1["n_trades"], 3);
+    assert_eq!(m1["pnl_net"].as_f64(), Some(-3.198931025058812));
+    assert_eq!(m1["cash_final"].as_f64(), Some(296.8010689749412));
+    assert_eq!(
+        m1["config_hash"],
+        "138bd048fe1c2f7551f389b1149b457ae3b2486ce6bbe2b6f426ceb036f88253"
+    );
+    let m15 = lancer("config/strategies/sma_cross.toml", "run15m");
+    assert_eq!(m15["n_trades"], 2);
+    assert_eq!(m15["pnl_net"].as_f64(), Some(-4.517856616208519));
+    assert_eq!(m15["cash_final"].as_f64(), Some(295.4821433837915));
+    assert_eq!(
+        m15["config_hash"],
+        "de26831fecaa5f438dddc7148219f81f40fa19537771b299340483a9062dc4b6"
+    );
 }
 
 #[test]

@@ -88,12 +88,6 @@ pub enum CliError {
     #[error("horloge système antérieure à 1970 ou hors plage : impossible de dater l'écriture")]
     Clock,
 
-    /// `zero_volume_marked` n'est pas encore rejouable par le simulateur.
-    #[error(
-        "dataset `{path}` : gaps_policy = zero_volume_marked n'est pas encore jouable : le simulateur ne sait pas interdire un fill dans une bougie synthétique (S6, écart no_volume_rule de S3) ; construire le dataset en skip ou ffill"
-    )]
-    GapsPolicyUnsupported { path: String },
-
     /// L'agrégation part du 1m : un dataset dans un autre timeframe n'est pas rejouable.
     #[error(
         "dataset `{path}` en {tf} : le moteur rejoue des bougies 1m et les agrège vers les timeframes de la stratégie ; construire le dataset en 1m"

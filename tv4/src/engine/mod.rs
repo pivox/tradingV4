@@ -16,11 +16,21 @@
 //!    finie.
 //! 3. `BarState.equity = cash + qty × close[i]`, la clôture de la 1m courante (étape 3, même
 //!    instant).
-//! 4. Les six écarts de `sim` encore ouverts (voir la doc de ce module) ; `single_tf_1m` est levé en
-//!    S5 (voir plus bas). La clôture forcée est comptée comme un trade (`n_trades`), avec
+//! 4. Les six écarts de `sim` encore ouverts après S6 (`SIM_DEVIATIONS`, voir la doc de ce module) ;
+//!    `single_tf_1m` est levé en S5. La clôture forcée est comptée comme un trade (`n_trades`), avec
 //!    `forced_close` et `n_trades_forced`, et son PnL est isolé dans `pnl_marked`.
-//! 5. `ctx.pending()` est toujours vide (aucun ordre ne survit à l'étape 1) et la stratégie voit
-//!    `position.stop == None` : le stop est mémorisé par le simulateur, jamais actif.
+//! 5. Depuis S6, `ctx.pending()` rend les ordres en attente du simulateur (copie dans un tampon alloué
+//!    avant la boucle) et `position.stop` le stop en vigueur : le stop est actif.
+//!
+//! Écarts d'implémentation (S6) à S3 :
+//!
+//! 1. Le `CellConfig` porte l'`InstrumentRules` (tick, lot, minimums), qui entre dans le `config_hash`
+//!    avec les `SimRules` (délai d'activation, traversée d'un tick, `IntrabarRule`, `max_pending`).
+//! 2. Les signaux sont traduits en `Instruction` du simulateur par `engine::signals::dispatch`, qui
+//!    compte les rejets par motif ; un signal ne produit plus de `MarketOrder` direct.
+//! 3. La boucle appelle `Simulator::on_bar` à chaque 1m (étapes 0 à 6) puis la stratégie, puis
+//!    `submit` pour chaque signal ; un ordre décidé à la clôture de `i` n'est actif qu'à `i + 2` par
+//!    défaut (I3).
 //!
 //! Écarts d'implémentation (S5) à S3 :
 //!

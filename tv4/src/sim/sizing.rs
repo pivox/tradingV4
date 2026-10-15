@@ -1,4 +1,7 @@
-//! Sizing au risque (docs/03-architecture.md §7.2, étape 5). Fonction pure, sans type `strategy`.
+//! Sizing (docs/03-architecture.md §7.2) : au risque, en fraction d'equity ou en montant. Fonctions
+//! pures, sans type `strategy`.
+
+use super::SizeSpec;
 
 /// Quantité pour risquer `risk_pct` de `equity` entre `ref_price` et `stop`.
 ///
@@ -17,6 +20,20 @@ pub fn risk_qty(equity: f64, risk_pct: f64, ref_price: f64, stop: f64) -> Option
     }
     let qty = equity * risk_pct / (ref_price - stop);
     (qty.is_finite() && qty > 0.0).then_some(qty)
+}
+
+/// Quantité brute (avant plafond de cash et arrondi au lot) d'une taille `size` au prix `price`.
+///
+/// `RiskPct` passe par [`risk_qty`] avec `stop` et rend `None` si le sizing est invalide (pas de stop,
+/// stop hors de `]0, price[`). `PctEquity` donne `equity × pct / price` et `Quote` donne
+/// `quote / price` : toujours `Some`, la validité de la valeur (finie, positive) est jugée par
+/// l'appelant.
+pub fn size_qty(size: SizeSpec, equity: f64, price: f64, stop: Option<f64>) -> Option<f64> {
+    match size {
+        SizeSpec::RiskPct(pct) => stop.and_then(|stop| risk_qty(equity, pct, price, stop)),
+        SizeSpec::PctEquity(pct) => Some(equity * pct / price),
+        SizeSpec::Quote(quote) => Some(quote / price),
+    }
 }
 
 #[cfg(test)]
@@ -54,6 +71,27 @@ mod tests {
         for (label, resultat) in cas {
             assert_eq!(resultat, None, "{label}");
         }
+    }
+
+    #[test]
+    fn taille_par_type() {
+        assert_eq!(
+            size_qty(SizeSpec::RiskPct(0.01), 300.0, 100.0, Some(98.0)),
+            Some(1.5)
+        );
+        assert_eq!(size_qty(SizeSpec::RiskPct(0.01), 300.0, 100.0, None), None);
+        assert_eq!(
+            size_qty(SizeSpec::RiskPct(0.01), 300.0, 100.0, Some(101.0)),
+            None
+        );
+        assert_eq!(
+            size_qty(SizeSpec::PctEquity(0.5), 1000.0, 100.0, None),
+            Some(5.0)
+        );
+        assert_eq!(
+            size_qty(SizeSpec::Quote(250.0), 1000.0, 100.0, Some(1.0)),
+            Some(2.5)
+        );
     }
 
     #[test]

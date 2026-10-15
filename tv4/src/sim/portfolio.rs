@@ -1,100 +1,98 @@
-//! Portefeuille spot et trades clos (docs/03-architecture.md §7.2).
+//! Lots FIFO, trades clos et vue de la position (docs/03-architecture.md §7.2).
 
 use crate::model::Ts;
 
+/// Liquidité d'un fill : maker (limit, take-profit) ou taker (market, stop, clôture forcée).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Liquidity {
+    Maker,
+    Taker,
+}
+
 /// Motif de sortie d'un trade.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "snake_case")]
 pub enum ExitReason {
-    /// Vente market issue d'un signal, remplie à l'open de la bougie suivante.
+    /// Vente issue d'un `Exit` (market, ou limit posée par `Exit`).
     Signal,
-    /// Position soldée à la fin des données, au dernier close (écart S3 documenté).
+    /// Vente limit posée par `PlaceLimit`.
+    LimitSell,
+    /// Stop franchi, exécuté en taker avec slippage.
+    Stop,
+    /// Take-profit franchi, exécuté en maker.
+    TakeProfit,
+    /// Position soldée à la fin des données, au dernier close.
     ForcedClose,
 }
 
-/// Aller-retour clos. `Copy` : le vecteur de trades est préalloué (docs/03 §7.2).
+/// Position agrégée, telle que la stratégie la voit.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct PositionView {
+    pub qty: f64,
+    /// Prix moyen d'entrée (slippage compris, frais exclus), recalculé à chaque achat.
+    pub avg_price: f64,
+    /// Stop en vigueur (jamais celui d'un `MoveStop` pas encore effectif).
+    pub stop: Option<f64>,
+    pub take_profit: Option<f64>,
+    pub opened_at_ms: Ts,
+}
+
+/// Un trade est la part d'un lot d'entrée fermée par une vente (FIFO). `Copy` : le vecteur de trades
+/// est préalloué.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Trade {
+    pub lot_id: u64,
     pub entry_signal_ms: Ts,
-    /// `open_time` de la bougie de fill d'entrée.
+    /// `open_time` de la 1m de fill d'entrée.
     pub entry_ms: Ts,
-    /// Open de la bougie de fill, avant slippage.
+    /// Open pour un market, limite pour une limit.
     pub entry_ref_price: f64,
     pub entry_price: f64,
     pub entry_fee: f64,
     pub entry_slippage: f64,
+    pub entry_liquidity: Liquidity,
     pub exit_signal_ms: Ts,
+    /// `open_time` de la 1m de fill de sortie ; clôture de la dernière 1m pour la clôture forcée.
     pub exit_ms: Ts,
     pub exit_ref_price: f64,
     pub exit_price: f64,
     pub exit_fee: f64,
     pub exit_slippage: f64,
+    pub exit_liquidity: Liquidity,
     pub qty: f64,
-    /// Produit net de la vente moins coût net de l'achat (frais compris).
+    /// Produit net de la part de vente moins coût net de la part de lot (frais compris).
     pub pnl_net: f64,
-    pub inactive_stop: Option<f64>,
-    /// Vrai si le plus bas d'une bougie de la position a touché le stop inactif.
-    pub stop_breached: bool,
+    /// Excursion favorable maximale en quote : `qty × (plus haut − prix d'entrée)`.
+    pub mfe: f64,
+    /// Excursion défavorable maximale en quote : `qty × (plus bas − prix d'entrée)`, négative en général.
+    pub mae: f64,
+    pub stop_at_exit: Option<f64>,
     pub capped_by_cash: bool,
     pub exit_reason: ExitReason,
+    /// Redondant avec `exit_reason == ForcedClose`, demandé tel quel dans `trades.csv` (docs/03 §7.2).
+    pub forced_close: bool,
     pub entry_tag: &'static str,
     pub exit_tag: &'static str,
 }
 
-/// Jambe d'entrée de la position en cours, gardée jusqu'à la sortie pour construire le [`Trade`].
-#[derive(Clone, Copy, Debug, PartialEq)]
-pub(super) struct EntryLeg {
-    pub signal_ms: Ts,
-    pub ref_price: f64,
-    pub price: f64,
+/// Lot d'entrée ouvert : un achat rempli, consommé dans l'ordre d'arrivée par les ventes.
+#[derive(Clone, Copy, Debug)]
+pub(super) struct Lot {
+    pub id: u64,
+    pub entry_signal_ms: Ts,
+    pub entry_ms: Ts,
+    pub entry_ref_price: f64,
+    pub entry_price: f64,
+    pub lots_init: u64,
+    pub lots_left: u64,
     pub cost: f64,
     pub fee: f64,
     pub slippage: f64,
+    pub liquidity: Liquidity,
+    pub capped: bool,
     pub tag: &'static str,
-    pub inactive_stop: Option<f64>,
-    pub stop_breached: bool,
-    pub capped_by_cash: bool,
-}
-
-/// Portefeuille spot : du cash et une quantité longue, jamais négatifs.
-#[derive(Clone, Copy, Debug, PartialEq)]
-pub struct Portfolio {
-    pub(super) cash: f64,
-    pub(super) qty: f64,
-    pub(super) avg_price: f64,
-    pub(super) opened_at_ms: Ts,
-    pub(super) entry: Option<EntryLeg>,
-}
-
-impl Portfolio {
-    pub(super) fn new(cash: f64) -> Portfolio {
-        Portfolio {
-            cash,
-            qty: 0.0,
-            avg_price: 0.0,
-            opened_at_ms: 0,
-            entry: None,
-        }
-    }
-
-    pub fn cash(&self) -> f64 {
-        self.cash
-    }
-
-    /// Quantité détenue (monnaie de base), 0 à plat.
-    pub fn qty(&self) -> f64 {
-        self.qty
-    }
-
-    /// Prix moyen d'entrée (slippage compris, frais exclus), 0 à plat.
-    pub fn avg_price(&self) -> f64 {
-        self.avg_price
-    }
-
-    pub fn opened_at_ms(&self) -> Ts {
-        self.opened_at_ms
-    }
-
-    pub fn is_long(&self) -> bool {
-        self.qty > 0.0
-    }
+    /// Plus haut et plus bas vus depuis le fill, pour MFE et MAE.
+    pub hi: f64,
+    pub lo: f64,
 }

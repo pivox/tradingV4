@@ -1,0 +1,13 @@
+---
+source: tv4/tests/golden.rs
+expression: "resume(&r, true)"
+---
+cash_final = 1005.3511191778466
+pnl_net = 5.351119177846613
+pnl_realized = 5.351119177846613
+pnl_marked = 0.0
+forced_close = false
+n_trades = 1
+sim.fills = 2
+sim.fills_market = 2
+trade lot=0 entree=2 Taker ref=101.0 prix=101.10099999999998 sortie=4 Signal Taker ref=103.0 prix=102.897 qty=4.9455495 pnl_net=5.351119177846613 mfe=9.391598500500075 mae=-2.9722752494999254

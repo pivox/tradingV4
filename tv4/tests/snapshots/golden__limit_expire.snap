@@ -1,0 +1,11 @@
+---
+source: tv4/tests/golden.rs
+expression: "resume(&r, true)"
+---
+cash_final = 1000.0
+pnl_net = 0.0
+pnl_realized = 0.0
+pnl_marked = 0.0
+forced_close = false
+n_trades = 0
+sim.limits_expired = 1

@@ -13,14 +13,16 @@ use super::CliError;
 use crate::engine::{self, CellConfig};
 use crate::marketdata::kraken;
 use crate::model::hash;
-use crate::model::{Candle, ExchangeId, FeeSchedule, Slippage, Timeframe};
+use crate::model::{Candle, ExchangeId, FeeSchedule, InstrumentRules, Slippage, Timeframe};
 use crate::report::{self, DataInfo, DatasetRef, EngineInfo, Metrics};
 use crate::sim::SimRules;
-use crate::store::{self, GapsPolicy};
+use crate::store;
 use crate::strategy::registry;
 
 /// Symbole canonique de la fixture (XBTUSD Kraken, docs/03 §4).
 const FIXTURE_SYMBOL: &str = "BTC-USD";
+/// Exchange de la fixture : un dump Kraken, dont `config/instruments.toml` donne tick et lot.
+const FIXTURE_EXCHANGE: ExchangeId = ExchangeId::Kraken;
 
 /// Arguments de `tv4 backtest`.
 #[derive(Debug, Args)]
@@ -49,6 +51,10 @@ pub struct BacktestArgs {
     /// Fichier des grilles de frais, relatif au dossier courant.
     #[arg(long, value_name = "TOML", default_value = "config/fees.toml")]
     pub fees_file: PathBuf,
+    /// Contraintes d'instrument (tick, lot, minimums) de l'exchange et du symbole des données, relatif
+    /// au dossier courant.
+    #[arg(long, value_name = "TOML", default_value = "config/instruments.toml")]
+    pub instruments_file: PathBuf,
     /// Slippage en points de base (nombre fini dans [0, 10 000[).
     #[arg(
         long,
@@ -65,7 +71,7 @@ pub struct BacktestArgs {
         allow_negative_numbers = true
     )]
     pub capital: f64,
-    /// Dossier de sortie (créé au besoin) ; metrics.json y est écrit.
+    /// Dossier de sortie (créé au besoin) ; metrics.json et trades.csv y sont écrits.
     #[arg(long, value_name = "DOSSIER")]
     pub out: PathBuf,
 }
@@ -73,6 +79,8 @@ pub struct BacktestArgs {
 /// Bougies à rejouer et description des données pour `metrics.json`.
 struct Input {
     candles: Vec<Candle>,
+    /// Exchange et symbole canonique des données : ils choisissent la ligne de `--instruments-file`.
+    exchange: ExchangeId,
     symbol: String,
     data: DataInfo,
 }
@@ -87,6 +95,7 @@ pub(super) fn run(args: &BacktestArgs) -> Result<(), CliError> {
     };
 
     let fees = FeeSchedule::load(args.fees, &args.fees_file)?;
+    let instrument = InstrumentRules::load(input.exchange, &input.symbol, &args.instruments_file)?;
 
     let params_text = fs::read_to_string(&args.params).map_err(|source| CliError::Read {
         path: args.params.display().to_string(),
@@ -105,6 +114,7 @@ pub(super) fn run(args: &BacktestArgs) -> Result<(), CliError> {
         slippage: args.slippage_bps,
         initial_cash: args.capital,
         sim_rules: SimRules::default(),
+        instrument,
     };
     let result = engine::run_cell(&input.candles, strategy, &config)?;
 
@@ -113,10 +123,11 @@ pub(super) fn run(args: &BacktestArgs) -> Result<(), CliError> {
         git_sha: crate::GIT_SHA,
     };
     let metrics = Metrics::new(&result, input.data, engine_info);
-    let path = report::write_json_atomic(&args.out, "metrics.json", &metrics)?;
+    report::write_json_atomic(&args.out, "metrics.json", &metrics)?;
+    report::write_trades_csv(&args.out, &result.trades)?;
     println!(
-        "metrics.json écrit dans {} : {} trades, PnL net {:.2}",
-        path.display(),
+        "metrics.json et trades.csv écrits dans {} : {} trades, PnL net {:.2}",
+        args.out.display(),
         result.trades.len(),
         result.pnl_net
     );
@@ -134,6 +145,7 @@ fn load_fixture(fixture: &Path) -> Result<Input, CliError> {
     let data = DataInfo::fixture(fixture_blake3, FIXTURE_SYMBOL, &candles)?;
     Ok(Input {
         candles,
+        exchange: FIXTURE_EXCHANGE,
         symbol: FIXTURE_SYMBOL.to_string(),
         data,
     })
@@ -147,9 +159,6 @@ fn load_dataset(root: &Path, dataset: &Path) -> Result<Input, CliError> {
     // Les messages d'erreur citent le chemin tel que l'utilisateur l'a passé à --dataset.
     let shown = dataset.display().to_string();
     let manifest = store::read_dataset_manifest(&path)?;
-    if manifest.gaps_policy == GapsPolicy::ZeroVolumeMarked {
-        return Err(CliError::GapsPolicyUnsupported { path: shown });
-    }
     // Un manifeste sans symbole ou sans timeframe (ou avec plusieurs) n'est pas rejouable : message
     // de série, pas de repli silencieux sur le 1m.
     let ([symbol], [tf]) = (manifest.symbols.as_slice(), manifest.tfs.as_slice()) else {
@@ -179,6 +188,7 @@ fn load_dataset(root: &Path, dataset: &Path) -> Result<Input, CliError> {
     let data = DataInfo::dataset(reference, &symbol, Timeframe::M1, &candles)?;
     Ok(Input {
         candles,
+        exchange: manifest.exchange,
         symbol,
         data,
     })

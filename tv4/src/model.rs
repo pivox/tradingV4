@@ -6,6 +6,9 @@
 //! `f64` (docs/03 §5.1).
 
 pub mod hash;
+pub mod instrument;
+
+pub use instrument::InstrumentRules;
 
 use std::collections::BTreeMap;
 use std::fmt;
@@ -92,6 +95,22 @@ pub enum ModelError {
     /// Texte de slippage qui n'est pas un nombre.
     #[error("`slippage_bps` : « {text} » n'est pas un nombre")]
     SlippageNotANumber { text: String },
+
+    /// Aucune contrainte d'instrument pour ce couple exchange et symbole.
+    #[error("aucun instrument `{symbol}` pour `{exchange}` dans `{path}`")]
+    InstrumentNotFound {
+        exchange: ExchangeId,
+        symbol: String,
+        path: String,
+    },
+
+    /// Contrainte d'instrument invalide (tick, lot ou minimum).
+    #[error("instrument : `{field}` vaut {value}, {reason}")]
+    InvalidInstrument {
+        field: &'static str,
+        value: f64,
+        reason: &'static str,
+    },
 
     /// Le fichier de configuration n'a pas pu être lu.
     #[error("lecture de `{path}` impossible : {source}")]

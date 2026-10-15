@@ -3,20 +3,24 @@
 use crate::indicators::{Atr, Ema, Rsi, Sma, Vwap, batch};
 use crate::model::{Candle, Timeframe, Ts};
 use crate::mtf::Mtf;
-use crate::sim::{ExitReason, SimCounters, Simulator, Trade};
+use crate::sim::{PendingView, PositionView, SimCounters, Simulator, SubmitContext, Trade};
 use crate::strategy::{
-    BarContext, BarState, IndicatorKind, Position, Signal, Strategy, TfView, validate_declaration,
+    BarContext, BarState, IndicatorKind, OrderKind, PendingOrder, Position, Signal, Strategy,
+    TfView, validate_declaration,
 };
 
 use super::config::{CellConfig, RunConfig};
-use super::signals::{SignalContext, SignalRejections, dispatch};
+use super::signals::{SignalRejections, dispatch};
 use super::{EngineError, LoopObserver, NoopObserver};
 
 /// Capacité initiale du vecteur de trades. Un aller-retour occupe au moins deux bougies ; au-delà de
 /// cette borne, la croissance est amortie (docs/03 §7.2 ligne 6).
 const TRADES_INITIAL_CAPACITY: usize = 4096;
-/// Capacité du tampon de signaux, réutilisé à chaque bougie.
-const SIGNALS_CAPACITY: usize = 16;
+/// Plancher de la capacité du tampon de signaux, réutilisé à chaque bougie. La capacité réelle est
+/// `2 × max(plancher, max_pending)` (une stratégie de grille peut émettre un signal par niveau).
+const SIGNALS_FLOOR: usize = 16;
+/// Durée d'une 1m en millisecondes.
+const MINUTE_MS: i64 = 60_000;
 
 /// Résultat d'une cellule.
 #[derive(Clone, Debug)]
@@ -71,6 +75,7 @@ pub fn run_cell_observed(
     observer: &mut dyn LoopObserver,
 ) -> Result<CellResult, EngineError> {
     config.sim_rules.validate()?;
+    config.instrument.validate()?;
     validate_declaration(strategy.as_ref())?;
     check_candles(candles)?;
     let mtf = Mtf::build(candles, strategy.timeframes())?;
@@ -88,6 +93,7 @@ pub fn run_cell_mtf(
     observer: &mut dyn LoopObserver,
 ) -> Result<CellResult, EngineError> {
     config.sim_rules.validate()?;
+    config.instrument.validate()?;
     validate_declaration(strategy.as_ref())?;
     check_candles(mtf.m1())?;
     run_prepared(mtf, strategy, config, observer)
@@ -235,6 +241,7 @@ fn run_prepared(
         config.fees,
         config.slippage,
         config.sim_rules,
+        config.instrument,
         config.initial_cash,
         trades_capacity,
     )?;
@@ -244,8 +251,10 @@ fn run_prepared(
         warmup_bars,
         bars: n,
     })?;
+    let max_pending = config.sim_rules.max_pending;
     let mut buffers = LoopBuffers {
-        signals: Vec::with_capacity(SIGNALS_CAPACITY),
+        signals: Vec::with_capacity(2 * SIGNALS_FLOOR.max(max_pending)),
+        pending: Vec::with_capacity(max_pending),
         equity: Vec::with_capacity(window),
         emitted: 0,
         accepted: 0,
@@ -287,12 +296,11 @@ fn run_prepared(
         fees_total += trade.exit_fee;
         slippage_total += trade.entry_slippage;
         slippage_total += trade.exit_slippage;
-        match trade.exit_reason {
-            ExitReason::Signal => pnl_realized += trade.pnl_net,
-            ExitReason::ForcedClose => {
-                pnl_marked += trade.pnl_net;
-                n_trades_forced += 1;
-            }
+        if trade.forced_close {
+            pnl_marked += trade.pnl_net;
+            n_trades_forced += 1;
+        } else {
+            pnl_realized += trade.pnl_net;
         }
     }
     let first_in_window = window_candles
@@ -321,7 +329,7 @@ fn run_prepared(
         slippage_total,
         signals_emitted: buffers.emitted,
         signals_accepted: buffers.accepted,
-        rejections: buffers.rejections.with_sim_counters(&out.counters),
+        rejections: buffers.rejections,
         sim: out.counters,
     })
 }
@@ -357,6 +365,8 @@ fn check_candles(candles: &[Candle]) -> Result<(), EngineError> {
 /// Tampons et compteurs de la boucle, tous préalloués avant elle.
 struct LoopBuffers {
     signals: Vec<Signal>,
+    /// Vue des ordres en attente donnée à la stratégie, réécrite à chaque appel.
+    pending: Vec<PendingOrder>,
     equity: Vec<f64>,
     emitted: u64,
     accepted: u64,
@@ -376,11 +386,46 @@ struct LoopViews<'a> {
     closed: Vec<&'a [usize]>,
 }
 
-/// Boucle des étapes 1 à 5 de docs/03 §7.2 sur `window_candles`, qui commence à l'index `start`.
+/// Vue d'un ordre en attente pour la stratégie. `ttl_left` compte les 1m restantes avant l'expiration,
+/// à partir de `now_ms` ; un market n'en a pas (0).
+fn to_pending_order(view: PendingView, now_ms: Ts) -> PendingOrder {
+    let (kind, ttl_left) = match (view.limit, view.expires_at_ms) {
+        (Some((price, ttl_bars)), Some(expires)) => {
+            let left = (expires - now_ms).max(0) / MINUTE_MS;
+            (
+                OrderKind::Limit { price, ttl_bars },
+                u32::try_from(left).unwrap_or(u32::MAX),
+            )
+        }
+        _ => (OrderKind::Market, 0),
+    };
+    PendingOrder {
+        side: view.side,
+        kind,
+        qty: view.qty,
+        slot: view.slot,
+        tag: view.tag,
+        placed_at_ms: view.signal_ms,
+        ttl_left,
+    }
+}
+
+fn to_position(view: PositionView) -> Position {
+    Position {
+        qty: view.qty,
+        avg_price: view.avg_price,
+        stop: view.stop,
+        take_profit: view.take_profit,
+        opened_at_ms: view.opened_at_ms,
+    }
+}
+
+/// Boucle des étapes de docs/03 §7.2 sur `window_candles`, qui commence à l'index `start`.
 ///
-/// La stratégie n'est appelée à la 1m `i` que si une bougie de l'un de ses timeframes déclarés vient de
-/// s'y clôturer (`just_closed[i] & declared_mask != 0`) ; sinon aucun signal ne naît, mais les fills,
-/// l'observation intrabar et l'equity de la bougie ont lieu comme toujours.
+/// Pour chaque 1m : `Simulator::on_bar` (annulations, fills, stops), mark-to-market, puis, si l'un des
+/// timeframes déclarés de la stratégie vient de s'y clôturer (`just_closed[i] & declared_mask != 0`),
+/// vue des ordres en attente, appel de `on_bar` de la stratégie et soumission des signaux. Sinon aucun
+/// signal ne naît, mais les fills, les stops et l'equity de la bougie ont lieu comme toujours.
 fn run_loop(
     window_candles: &[Candle],
     start: usize,
@@ -392,14 +437,12 @@ fn run_loop(
 ) -> Result<(), EngineError> {
     for (offset, candle) in window_candles.iter().enumerate() {
         let i = start + offset;
-        // 1. Fills des ordres émis à i-1 ou avant, à open[i].
-        sim.on_open(candle)?;
-        // 2. Observation intrabar (en S3, seuls les franchissements de stop sont marqués).
-        sim.observe_intrabar(candle);
-        // 3. Equity à la clôture de la bougie.
+        // 1. Annulations, expirations, fills et stops de la 1m (ordres actifs seulement).
+        sim.on_bar(candle)?;
+        // 2. Equity à la clôture de la bougie.
         let equity_i = sim.equity_at(candle.close);
         buffers.equity.push(equity_i);
-        // 4. Stratégie, appelée seulement quand un de ses timeframes vient de clôturer une bougie.
+        // 3. Stratégie, appelée seulement quand un de ses timeframes vient de clôturer une bougie.
         let mask = views.mtf.just_closed(i) & views.declared_mask;
         if mask == 0 {
             continue;
@@ -415,35 +458,30 @@ fn run_loop(
                 .ok_or(EngineError::MissingClosedCount { index: i })?;
             *current = base.with_closed(count)?;
         }
-        let portfolio = sim.portfolio();
-        let position = portfolio.is_long().then(|| Position {
-            qty: portfolio.qty(),
-            avg_price: portfolio.avg_price(),
-            stop: None,
-            take_profit: None,
-            opened_at_ms: portfolio.opened_at_ms(),
-        });
-        // Aucune réservation en S3 : tout le cash et toute la quantité sont libres.
+        buffers.pending.clear();
+        buffers
+            .pending
+            .extend(sim.pending().map(|view| to_pending_order(view, now_ms)));
         let state = BarState {
             now_ms,
             equity: equity_i,
-            quote_free: portfolio.cash(),
-            qty_free: portfolio.qty(),
-            position,
+            quote_free: sim.quote_free(),
+            qty_free: sim.qty_free(),
+            position: sim.position().map(to_position),
             fees: config.fees,
         };
-        debug_assert!(!sim.has_pending());
         buffers.signals.clear();
         {
-            let ctx = BarContext::new(config.symbol, state, &[], &views.current, mask)?;
+            let ctx =
+                BarContext::new(config.symbol, state, &buffers.pending, &views.current, mask)?;
             strategy.on_bar(&ctx, &mut buffers.signals);
         }
-        // 5. Traduction des signaux : exécutables à partir de i+1 seulement.
+        // 4. Soumission des signaux : actifs au plus tôt `activation_delay_bars` minutes après la clôture.
         buffers.emitted += buffers.signals.len() as u64;
-        let context = SignalContext {
-            ref_price: candle.close,
-            equity: equity_i,
+        let context = SubmitContext {
             signal_ms: now_ms,
+            equity: equity_i,
+            ref_price: candle.close,
         };
         for signal in &buffers.signals {
             if dispatch(signal, context, sim, &mut buffers.rejections) {
