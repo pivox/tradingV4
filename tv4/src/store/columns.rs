@@ -239,6 +239,41 @@ impl Columns {
         Ok(())
     }
 
+    /// Fusion de deux séries strictement croissantes : toutes les lignes des deux, triées, et à
+    /// `open_time_ms` égal la ligne de `newer` (la plus récemment lue) l'emporte. Sert à la reprise de
+    /// l'ingestion OKX (S7), qui retélécharge une page chevauchante. Les deux côtés doivent porter la
+    /// colonne `trades` ([`StoreError::MissingTrades`] sinon) ; l'ordre strict de chaque côté est
+    /// supposé (le résultat est contrôlé à l'écriture).
+    pub fn merge_newer(&self, newer: &Columns) -> Result<Columns, StoreError> {
+        if self.trades.is_none() || newer.trades.is_none() {
+            return Err(StoreError::MissingTrades);
+        }
+        let mut merged = Columns::with_capacity(self.len() + newer.len());
+        let (mut i, mut j) = (0, 0);
+        while i < self.len() || j < newer.len() {
+            let from_newer = match (self.open_time_ms.get(i), newer.open_time_ms.get(j)) {
+                (Some(old), Some(new)) => {
+                    if old == new {
+                        i += 1;
+                    }
+                    old >= new
+                }
+                (None, _) => true,
+                (_, None) => false,
+            };
+            let (source, index) = if from_newer { (newer, j) } else { (self, i) };
+            if let Some(candle) = source.get(index) {
+                merged.push(&candle, source.synthetic[index]);
+            }
+            if from_newer {
+                j += 1;
+            } else {
+                i += 1;
+            }
+        }
+        Ok(merged)
+    }
+
     /// Garde les lignes de `window` (en place, l'ordre est conservé).
     pub fn retain_window(&mut self, window: Window) {
         let keep: Vec<bool> = self
@@ -404,5 +439,43 @@ mod tests {
         gauche.extend_from(&droite).unwrap();
         assert_eq!(gauche, colonnes);
         assert_eq!(colonnes.synthetic_count(), 0);
+    }
+    #[test]
+    fn fusion_de_deux_series_triees_la_plus_recente_l_emporte() {
+        let ligne = |t: i64, volume: f64| Candle {
+            open_time_ms: t,
+            open: 100.0,
+            high: 101.0,
+            low: 99.0,
+            close: 100.0,
+            volume,
+            trades: None,
+        };
+        let ancien = Columns::from_candles(&[ligne(10, 1.0), ligne(20, 1.0), ligne(30, 1.0)]);
+        let recent = Columns::from_candles(&[ligne(5, 2.0), ligne(20, 2.0), ligne(40, 2.0)]);
+        let fusion = ancien.merge_newer(&recent).unwrap();
+        assert_eq!(fusion.open_time_ms(), [5, 10, 20, 30, 40]);
+        assert_eq!(fusion.volume(), [2.0, 1.0, 2.0, 1.0, 2.0]);
+        assert!(fusion.check_strictly_increasing().is_ok());
+        // Côtés vides.
+        let vide = Columns::with_capacity(0);
+        assert_eq!(vide.merge_newer(&recent).unwrap(), recent);
+        assert_eq!(ancien.merge_newer(&vide).unwrap(), ancien);
+        // Sans colonne trades d'un côté : refusé.
+        let sans_trades = Columns::from_parts(ColumnsParts {
+            open_time_ms: vec![1],
+            open: vec![1.0],
+            high: vec![1.0],
+            low: vec![1.0],
+            close: vec![1.0],
+            volume: vec![1.0],
+            trades: None,
+            synthetic: vec![],
+        })
+        .unwrap();
+        assert!(matches!(
+            ancien.merge_newer(&sans_trades),
+            Err(StoreError::MissingTrades)
+        ));
     }
 }

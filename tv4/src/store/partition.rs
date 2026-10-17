@@ -87,7 +87,7 @@ struct Pending {
     continuity: Option<ContinuityCounts>,
 }
 
-fn check_source(source: &str) -> Result<(), StoreError> {
+pub(super) fn check_source(source: &str) -> Result<(), StoreError> {
     let valide = !source.is_empty()
         && source.len() <= MAX_SOURCE_LEN
         && source
@@ -101,7 +101,7 @@ fn check_source(source: &str) -> Result<(), StoreError> {
 }
 
 /// Contrôles d'entrée communs à toutes les périodes (phase 1, étape 1).
-fn check_input(partition: &Partition, columns: &Columns) -> Result<(), StoreError> {
+pub(super) fn check_input(partition: &Partition, columns: &Columns) -> Result<(), StoreError> {
     if columns.is_empty() {
         return Err(StoreError::EmptyInput);
     }
@@ -265,17 +265,29 @@ pub fn write_partition_with(
     columns: &Columns,
     options: &WriteOptions<'_>,
 ) -> Result<Vec<WriteOutcome>, StoreError> {
+    // Phase 1 : contrôles et verrou, puis décisions et écriture sous le verrou.
+    check_source(options.source)?;
+    check_input(partition, columns)?;
+    let _verrou = PartitionLock::acquire(root, partition)?;
+    write_locked(root, partition, columns, options)
+}
+
+/// Corps de [`write_partition_with`], appelé avec le verrou de `partition` **déjà tenu** par l'appelant
+/// (S7 : la fusion d'une période relit le fichier existant sous le même verrou que l'écriture) et les
+/// contrôles d'entrée (`check_source`, `check_input`) déjà faits.
+pub(super) fn write_locked(
+    root: &Path,
+    partition: &Partition,
+    columns: &Columns,
+    options: &WriteOptions<'_>,
+) -> Result<Vec<WriteOutcome>, StoreError> {
     let WriteOptions {
         source,
         now_ms,
         closed_until_ms,
         continuity,
     } = *options;
-    // Phase 1 : contrôles, verrou, décisions.
-    check_source(source)?;
-    check_input(partition, columns)?;
     let ingested_at = format_rfc3339_utc(now_ms)?;
-    let _verrou = PartitionLock::acquire(root, partition)?;
     let closed_bound = closed_until_ms.min(now_ms);
 
     let plages = split_by_period(partition, columns)?;

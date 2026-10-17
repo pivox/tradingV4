@@ -3,7 +3,8 @@
 //!
 //! Les sous-commandes pas encore codées sortent en erreur en nommant l'étape du jalon 1 qui les
 //! implémentera (docs/03 §11) ; `backtest` existe depuis S3 (fixture CSV 1m), `ingest csv` et
-//! `dataset build` depuis S4, `ingest kraken` depuis S5. `grid` arrive au jalon 1.5.
+//! `dataset build` depuis S4, `ingest kraken` depuis S5, `ingest okx` depuis S7. `grid` arrive au
+//! jalon 1.5.
 //!
 //! La CLI est le seul module qui lit l'horloge système ([`now_ms`]) : le store reçoit l'instant en
 //! paramètre (docs/03 §5.3, écart 5 de S4).
@@ -17,11 +18,16 @@ use crate::model::Ts;
 pub use backtest::BacktestArgs;
 pub use dataset::DatasetBuildArgs;
 pub use ingest::{IngestCsvArgs, IngestKrakenArgs, IngestSummary, ingest_kraken};
+pub use ingest_okx::{
+    DEFAULT_BATCH_PAGES, DEFAULT_LOCK_TIMEOUT, DEFAULT_WORKERS, IngestOkxArgs, MonthReport,
+    MonthStatus, OkxIngestOptions, OkxIngestReport, UtcDate, ingest_okx,
+};
 
 mod backtest;
 mod bench;
 mod dataset;
 mod ingest;
+mod ingest_okx;
 mod verify;
 
 /// Erreurs de la couche CLI.
@@ -75,6 +81,9 @@ pub enum CliError {
     #[error(transparent)]
     KrakenZip(#[from] crate::marketdata::kraken_zip::KrakenZipError),
 
+    #[error(transparent)]
+    Okx(#[from] crate::marketdata::okx::OkxError),
+
     /// Une paire est demandée deux fois sur la ligne de commande de `ingest kraken`.
     #[error("paire « {pair} » demandée deux fois")]
     DuplicatePair { pair: String },
@@ -83,6 +92,19 @@ pub enum CliError {
     /// échec) ; les autres l'ont été, et les rapports disent pourquoi.
     #[error("ingestion incomplète : {failed} ; voir {summary}")]
     IngestIncomplete { failed: String, summary: String },
+
+    /// Au moins une période de `ingest okx` n'a pas été écrite (échec après épuisement des essais, ou
+    /// erreur d'écriture) ; les périodes déjà écrites restent valides et `--resume` reprend le reste.
+    #[error(
+        "ingestion OKX incomplète : {failed} ; les fichiers déjà écrits restent valides, relancer avec --resume"
+    )]
+    OkxIncomplete { failed: String },
+
+    /// Un thread de téléchargement a paniqué : le compte rendu de l'ingestion n'est pas fiable.
+    #[error(
+        "un thread de `ingest okx` a paniqué : relancer avec --resume après avoir signalé l'incident"
+    )]
+    OkxWorkerPanicked,
 
     /// L'horloge système ne donne pas un instant exploitable.
     #[error("horloge système antérieure à 1970 ou hors plage : impossible de dater l'écriture")]
@@ -159,8 +181,8 @@ pub enum Command {
 pub enum IngestSource {
     /// Dump OHLCVT complet de Kraken (zip, SHA-256 vérifié, rapport de continuité bloquant).
     Kraken(IngestKrakenArgs),
-    /// API REST OKX `history-candles`.
-    Okx,
+    /// API REST OKX `history-candles` : 3 threads, écriture par lots, reprise.
+    Okx(IngestOkxArgs),
     /// CSV OHLCVT au format Kraken : ingestion minimale de S4 (fixture), sans contrôle de continuité.
     Csv(IngestCsvArgs),
 }
@@ -177,7 +199,7 @@ pub fn run(command: &Command) -> Result<(), CliError> {
     match command {
         Command::Ingest { source } => match source {
             IngestSource::Kraken(args) => ingest::kraken(args),
-            IngestSource::Okx => ingest::okx(),
+            IngestSource::Okx(args) => ingest_okx::okx(args),
             IngestSource::Csv(args) => ingest::csv(args),
         },
         Command::Dataset { action } => match action {
@@ -195,8 +217,7 @@ mod tests {
     use clap::CommandFactory;
 
     /// Chaque sous-commande vide, la commande tapée et l'étape annoncée.
-    const EMPTY_COMMANDS: [(&[&str], &str, &str); 3] = [
-        (&["tv4", "ingest", "okx"], "ingest okx", "S7"),
+    const EMPTY_COMMANDS: [(&[&str], &str, &str); 2] = [
         (&["tv4", "verify"], "verify", "S8"),
         (&["tv4", "bench"], "bench", "S8"),
     ];
@@ -393,6 +414,103 @@ mod tests {
             .collect();
         assert_eq!(paires, [("XBTUSD", "BTC-USD"), ("ETHUSD", "ETH-USD")]);
         assert_eq!(args.root, std::path::PathBuf::from("R"));
+    }
+
+    #[test]
+    fn ingest_okx_se_parse_avec_ses_defauts() {
+        let cli = Cli::try_parse_from([
+            "tv4",
+            "ingest",
+            "okx",
+            "--inst",
+            "BTC-USDC",
+            "--inst",
+            "BTC-USDT",
+            "--from",
+            "2025-08-21",
+        ])
+        .expect("ingest okx valide");
+        let Command::Ingest {
+            source: IngestSource::Okx(args),
+        } = cli.command
+        else {
+            panic!("sous-commande attendue : ingest okx");
+        };
+        let insts: Vec<&str> = args.insts.iter().map(|s| s.as_str()).collect();
+        assert_eq!(insts, ["BTC-USDC", "BTC-USDT"]);
+        assert_eq!(args.tf, crate::model::Timeframe::M1);
+        assert_eq!(args.from, UtcDate(1_755_734_400_000));
+        assert!(args.to.is_none());
+        assert!(!args.resume);
+        assert_eq!(args.root, std::path::PathBuf::from("."));
+        assert!(args.base_url.is_none());
+
+        let cli = Cli::try_parse_from([
+            "tv4",
+            "ingest",
+            "okx",
+            "--inst",
+            "BTC-USDC",
+            "--tf",
+            "4h",
+            "--from",
+            "2025-08-21",
+            "--to",
+            "2025-09-01",
+            "--resume",
+            "--root",
+            "R",
+        ])
+        .expect("ingest okx valide");
+        let Command::Ingest {
+            source: IngestSource::Okx(args),
+        } = cli.command
+        else {
+            panic!("sous-commande attendue : ingest okx");
+        };
+        assert_eq!(args.tf, crate::model::Timeframe::H4);
+        assert_eq!(args.to, Some(UtcDate(1_756_684_800_000)));
+        assert!(args.resume);
+        assert_eq!(args.root, std::path::PathBuf::from("R"));
+    }
+
+    #[test]
+    fn ingest_okx_exige_inst_et_from_et_refuse_les_arguments_mal_formes() {
+        for incomplet in [
+            vec!["tv4", "ingest", "okx", "--from", "2025-08-21"],
+            vec!["tv4", "ingest", "okx", "--inst", "BTC-USDC"],
+            vec![
+                "tv4",
+                "ingest",
+                "okx",
+                "--inst",
+                "btc-usdc",
+                "--from",
+                "2025-08-21",
+            ],
+            vec![
+                "tv4",
+                "ingest",
+                "okx",
+                "--inst",
+                "BTC-USDC",
+                "--from",
+                "21/08/2025",
+            ],
+            vec![
+                "tv4",
+                "ingest",
+                "okx",
+                "--inst",
+                "BTC-USDC",
+                "--from",
+                "2025-08-21",
+                "--tf",
+                "2h",
+            ],
+        ] {
+            assert!(Cli::try_parse_from(&incomplet).is_err(), "{incomplet:?}");
+        }
     }
 
     #[test]
