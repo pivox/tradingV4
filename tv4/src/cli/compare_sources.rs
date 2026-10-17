@@ -4,6 +4,15 @@
 //! La commande lit les 1m des deux partitions du store (`kraken/<SYMBOLE>/1m` et `okx/<INSTID>/1m`),
 //! retient leur recouvrement et mesure trois choses. Elle n'écrit rien dans le store.
 //!
+//! # Lecture vérifiée
+//!
+//! Comme `build_dataset`, la lecture prend le verrou de chaque partition (une ingestion en cours la
+//! retient : [`crate::store::StoreError::LockBusy`]) et lit chaque fichier par la voie vérifiée du store
+//! ([`crate::store::read_verified_with_hash`]) : le `content_hash` est recalculé sur les lignes et comparé
+//! à celui du manifeste, avec les lignes et la plage du manifeste. Une différence (Parquet remplacé sans
+//! son manifeste, arrêt entre le `rename` et l'écriture du manifeste) est une erreur, jamais un verdict
+//! calculé sur des données non vérifiées. Le rapport liste les fichiers lus, avec le hash recalculé.
+//!
 //! # Plage comparée
 //!
 //! Chaque source a une plage « présente » `[première 1m, dernière 1m + 1 min)`, lue dans les manifestes
@@ -15,10 +24,21 @@
 //! # Clôtures 4h et 1d
 //!
 //! Les 1m de chaque source sont agrégées par [`crate::mtf::aggregate`] (le code du moteur), sur la plage
-//! comparée seulement. Une barre n'est comparée que si elle tient **entièrement** dans la plage (une barre
-//! amputée par le début d'une source n'a pas la même clôture), si elle est présente des deux côtés (au moins
-//! une 1m de chaque) et si elle ne recoupe aucune plage exclue : une barre à moitié exclue est écartée en
-//! entier, pas recalculée sur ses minutes restantes. `Δ = close_okx / close_kraken − 1`.
+//! comparée seulement, pour décider quelles barres existent. Une barre n'est candidate que si elle tient
+//! **entièrement** dans la plage (une barre amputée par le début d'une source n'a pas la même clôture), si
+//! elle est présente des deux côtés (au moins une 1m de chaque) et si elle ne recoupe aucune plage exclue :
+//! une barre à moitié exclue est écartée en entier, pas recalculée sur ses minutes restantes.
+//!
+//! Pour une barre candidate, la clôture comparée est celle de la **dernière minute présente des deux
+//! côtés** dans la barre (même `open_time`) : `Δ = close_okx / close_kraken − 1` sur la clôture 1m de cette
+//! minute. Une barre complète des deux côtés donne la vraie clôture de la barre. Si la barre a un trou en
+//! fin chez une source, comparer sa dernière minute présente à la vraie clôture de l'autre fabriquerait
+//! un faux « basis » sur des séries identiques (S7, CS-1) ; la minute commune évite ce biais. Deux
+//! compteurs de [`BarReport`] disent ce que cela coûte : `bars_shifted_close` compte les barres comparées
+//! dont la minute commune n'est pas la dernière minute présente de l'une des sources (la clôture comparée
+//! n'est alors pas la vraie clôture de cette source), et `bars_without_common_minute` les barres présentes
+//! des deux côtés sans aucune minute commune, qui ne sont pas comparées. Les barres présentes d'un seul côté
+//! se lisent dans l'écart entre `bars_kraken` et `bars_okx`.
 //!
 //! Le verdict applique les seuils de docs/04 §2.5 : médiane de |Δ| des clôtures 4h au plus 0,10 %, et au plus
 //! 1 % des jours avec |Δ| > 0,5 %. Le protocole ne dit pas sur quelle barre se lit « jours » : lecture
@@ -56,8 +76,8 @@ use crate::mtf;
 use crate::report;
 use crate::store::time::format_rfc3339_utc;
 use crate::store::{
-    Columns, Partition, Period, Projection, ReadOptions, Symbol, Window, read_file_manifest,
-    read_parquet, resolve_rel,
+    Partition, PartitionLock, Period, StoreError, Symbol, Window, read_file_manifest,
+    read_verified_with_hash, resolve_rel,
 };
 
 /// Dossier des rapports, relatif à la racine de travail.
@@ -279,6 +299,11 @@ pub struct BarReport {
     pub bars_excluded: u64,
     /// Barres comparées.
     pub bars_common: u64,
+    /// Barres comparées dont la clôture est décalée : la dernière minute présente des deux côtés n'est pas
+    /// la dernière minute présente de l'une des sources (trou en fin de barre).
+    pub bars_shifted_close: u64,
+    /// Barres présentes des deux côtés, non écartées par `--exclude`, sans minute commune : non comparées.
+    pub bars_without_common_minute: u64,
     /// Statistiques de Δ, absentes sans barre comparée.
     pub delta: Option<DeltaStats>,
     /// Part des barres comparées avec |Δ| > [`DAY_DELTA_THRESHOLD`] ; sur les 1d, c'est le critère « jours ».
@@ -408,7 +433,40 @@ fn bar_is_excluded(open: Ts, tf: Timeframe, exclusions: &[Range<Ts>]) -> bool {
     exclusions.iter().any(|r| open < r.end && end > r.start)
 }
 
-/// Compare les clôtures de `tf` : barres du moteur ([`mtf::aggregate`]), complètes dans `range`.
+/// Clôtures 1m de la dernière minute présente des deux côtés d'une barre.
+struct CommonClose {
+    kraken: f64,
+    okx: f64,
+    /// Cette minute n'est pas la dernière minute présente de l'une des deux sources.
+    shifted: bool,
+}
+
+/// Dernière minute présente des deux côtés dans `kraken` et `okx` (les 1m d'une même barre, triées),
+/// ou `None` sans minute commune. Balayage à rebours des deux séries.
+fn last_common_minute(kraken: &[Candle], okx: &[Candle]) -> Option<CommonClose> {
+    let (mut i, mut j) = (kraken.len(), okx.len());
+    while i > 0 && j > 0 {
+        let (k, o) = (kraken.get(i - 1)?, okx.get(j - 1)?);
+        if k.open_time_ms == o.open_time_ms {
+            let last_kraken = kraken.last()?.open_time_ms;
+            let last_okx = okx.last()?.open_time_ms;
+            return Some(CommonClose {
+                kraken: k.close,
+                okx: o.close,
+                shifted: k.open_time_ms != last_kraken || k.open_time_ms != last_okx,
+            });
+        }
+        if k.open_time_ms > o.open_time_ms {
+            i -= 1;
+        } else {
+            j -= 1;
+        }
+    }
+    None
+}
+
+/// Compare les clôtures de `tf` : barres du moteur ([`mtf::aggregate`]), complètes dans `range`, clôture
+/// comparée à la dernière minute présente des deux côtés (voir la documentation du module).
 fn compare_bars(
     kraken: &[Candle],
     okx: &[Candle],
@@ -426,16 +484,26 @@ fn compare_bars(
     let (mut i, mut j) = (0, 0);
     let mut deltas: Vec<(Ts, f64)> = Vec::new();
     let mut excluded = 0_u64;
+    let mut shifted = 0_u64;
+    let mut without_common = 0_u64;
     while let (Some(k), Some(o)) = (bars_k.get(i), bars_o.get(j)) {
         if k.open_time_ms < o.open_time_ms {
             i += 1;
         } else if k.open_time_ms > o.open_time_ms {
             j += 1;
         } else {
-            if bar_is_excluded(k.open_time_ms, tf, exclusions) {
+            let open = k.open_time_ms;
+            if bar_is_excluded(open, tf, exclusions) {
                 excluded += 1;
             } else {
-                deltas.push((k.open_time_ms, o.close / k.close - 1.0));
+                let bar = open..open.saturating_add(tf.ms());
+                match last_common_minute(restrict(kraken, &bar), restrict(okx, &bar)) {
+                    Some(common) => {
+                        shifted += u64::from(common.shifted);
+                        deltas.push((open, common.okx / common.kraken - 1.0));
+                    }
+                    None => without_common += 1,
+                }
             }
             i += 1;
             j += 1;
@@ -451,6 +519,8 @@ fn compare_bars(
         bars_okx: bars_o.len() as u64,
         bars_excluded: excluded,
         bars_common: deltas.len() as u64,
+        bars_shifted_close: shifted,
+        bars_without_common_minute: without_common,
         delta: delta_stats(&deltas),
         above_day_threshold: ShareReport::new(DAY_DELTA_THRESHOLD, above, deltas.len()),
     }
@@ -592,6 +662,7 @@ fn measure(
 
 /// Fichier d'une partition avec la plage de son manifeste.
 struct SourceFile {
+    period: Period,
     rel: String,
     rows: u64,
     content_hash: String,
@@ -659,6 +730,7 @@ fn scan_source(root: &Path, partition: Partition) -> Result<Source, CliError> {
     for period in periods {
         let manifest = read_file_manifest(&resolve_rel(root, &partition.manifest_rel(period))?)?;
         files.push(SourceFile {
+            period,
             rel: partition.file_rel(period),
             rows: manifest.row_count,
             content_hash: manifest.content_hash,
@@ -672,26 +744,90 @@ fn scan_source(root: &Path, partition: Partition) -> Result<Source, CliError> {
     Ok(Source { partition, files })
 }
 
-/// Lit les 1m de `window` dans les fichiers qui la recoupent (sans la colonne `trades`).
-fn read_source(root: &Path, source: &Source, window: Window) -> Result<Vec<Candle>, CliError> {
-    let options = ReadOptions {
-        projection: Projection::NoTrades,
-        window: Some(window),
-        ..ReadOptions::default()
-    };
+/// Prend le verrou de `partition` puis inventorie ses fichiers (sous le verrou : un manifeste lu avant
+/// une ingestion ne serait plus celui du Parquet). Une partition absente est refusée sans créer de
+/// verrou.
+fn lock_and_scan(root: &Path, partition: Partition) -> Result<(PartitionLock, Source), CliError> {
+    let dir = resolve_rel(root, &partition.dir_rel())?;
+    if !dir.is_dir() {
+        return Err(CliError::CompareMissingSource {
+            partition: partition.label(),
+            dir: dir.display().to_string(),
+        });
+    }
+    let lock = PartitionLock::acquire(root, &partition)?;
+    let source = scan_source(root, partition)?;
+    Ok((lock, source))
+}
+
+/// Écart entre une valeur du manifeste et celle du fichier relu.
+fn manifest_mismatch(
+    manifest_rel: &str,
+    field: &'static str,
+    manifest: impl ToString,
+    actual: impl ToString,
+) -> CliError {
+    CliError::Store(StoreError::ManifestMismatch {
+        path: manifest_rel.to_string(),
+        field,
+        manifest: manifest.to_string(),
+        actual: actual.to_string(),
+    })
+}
+
+/// Lit les 1m de `window` dans les fichiers qui la recoupent, par la voie vérifiée du store : hash
+/// recalculé et comparé au manifeste, puis lignes et plage du manifeste contrôlées. Rend les bougies de
+/// la fenêtre et les fichiers lus, avec leur hash recalculé.
+fn read_source(
+    root: &Path,
+    source: &Source,
+    window: Window,
+) -> Result<(Vec<Candle>, Vec<FileReport>), CliError> {
     let mut candles = Vec::new();
+    let mut reports = Vec::new();
     for file in &source.files {
         if !window.intersects(file.ts_min, file.ts_max) {
             continue;
         }
-        let columns: Columns = read_parquet(&resolve_rel(root, &file.rel)?, &options)?;
+        let (mut columns, content_hash) = read_verified_with_hash(
+            &resolve_rel(root, &file.rel)?,
+            &file.rel,
+            &source.partition,
+            file.period,
+            &file.content_hash,
+        )?;
+        let manifest_rel = source.partition.manifest_rel(file.period);
+        if columns.len() as u64 != file.rows {
+            return Err(manifest_mismatch(
+                &manifest_rel,
+                "row_count",
+                file.rows,
+                columns.len(),
+            ));
+        }
+        let times = columns.open_time_ms();
+        if let (Some(&min), Some(&max)) = (times.first(), times.last()) {
+            if min != file.ts_min {
+                return Err(manifest_mismatch(&manifest_rel, "ts_min", file.ts_min, min));
+            }
+            if max != file.ts_max {
+                return Err(manifest_mismatch(&manifest_rel, "ts_max", file.ts_max, max));
+            }
+        }
+        columns.retain_window(window);
         candles.extend(columns.to_candles());
+        reports.push(FileReport {
+            path: file.rel.clone(),
+            rows: file.rows,
+            content_hash,
+        });
     }
-    Ok(candles)
+    Ok((candles, reports))
 }
 
 impl Source {
-    fn report(&self) -> Result<SourceReport, CliError> {
+    /// Rapport de la source : sa plage présente et les fichiers lus.
+    fn report(&self, files: Vec<FileReport>) -> Result<SourceReport, CliError> {
         let present = self.present().ok_or(CliError::CompareMissingSource {
             partition: self.partition.label(),
             dir: self.partition.dir_rel(),
@@ -699,15 +835,7 @@ impl Source {
         Ok(SourceReport {
             partition: self.partition.label(),
             present: RangeReport::new(&present),
-            files: self
-                .files
-                .iter()
-                .map(|f| FileReport {
-                    path: f.rel.clone(),
-                    rows: f.rows,
-                    content_hash: f.content_hash.clone(),
-                })
-                .collect(),
+            files,
         })
     }
 }
@@ -730,15 +858,14 @@ fn pct(fraction: f64, digits: usize) -> String {
 pub fn compare_sources(
     options: &CompareSourcesOptions,
 ) -> Result<(CompareReport, PathBuf), CliError> {
-    let kraken = scan_source(
+    let (lock_kraken, kraken) = lock_and_scan(
         &options.root,
         Partition::new(ExchangeId::Kraken, options.kraken.clone(), Timeframe::M1),
     )?;
-    let okx = scan_source(
+    let (lock_okx, okx) = lock_and_scan(
         &options.root,
         Partition::new(ExchangeId::Okx, options.okx.clone(), Timeframe::M1),
     )?;
-    let (kraken_report, okx_report) = (kraken.report()?, okx.report()?);
     let (Some(k), Some(o)) = (kraken.present(), okx.present()) else {
         return Err(CliError::CompareNoOverlap {
             detail: "une source est vide".to_string(),
@@ -761,8 +888,11 @@ pub fn compare_sources(
         ),
     })?;
 
-    let kraken_m1 = read_source(&options.root, &kraken, window)?;
-    let okx_m1 = read_source(&options.root, &okx, window)?;
+    let (kraken_m1, kraken_files) = read_source(&options.root, &kraken, window)?;
+    let (okx_m1, okx_files) = read_source(&options.root, &okx, window)?;
+    // Les fichiers sont lus et vérifiés : une ingestion peut reprendre la main.
+    drop((lock_kraken, lock_okx));
+    let (kraken_report, okx_report) = (kraken.report(kraken_files)?, okx.report(okx_files)?);
     let measures = measure(&kraken_m1, &okx_m1, &range, &options.exclude);
     if measures.minutes.common == 0 {
         return Err(CliError::CompareNoCommonMinute {
@@ -798,8 +928,13 @@ pub fn compare_sources(
 /// Ligne de statistiques d'une série de clôtures.
 fn print_bars(label: &str, bars: &BarReport) {
     println!(
-        "{label} : {} barres comparées (Kraken {}, OKX {}, {} écartées par --exclude)",
-        bars.bars_common, bars.bars_kraken, bars.bars_okx, bars.bars_excluded
+        "{label} : {} barres comparées (Kraken {}, OKX {}, {} écartées par --exclude, {} à clôture décalée, {} sans minute commune)",
+        bars.bars_common,
+        bars.bars_kraken,
+        bars.bars_okx,
+        bars.bars_excluded,
+        bars.bars_shifted_close,
+        bars.bars_without_common_minute
     );
     match &bars.delta {
         Some(d) => println!(

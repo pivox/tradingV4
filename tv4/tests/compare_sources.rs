@@ -17,7 +17,7 @@ use tempfile::TempDir;
 
 use tv4::cli::{CliError, CompareReport, CompareSourcesOptions, Verdict, compare_sources};
 use tv4::model::{Candle, ExchangeId, Timeframe, Ts};
-use tv4::store::{Columns, Partition, Symbol, write_partition};
+use tv4::store::{Columns, Partition, PartitionLock, StoreError, Symbol, write_partition};
 
 const MINUTE: Ts = 60_000;
 const HOUR: Ts = 60 * MINUTE;
@@ -418,6 +418,125 @@ fn le_rapport_est_deterministe_et_cite_ses_fichiers_et_seuils() {
     assert_eq!(json["verdict"], "ok");
     assert_eq!(json["bars_4h"]["tf"], "4h");
     assert_eq!(json["bars_1d"]["tf"], "1d");
+}
+
+// --- Constats de la revue de la PR S7 ----------------------------------------------------------------
+
+/// CS-1 : deux séries identiques dont OKX a des trous en fin de barre ne sont pas un « basis ». Trou de
+/// 20h à 24h le jour 3 (la barre 1d du jour 3 et la barre 4h de 16h-20h sont intactes ; la barre 4h de 20h
+/// n'a aucune minute chez OKX) et barre 4h du jour 6 de 08h où OKX n'a que la première minute.
+#[test]
+fn trou_en_fin_de_jour_cote_okx_sur_series_identiques() {
+    let k = series(T0..T0 + 10 * DAY, price);
+    let mut o = k.clone();
+    let trou = T0 + 3 * DAY + 20 * HOUR..T0 + 4 * DAY;
+    o.retain(|c| !trou.contains(&c.open_time_ms));
+    let trou_2 = T0 + 6 * DAY + 8 * HOUR + MINUTE..T0 + 6 * DAY + 12 * HOUR;
+    o.retain(|c| !trou_2.contains(&c.open_time_ms));
+    let dir = stores(&k, &o);
+    let report = compare(dir.path());
+
+    // Les prix sont identiques : chaque clôture comparée à la même minute vaut Δ = 0. Avant la
+    // correction, la clôture 1d du jour 3 d'OKX était celle de 19:59 comparée à celle de 23:59 de Kraken.
+    for bars in [&report.bars_4h, &report.bars_1d] {
+        let delta = bars.delta.as_ref().expect("barres comparées");
+        assert_eq!(delta.max_abs, 0.0, "{:?}", bars.tf);
+    }
+    assert_eq!(report.verdict, Verdict::Ok, "{:?}", report.verdict_reasons);
+    assert_eq!(report.bars_1d.above_day_threshold.count, 0);
+}
+
+/// CS-1 : les barres dont la minute commune n'est pas la dernière minute présente d'une source sont
+/// comptées (clôture décalée), les barres sans minute commune sont écartées et comptées.
+#[test]
+fn barres_a_cloture_decalee_et_barres_sans_minute_commune_sont_comptees() {
+    let k = series(T0..T0 + 10 * DAY, price);
+    let mut o = k.clone();
+    let trou = T0 + 3 * DAY + 20 * HOUR..T0 + 4 * DAY;
+    o.retain(|c| !trou.contains(&c.open_time_ms));
+    let trou_2 = T0 + 6 * DAY + 8 * HOUR + MINUTE..T0 + 6 * DAY + 12 * HOUR;
+    o.retain(|c| !trou_2.contains(&c.open_time_ms));
+    let dir = stores(&k, &o);
+    let report = compare(dir.path());
+    // 1d : seul le jour 3 a sa dernière minute commune avant la dernière de Kraken (19:59 contre 23:59).
+    assert_eq!(report.bars_1d.bars_common, 10);
+    assert_eq!(report.bars_1d.bars_shifted_close, 1);
+    assert_eq!(report.bars_1d.bars_without_common_minute, 0);
+    // 4h : la barre 08h du jour 6 (une seule minute chez OKX) est décalée ; la barre 20h du jour 3 n'existe
+    // pas chez OKX, elle compte dans bars_kraken mais pas dans les barres communes.
+    assert_eq!(report.bars_4h.bars_kraken, 60);
+    assert_eq!(report.bars_4h.bars_okx, 59);
+    assert_eq!(report.bars_4h.bars_common, 59);
+    assert_eq!(report.bars_4h.bars_shifted_close, 1);
+    assert_eq!(report.bars_4h.bars_without_common_minute, 0);
+
+    // Barre sans minute commune : Kraken a 08h-10h, OKX 10h-12h de la barre 4h 08h du jour 1.
+    let k = series(T0..T0 + 3 * DAY, price);
+    let barre = T0 + DAY + 8 * HOUR;
+    let mut kraken = k.clone();
+    kraken.retain(|c| !(barre + 2 * HOUR..barre + 4 * HOUR).contains(&c.open_time_ms));
+    let mut okx = k;
+    okx.retain(|c| !(barre..barre + 2 * HOUR).contains(&c.open_time_ms));
+    let dir = stores(&kraken, &okx);
+    let report = compare(dir.path());
+    assert_eq!(report.bars_4h.bars_kraken, 18);
+    assert_eq!(report.bars_4h.bars_okx, 18);
+    assert_eq!(report.bars_4h.bars_common, 17);
+    assert_eq!(report.bars_4h.bars_without_common_minute, 1);
+    assert_eq!(report.bars_4h.bars_shifted_close, 0);
+    // La barre 1d du jour 1 a 23:59 des deux côtés : comparée, non décalée.
+    assert_eq!(report.bars_1d.bars_common, 3);
+    assert_eq!(report.bars_1d.bars_shifted_close, 0);
+    assert_eq!(report.verdict, Verdict::Ok);
+}
+
+/// CS-2 : un Parquet remplacé sans toucher au manifeste (arrêt entre le `rename` et l'écriture du
+/// manifeste, ingestion concurrente) est une erreur, pas un verdict calculé sur des données non vérifiées.
+#[test]
+fn hash_du_manifeste_non_verifie() {
+    let k = series(T0..T0 + 3 * DAY, price);
+    let dir = stores(&k, &k);
+    let avant = compare(dir.path());
+    assert_eq!(avant.verdict, Verdict::Ok);
+    let hash_avant = avant.okx.files[0].content_hash.clone();
+    assert!(hash_avant.starts_with("blake3:"));
+
+    // Parquet OKX décalé de +1 %, manifeste inchangé.
+    let autre = tempfile::tempdir().expect("dossier temporaire");
+    store(
+        autre.path(),
+        ExchangeId::Okx,
+        "BTC-USDC",
+        &series(T0..T0 + 3 * DAY, |ts| price(ts) * 1.01),
+    );
+    let rel = "data/candles/okx/BTC-USDC/1m/2024-01.parquet";
+    fs::copy(autre.path().join(rel), dir.path().join(rel)).expect("copie");
+
+    let resultat = compare_sources(&options(dir.path()));
+    assert!(
+        matches!(
+            resultat,
+            Err(CliError::Store(StoreError::FileHashMismatch { .. }))
+        ),
+        "{resultat:?}"
+    );
+}
+
+/// CS-2 : la lecture prend le verrou de partition, comme `build_dataset` : une ingestion en cours la
+/// retient.
+#[test]
+fn partition_verrouillee_par_une_ingestion_refusee() {
+    let k = series(T0..T0 + 3 * DAY, price);
+    let dir = stores(&k, &k);
+    let partition = Partition::new(ExchangeId::Okx, sym("BTC-USDC"), Timeframe::M1);
+    let verrou = PartitionLock::acquire(dir.path(), &partition).expect("verrou");
+    let resultat = compare_sources(&options(dir.path()));
+    assert!(
+        matches!(resultat, Err(CliError::Store(StoreError::LockBusy { .. }))),
+        "{resultat:?}"
+    );
+    drop(verrou);
+    assert!(compare_sources(&options(dir.path())).is_ok());
 }
 
 // --- Binaire ------------------------------------------------------------------------------------

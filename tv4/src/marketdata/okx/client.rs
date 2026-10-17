@@ -162,19 +162,14 @@ impl OkxClient {
         }
     }
 
-    /// Attente avant l'essai suivant l'essai `attempt` (à partir de 1) : `backoff_min × 2^(attempt-1)`
-    /// plafonné à `backoff_max`, puis jitter « équitable » : la moitié fixe plus un tirage dans l'autre
-    /// moitié. L'attente reste donc entre `base/2` et `base`, et deux threads ne se resynchronisent pas.
+    /// Attente avant l'essai suivant l'essai `attempt` (à partir de 1) : voir [`backoff_wait`].
     fn backoff(&self, attempt: u32) -> Duration {
-        let factor = 1u32 << attempt.saturating_sub(1).min(20);
-        let base = self
-            .config
-            .backoff_min
-            .checked_mul(factor)
-            .unwrap_or(self.config.backoff_max)
-            .min(self.config.backoff_max);
-        let half = base / 2;
-        half + self.jitter.up_to(base - half)
+        backoff_wait(
+            self.config.backoff_min,
+            self.config.backoff_max,
+            attempt,
+            &self.jitter,
+        )
     }
 
     /// Un essai HTTP, sans retry.
@@ -216,6 +211,42 @@ impl OkxClient {
             _ => Attempt::Fatal(http_error(status, &body)),
         }
     }
+}
+
+/// Bornes de l'attente avant l'essai suivant l'essai `attempt` (à partir de 1), sans tirage :
+/// `(plancher, plafond)`.
+///
+/// `base = min(backoff_min × 2^(attempt−1), backoff_max)` ; l'attente vaut `base` plus un jitter dans
+/// `[0, base/2]`, puis elle est plafonnée à `backoff_max`. Le plancher est donc `base` (250 ms au premier
+/// retry, la valeur de la spécification, et non plus la moitié de `base`) et le plafond
+/// `min(base × 1,5, backoff_max)`.
+///
+/// Avec les valeurs de production (250 ms, 8 s) et 5 essais, soit 4 attentes, les plafonds sont 375 ms,
+/// 750 ms, 1,5 s et 3 s : aucune attente n'atteint 8 s, leur somme maximale est de 5,625 s. Le plafond
+/// final ne sert qu'aux configurations à plus d'essais (la sixième attente vaut déjà 8 s de base).
+fn backoff_bounds(
+    backoff_min: Duration,
+    backoff_max: Duration,
+    attempt: u32,
+) -> (Duration, Duration) {
+    let factor = 1u32 << attempt.saturating_sub(1).min(20);
+    let base = backoff_min
+        .checked_mul(factor)
+        .unwrap_or(backoff_max)
+        .min(backoff_max);
+    (base, (base + base / 2).min(backoff_max))
+}
+
+/// Attente avant l'essai suivant l'essai `attempt` : `base` plus un tirage de `jitter` dans
+/// `[0, base/2]`, plafonnée à `backoff_max` (bornes dans [`backoff_bounds`]).
+fn backoff_wait(
+    backoff_min: Duration,
+    backoff_max: Duration,
+    attempt: u32,
+    jitter: &Jitter,
+) -> Duration {
+    let (floor, ceiling) = backoff_bounds(backoff_min, backoff_max, attempt);
+    floor + jitter.up_to(ceiling - floor)
 }
 
 fn transport_retry(error: &ureq::Error) -> Attempt {
@@ -360,4 +391,112 @@ where
         rejected_unclosed: rejected,
         stats,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Valeurs de production de l'attente (`OkxConfig::default`).
+    const MIN: Duration = Duration::from_millis(250);
+    const MAX: Duration = Duration::from_secs(8);
+
+    /// S7-CLI-2 : bornes pures de l'attente, n = 1 à 4 aux valeurs de production, puis le plafond.
+    #[test]
+    fn bornes_de_l_attente_aux_valeurs_de_production() {
+        let ms = Duration::from_millis;
+        let attendus = [
+            (1, ms(250), ms(375)),
+            (2, ms(500), ms(750)),
+            (3, ms(1_000), ms(1_500)),
+            (4, ms(2_000), ms(3_000)),
+        ];
+        let mut somme_max = Duration::ZERO;
+        for (n, plancher, plafond) in attendus {
+            assert_eq!(
+                backoff_bounds(MIN, MAX, n),
+                (plancher, plafond),
+                "essai {n}"
+            );
+            somme_max += plafond;
+        }
+        // 5 essais = 4 attentes : chacune sous 8 s, et 5,625 s au total.
+        assert_eq!(somme_max, ms(5_625));
+        assert!(somme_max < MAX);
+        // Le plafond protège les configurations à plus d'essais : la base plafonne à 8 s, jitter compris.
+        assert_eq!(backoff_bounds(MIN, MAX, 6), (ms(8_000), ms(8_000)));
+        assert_eq!(backoff_bounds(MIN, MAX, 40), (ms(8_000), ms(8_000)));
+        // Entre les deux : base 4 s, plafond de 6 s.
+        assert_eq!(backoff_bounds(MIN, MAX, 5), (ms(4_000), ms(6_000)));
+        // Un jitter maximal (tirage tout en haut) ne dépasse pas le plafond non plus.
+        let jitter = Jitter::new(3);
+        for n in 1..=12 {
+            let (plancher, plafond) = backoff_bounds(MIN, MAX, n);
+            for _ in 0..200 {
+                let attente = backoff_wait(MIN, MAX, n, &jitter);
+                assert!((plancher..=plafond).contains(&attente), "essai {n}");
+            }
+        }
+    }
+
+    /// S7-CLI-2 : l'attente tirée par le client ne descend jamais sous `backoff_min × 2^(n−1)` (plancher
+    /// de 250 ms au premier retry) ni ne dépasse `base × 1,5`, sur de nombreux tirages.
+    #[test]
+    fn attente_du_client_entre_la_base_et_une_fois_et_demie_la_base() {
+        // (essai n, base, plafond de l'attente) : 250 ms, 500 ms, 1 s, 2 s.
+        let attendus = [
+            (1u32, Duration::from_millis(250), Duration::from_millis(375)),
+            (2, Duration::from_millis(500), Duration::from_millis(750)),
+            (
+                3,
+                Duration::from_millis(1_000),
+                Duration::from_millis(1_500),
+            ),
+            (
+                4,
+                Duration::from_millis(2_000),
+                Duration::from_millis(3_000),
+            ),
+        ];
+        for seed in 0..500u64 {
+            let client = OkxClient::new(OkxConfig {
+                jitter_seed: seed,
+                use_env_proxy: false,
+                ..OkxConfig::default()
+            });
+            for (n, bas, haut) in attendus {
+                let attente = client.backoff(n);
+                assert!(
+                    (bas..=haut).contains(&attente),
+                    "essai {n}, graine {seed} : {attente:?} hors de [{bas:?}, {haut:?}]"
+                );
+            }
+        }
+    }
+
+    /// Les valeurs par défaut sont celles de la spécification (docs/03 §3.1 et §11, S7).
+    #[test]
+    fn valeurs_par_defaut_de_la_configuration() {
+        let OkxConfig {
+            base_url,
+            limit,
+            timeout,
+            max_attempts,
+            backoff_min,
+            backoff_max,
+            slot_spacing,
+            rate_limit_pause,
+            use_env_proxy,
+            jitter_seed: _,
+        } = OkxConfig::default();
+        assert_eq!(slot_spacing, Duration::from_millis(125));
+        assert_eq!(rate_limit_pause, Duration::from_secs(2));
+        assert_eq!(max_attempts, 5);
+        assert_eq!(backoff_min, Duration::from_millis(250));
+        assert_eq!(backoff_max, Duration::from_secs(8));
+        assert_eq!(limit, 300);
+        assert_eq!(base_url, "https://eea.okx.com");
+        assert!(use_env_proxy);
+        assert_eq!(timeout, Duration::from_secs(10));
+    }
 }

@@ -99,6 +99,19 @@ fn read_verified(
     period: Period,
     expected: &str,
 ) -> Result<Columns, StoreError> {
+    read_verified_with_hash(path, shown, partition, period, expected).map(|(columns, _)| columns)
+}
+
+/// Comme `read_verified`, et rend aussi le `content_hash` recalculé (`blake3:...`, égal à `expected`
+/// puisque toute différence est une erreur). Voie de lecture vérifiée des commandes qui lisent des
+/// fichiers sans construire de dataset (`tv4 compare-sources`).
+pub fn read_verified_with_hash(
+    path: &Path,
+    shown: &str,
+    partition: &Partition,
+    period: Period,
+    expected: &str,
+) -> Result<(Columns, String), StoreError> {
     let columns = read_parquet(path, &ReadOptions::default())?;
     let (hex, _) = dsh::content_hash(partition, period, &columns)?;
     let actual = dsh::prefixed(&hex);
@@ -109,7 +122,7 @@ fn read_verified(
             actual,
         });
     }
-    Ok(columns)
+    Ok((columns, actual))
 }
 
 /// Compare une valeur du manifeste à celle recalculée.

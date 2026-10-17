@@ -23,6 +23,16 @@
 //! le fichier de la période et le réécrit (fichier temporaire, `fsync`, `rename`, manifeste, sous le
 //! verrou). Un arrêt perd au plus un lot (50 pages, soit 15 000 bougies 1m, environ 6 s de requêtes) ; le
 //! fichier écrit reste toujours valide et contigu : il couvre `[x, fin)` après un arrêt, pas `[début, x)`.
+//!
+//! **Règle de contiguïté (S7-OKX-1).** Un lot intermédiaire n'est permis que si la pagination reste
+//! collée aux données du fichier, c'est-à-dire si le premier lot écrit touche ou chevauche le fichier : la
+//! période n'a pas de fichier, ou la fenêtre est une sous-fenêtre basse qui descend sous `ts_min` en
+//! partant d'un point situé dans `[ts_min, ts_max + barre]` ([`window_is_glued`]). Sinon (sous-fenêtre
+//! haute, ou fenêtre entière sur un fichier existant, avec ou sans `--resume`), la pagination part du
+//! haut de la fenêtre, loin des données présentes : un premier lot écrit y laisserait, en cas d'échec
+//! ensuite, un trou au milieu du fichier, invisible pour la reprise qui ne regarde que les extrémités. Le
+//! job tamponne alors toute la fenêtre et fait **une seule écriture à la fin** : au plus un mois de 1m
+//! (44 640 bougies, quelques Mo) ou un an de 4h ou de 1d. Un échec ne laisse alors que le fichier d'avant.
 //! Les `ts` des bougies `confirm = "0"` vont dans `continuity.rejected_unclosed` du manifeste ; les
 //! `duplicates` restent à 0 (le chevauchement d'une reprise est notre protocole, pas une anomalie de
 //! la source), si bien que deux ingestions sans nouvelle donnée donnent des manifestes identiques.
@@ -35,8 +45,11 @@
 //! **et** son début est établi, soit parce que `from` est au plus tôt le début de la période, soit parce
 //! que la pagination a atteint une page vide sans descendre sous le début de la fenêtre (rien n'existe
 //! avant : mois de cotation d'une paire), soit parce que le fichier contient déjà la première bougie de la
-//! période. Les lots intermédiaires n'ont jamais `closed = true`. Un fichier clos n'est plus retéléchargé
-//! par `--resume`, ni réécrit avec un contenu différent par le store.
+//! période, **et** aucune bougie `confirm = "0"` rencontrée dans la période ne manque encore au fichier
+//! fusionné (S7-OKX-2 : le `rejected_unclosed` ajusté du manifeste vaut 0 ; sinon le fichier reste ouvert,
+//! la bougie manquante pour toujours une fois clos, et une reprise ultérieure la récupère). Les lots
+//! intermédiaires n'ont jamais `closed = true`. Un fichier clos n'est plus retéléchargé par `--resume`, ni
+//! réécrit avec un contenu différent par le store.
 //!
 //! # Reprise (`--resume`)
 //!
@@ -51,9 +64,18 @@
 //!   fenêtre, et une sous-fenêtre haute `[ts_max − page, fin de fenêtre)` si `ts_max` est avant la dernière
 //!   bougie possible (`fin − barre`) ; si elles se touchent, une seule fenêtre entière.
 //!
-//! Sans `--resume`, toute la fenêtre est retéléchargée et fusionnée au fichier existant. Limite assumée : la
-//! reprise ne répare que les extrémités ; un trou au milieu d'un fichier (bougies absentes de la source,
-//! ou fichier édité) ne se comble qu'en relançant sans `--resume`.
+//! Sans `--resume`, toute la fenêtre est retéléchargée et fusionnée au fichier existant (le manifeste est
+//! quand même lu : il décide des lots intermédiaires, de l'établissement du début et du compte rendu).
+//! Limite assumée : la reprise ne répare que les extrémités ; un trou au milieu d'un fichier (bougies
+//! absentes de la source, ou fichier édité) ne se comble qu'en relançant sans `--resume`. La règle de
+//! contiguïté ci-dessus garantit que l'ingestion elle-même n'en crée pas.
+//!
+//! # Compte rendu
+//!
+//! Les lignes, la clôture et le `content_hash` d'un [`MonthReport`] viennent du manifeste relu sur le
+//! disque après le job (S7-OKX-3), jamais d'un état supposé : un job en échec dont des lots sont déjà
+//! écrits les rend, et un job qui n'écrit rien rend ceux du fichier présent. `Empty` ne signifie que
+//! « aucun fichier ».
 
 use std::collections::BTreeSet;
 use std::ops::Range;
@@ -320,6 +342,21 @@ fn plan_windows(request: &Range<Ts>, file: Option<(Ts, Ts)>, bar: Ts, page: Ts) 
     }
 }
 
+/// Vrai si le premier lot écrit pour `window` serait collé au fichier `(ts_min, ts_max)` : la fenêtre
+/// descend sous `ts_min` (sous-fenêtre basse) et sa borne haute, d'où part la pagination, tombe entre
+/// `ts_min` et `ts_max + bar`, donc la première page chevauche ou touche les données présentes.
+/// Sans fichier, la fenêtre est la première donnée de la période : collée par définition.
+fn window_is_glued(window: &Range<Ts>, file: Option<(Ts, Ts)>, bar: Ts) -> bool {
+    match file {
+        None => true,
+        Some((ts_min, ts_max)) => {
+            window.start < ts_min
+                && ts_min <= window.end
+                && window.end <= ts_max.saturating_add(bar)
+        }
+    }
+}
+
 // ---------------------------------------------------------------------------------------------
 // Exécution d'un job
 // ---------------------------------------------------------------------------------------------
@@ -370,6 +407,9 @@ struct JobState<'a> {
     buffer: Vec<Candle>,
     rejected: BTreeSet<Ts>,
     pages_since_write: usize,
+    /// Vrai : la fenêtre en cours est collée au fichier ([`window_is_glued`]), les lots intermédiaires
+    /// sont permis. Faux : tout est tamponné jusqu'à la fin de la fenêtre.
+    glued: bool,
     /// Plus ancienne ligne reçue dans la fenêtre en cours (bougies non clôturées comprises).
     min_oldest: Option<Ts>,
     created: bool,
@@ -387,8 +427,8 @@ impl JobState<'_> {
             self.min_oldest = Some(self.min_oldest.map_or(oldest, |m| m.min(oldest)));
         }
         self.pages_since_write += 1;
-        if self.pages_since_write >= self.ctx.options.batch_pages.max(1) {
-            // Lot intermédiaire : jamais clos.
+        if self.glued && self.pages_since_write >= self.ctx.options.batch_pages.max(1) {
+            // Lot intermédiaire, collé au fichier : jamais clos.
             self.write(0, false)?;
         }
         Ok(())
@@ -443,14 +483,15 @@ fn run_job(client: &OkxClient, ctx: &Context<'_>, job: &Job) -> Result<JobDone, 
     let period_window = job.period.window();
     let (start, end) = (job.request.start, job.request.end);
 
-    // Manifeste du fichier présent, seulement pour une reprise.
+    // Manifeste du fichier présent, toujours lu : `--resume` décide de ce qu'on en fait, mais la
+    // contiguïté des lots, l'établissement du début et le compte rendu en dépendent aussi sans lui.
     let manifest_path = store::resolve_rel(&options.root, &job.partition.manifest_rel(job.period))?;
-    let existing = if options.resume && manifest_path.is_file() {
+    let existing = if manifest_path.is_file() {
         Some(store::read_file_manifest(&manifest_path)?)
     } else {
         None
     };
-    if let Some(manifest) = existing.as_ref().filter(|m| m.closed) {
+    if let Some(manifest) = existing.as_ref().filter(|m| options.resume && m.closed) {
         return Ok(JobDone {
             status: MonthStatus::SkippedClosed,
             rows: manifest.row_count,
@@ -462,12 +503,12 @@ fn run_job(client: &OkxClient, ctx: &Context<'_>, job: &Job) -> Result<JobDone, 
             writes: 0,
         });
     }
-    let windows = plan_windows(
-        &job.request,
-        existing.as_ref().map(|m| (m.ts_min, m.ts_max)),
-        ctx.bar,
-        ctx.page,
-    );
+    let file_range = existing.as_ref().map(|m| (m.ts_min, m.ts_max));
+    let windows = if options.resume {
+        plan_windows(&job.request, file_range, ctx.bar, ctx.page)
+    } else {
+        vec![job.request.clone()]
+    };
 
     let mut state = JobState {
         ctx,
@@ -475,6 +516,7 @@ fn run_job(client: &OkxClient, ctx: &Context<'_>, job: &Job) -> Result<JobDone, 
         buffer: Vec::new(),
         rejected: BTreeSet::new(),
         pages_since_write: 0,
+        glued: true,
         min_oldest: None,
         created: false,
         rewritten: false,
@@ -487,6 +529,7 @@ fn run_job(client: &OkxClient, ctx: &Context<'_>, job: &Job) -> Result<JobDone, 
     let mut history_start_proven = false;
     for (index, window) in windows.iter().enumerate() {
         state.min_oldest = None;
+        state.glued = window_is_glued(window, file_range, ctx.bar);
         let fetch = fetch_window(
             client,
             job.inst.as_str(),
@@ -507,19 +550,31 @@ fn run_job(client: &OkxClient, ctx: &Context<'_>, job: &Job) -> Result<JobDone, 
         }
     }
 
-    // Clôture : la fenêtre atteint la fin de la période et son début est établi.
+    // Clôture : la fenêtre atteint la fin de la période, son début est établi, et aucune bougie
+    // `confirm = "0"` de la période ne manque encore.
     let start_established = start == period_window.start_ms()
         || history_start_proven
         || existing
             .as_ref()
             .is_some_and(|m| m.ts_min <= period_window.start_ms());
-    let covered = end == period_window.end_ms() && start_established;
+    let mut covered = end == period_window.end_ms() && start_established;
+    if covered && !state.rejected.is_empty() {
+        // Écriture sans clôture d'abord : le store retire des rejets les bougies présentes dans le
+        // résultat fusionné ; il en reste (compte ajusté > 0) si une bougie de la période manque encore.
+        state.write(0, true)?;
+        covered = state
+            .last
+            .as_ref()
+            .and_then(|outcome| outcome.continuity)
+            .is_some_and(|continuity| continuity.rejected_unclosed == 0);
+    }
     if covered || !state.buffer.is_empty() {
         let closed_until_ms = if covered { options.now_ms } else { 0 };
         state.write(closed_until_ms, true)?;
     }
 
-    let (status, rows, closed, content_hash) = match (&state.last, &existing) {
+    // État du disque après le job : l'écriture finale si le job en a fait une, sinon le manifeste relu.
+    let (status, rows, closed, content_hash) = match (&state.last, disk_manifest(ctx, job)) {
         (Some(last), _) => {
             let status = if state.created {
                 MonthStatus::Created
@@ -539,7 +594,7 @@ fn run_job(client: &OkxClient, ctx: &Context<'_>, job: &Job) -> Result<JobDone, 
             MonthStatus::Unchanged,
             manifest.row_count,
             manifest.closed,
-            Some(manifest.content_hash.clone()),
+            Some(manifest.content_hash),
         ),
         (None, None) => (MonthStatus::Empty, 0, false, None),
     };
@@ -555,7 +610,20 @@ fn run_job(client: &OkxClient, ctx: &Context<'_>, job: &Job) -> Result<JobDone, 
     })
 }
 
+/// Manifeste du fichier de la période tel qu'il est sur le disque maintenant (`None` : pas de fichier, ou
+/// manifeste illisible, ce que la ligne de compte rendu ne peut pas réparer).
+fn disk_manifest(ctx: &Context<'_>, job: &Job) -> Option<store::FileManifest> {
+    let path =
+        store::resolve_rel(&ctx.options.root, &job.partition.manifest_rel(job.period)).ok()?;
+    if path.is_file() {
+        store::read_file_manifest(&path).ok()
+    } else {
+        None
+    }
+}
+
 fn month_report(
+    ctx: &Context<'_>,
     job: &Job,
     worker: usize,
     result: Result<JobDone, JobError>,
@@ -592,10 +660,17 @@ fn month_report(
             writes: done.writes,
             ..base
         },
-        Err(error) => MonthReport {
-            error: Some(error.to_string()),
-            ..base
-        },
+        // Échec : des lots peuvent déjà être écrits, le compte rendu décrit le disque.
+        Err(error) => {
+            let disk = disk_manifest(ctx, job);
+            MonthReport {
+                rows: disk.as_ref().map_or(0, |m| m.row_count),
+                closed: disk.as_ref().is_some_and(|m| m.closed),
+                content_hash: disk.map(|m| m.content_hash),
+                error: Some(error.to_string()),
+                ..base
+            }
+        }
     }
 }
 
@@ -699,7 +774,7 @@ pub fn ingest_okx(
                         let Some(job) = jobs.get(index) else { break };
                         let job_started = Instant::now();
                         let result = run_job(&client, ctx, job);
-                        let report = month_report(job, worker, result, job_started);
+                        let report = month_report(ctx, job, worker, result, job_started);
                         print_month(ctx.options.tf, &report);
                         results
                             .lock()
@@ -850,6 +925,41 @@ mod tests {
         // Fichier entièrement après : bas = fenêtre entière.
         let apres = plan_windows(&request, Some((20_000 * MIN, 21_000 * MIN)), MIN, 300 * MIN);
         assert_eq!(apres, [request]);
+    }
+
+    #[test]
+    fn lots_intermediaires_seulement_quand_la_fenetre_est_collee_au_fichier() {
+        let request = 0..5_000 * MIN;
+        let file = Some((3_000 * MIN, 4_900 * MIN));
+        // Fichier absent : collé.
+        assert!(window_is_glued(&request, None, MIN));
+        // Sous-fenêtre basse [0, 3 300) : descend sous ts_min, part de l'intérieur du fichier.
+        assert!(window_is_glued(&(0..3_300 * MIN), file, MIN));
+        // Sous-fenêtre haute [4 600, 5 000) : part du haut, au-dessus de ts_max + barre.
+        assert!(!window_is_glued(&(4_600 * MIN..5_000 * MIN), file, MIN));
+        // Fenêtre entière sur un fichier court : la pagination part de 5 000, loin de [100, 200].
+        assert!(!window_is_glued(
+            &request,
+            Some((100 * MIN, 200 * MIN)),
+            MIN
+        ));
+        // Fenêtre entière qui finit juste après le fichier (ts_max = fin − barre) : collée.
+        assert!(window_is_glued(
+            &request,
+            Some((3_000 * MIN, 4_999 * MIN)),
+            MIN
+        ));
+        // Fenêtre entièrement avant le fichier : le lot ne toucherait pas le fichier.
+        assert!(!window_is_glued(&(0..1_000 * MIN), file, MIN));
+        // Toute sous-fenêtre basse du plan de reprise est collée, toute sous-fenêtre haute ne l'est pas.
+        for (ts_min, ts_max) in [(3_000, 4_900), (2_000, 4_999), (1_000, 1_100), (400, 4_000)] {
+            let (ts_min, ts_max) = (ts_min * MIN, ts_max * MIN);
+            let windows = plan_windows(&request, Some((ts_min, ts_max)), MIN, 300 * MIN);
+            if let [low, high] = windows.as_slice() {
+                assert!(window_is_glued(low, Some((ts_min, ts_max)), MIN));
+                assert!(!window_is_glued(high, Some((ts_min, ts_max)), MIN));
+            }
+        }
     }
 
     #[test]

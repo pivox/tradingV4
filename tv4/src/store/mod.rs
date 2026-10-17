@@ -68,6 +68,7 @@ use crate::model::{ModelError, Timeframe, Ts};
 pub use self::columns::{Columns, ColumnsParts};
 pub use self::dataset::{
     BuildOutcome, BuildRequest, BuildStatus, LoadedDataset, build_dataset, fill_gaps, load_dataset,
+    read_verified_with_hash,
 };
 pub use self::layout::{GapsPolicy, Partition, Period, Symbol, Window, resolve_rel};
 pub use self::lock::{DatasetLock, PartitionLock};

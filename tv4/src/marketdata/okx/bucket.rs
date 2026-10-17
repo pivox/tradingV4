@@ -1,6 +1,6 @@
 //! Token bucket maison et jitter du retry (docs/03-architecture.md §3.1, ligne HTTP).
 //!
-//! Ni l'un ni l'autre ne justifie une crate (`governor`, `rand`) : un `Mutex<Instant>` et dix lignes
+//! Ni l'un ni l'autre ne justifie une crate (`governor`, `rand`) : un `Mutex` et dix lignes
 //! de générateur suffisent, et le comportement se teste sans horloge réelle.
 
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -8,17 +8,33 @@ use std::sync::{Mutex, PoisonError};
 use std::thread;
 use std::time::{Duration, Instant};
 
+/// État du bucket, tenu sous un seul verrou.
+#[derive(Debug)]
+struct BucketState {
+    /// Prochain créneau libre.
+    next_slot: Instant,
+    /// Fin de la dernière pause posée par [`TokenBucket::pause`] (`None` : jamais de pause).
+    paused_until: Option<Instant>,
+}
+
 /// Distribue des créneaux d'envoi espacés d'au moins `spacing`, à tous les threads qui le partagent.
 ///
-/// L'état est un seul `Mutex<Instant>` : le prochain créneau libre. Prendre un créneau le réserve
-/// (le prochain recule de `spacing`) puis dort jusqu'à lui, hors du verrou. Les créneaux sont donc
-/// servis dans l'ordre de réservation, sans rafale : 125 ms d'espacement donnent 8 requêtes par
-/// seconde au maximum, sous la limite de 20 requêtes par 2 s et par IP d'OKX. Chaque tentative d'une
-/// requête, retries compris, prend un créneau (l'appelant le garantit).
+/// L'état est un seul `Mutex` : le prochain créneau libre et la fin de la dernière pause. Prendre un
+/// créneau le réserve (le prochain recule de `spacing`) puis dort jusqu'à lui, hors du verrou. Les
+/// créneaux sont donc servis dans l'ordre de réservation, sans rafale : 125 ms d'espacement donnent 8
+/// requêtes par seconde au maximum, sous la limite de 20 requêtes par 2 s et par IP d'OKX. Chaque
+/// tentative d'une requête, retries compris, prend un créneau (l'appelant le garantit).
+///
+/// Une pause posée **après** la réservation d'un créneau le couvre peut-être : au réveil, [`acquire`]
+/// revérifie sous le verrou et, si la pause couvre le créneau, dort jusqu'à la fin de la pause puis
+/// reprend un nouveau créneau. Aucune requête ne part donc pendant une pause, même celle d'un thread
+/// qui dormait déjà dans `acquire` (constat S7-CLI-1).
+///
+/// [`acquire`]: TokenBucket::acquire
 #[derive(Debug)]
 pub struct TokenBucket {
     spacing: Duration,
-    next_slot: Mutex<Instant>,
+    state: Mutex<BucketState>,
 }
 
 impl TokenBucket {
@@ -26,43 +42,62 @@ impl TokenBucket {
     pub fn new(spacing: Duration) -> Self {
         TokenBucket {
             spacing,
-            next_slot: Mutex::new(Instant::now()),
+            state: Mutex::new(BucketState {
+                next_slot: Instant::now(),
+                paused_until: None,
+            }),
         }
+    }
+
+    fn lock(&self) -> std::sync::MutexGuard<'_, BucketState> {
+        self.state.lock().unwrap_or_else(PoisonError::into_inner)
     }
 
     /// Réserve le prochain créneau, dort jusqu'à lui et le renvoie (l'instant prévu, pas l'instant
     /// de réveil, qui lui est postérieur ou égal : les tests comparent donc des valeurs exactes).
+    ///
+    /// Si une pause posée entre la réservation et le réveil couvre le créneau (`slot < paused_until`),
+    /// le créneau est abandonné : le thread dort jusqu'à `paused_until` et en réserve un nouveau.
     pub fn acquire(&self) -> Instant {
-        let slot = {
-            let mut next = self
-                .next_slot
-                .lock()
-                .unwrap_or_else(PoisonError::into_inner);
-            let slot = (*next).max(Instant::now());
-            *next = slot + self.spacing;
-            slot
-        };
-        // `Instant` est monotone : `saturating_duration_since` vaut zéro si le créneau est passé.
-        let wait = slot.saturating_duration_since(Instant::now());
-        if !wait.is_zero() {
-            thread::sleep(wait);
+        loop {
+            let slot = {
+                let mut state = self.lock();
+                let slot = state.next_slot.max(Instant::now());
+                state.next_slot = slot + self.spacing;
+                slot
+            };
+            sleep_until(slot);
+            // Revérification après le sommeil : une pause posée depuis la réservation ?
+            let paused_until = self.lock().paused_until;
+            match paused_until {
+                Some(until) if slot < until => sleep_until(until),
+                _ => return slot,
+            }
         }
-        slot
     }
 
     /// Repousse le prochain créneau à `maintenant + duration` pour tous les threads, sauf s'il est
     /// déjà plus tard. Trois threads qui reçoivent un 429 en même temps provoquent donc une seule
-    /// pause de `duration`, pas trois. Les créneaux déjà réservés avant l'appel sont conservés : au plus
-    /// une requête par thread part encore, ce qui est le prix de l'absence de file centrale.
+    /// pause de `duration`, pas trois. Les threads qui dorment déjà dans [`acquire`](Self::acquire)
+    /// sur un créneau antérieur à la fin de la pause le revérifient au réveil et attendent la fin de
+    /// la pause : aucune requête ne part avant elle.
     pub fn pause(&self, duration: Duration) {
         let until = Instant::now() + duration;
-        let mut next = self
-            .next_slot
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner);
-        if *next < until {
-            *next = until;
+        let mut state = self.lock();
+        if state.next_slot < until {
+            state.next_slot = until;
         }
+        if state.paused_until.is_none_or(|current| current < until) {
+            state.paused_until = Some(until);
+        }
+    }
+}
+
+/// Dort jusqu'à `instant` (rien si déjà passé : `Instant` est monotone, la soustraction sature).
+fn sleep_until(instant: Instant) {
+    let wait = instant.saturating_duration_since(Instant::now());
+    if !wait.is_zero() {
+        thread::sleep(wait);
     }
 }
 
@@ -131,6 +166,31 @@ mod tests {
         bucket.pause(Duration::from_millis(40));
         bucket.pause(Duration::from_millis(1));
         assert!(bucket.acquire() >= slot + Duration::from_millis(1));
+    }
+
+    /// S7-CLI-1 : une pause posée après la réservation d'un créneau futur retient aussi le thread qui
+    /// dort déjà dans `acquire` ; sa requête part au moins `pause` après la pose de la pause.
+    #[test]
+    fn la_pause_retient_un_thread_qui_a_deja_reserve_un_creneau() {
+        let spacing = Duration::from_millis(100);
+        let pause = Duration::from_millis(300);
+        let bucket = TokenBucket::new(spacing);
+        let premier = bucket.acquire();
+        let (pose, repris) = thread::scope(|scope| {
+            // Ce thread réserve le créneau `premier + 100 ms` puis dort dedans.
+            let dormeur = scope.spawn(|| bucket.acquire());
+            // 20 ms : le thread a réservé (il est parti depuis longtemps) mais dort encore.
+            thread::sleep(Duration::from_millis(20));
+            let pose = Instant::now();
+            bucket.pause(pause);
+            (pose, dormeur.join().unwrap())
+        });
+        assert!(repris >= premier + spacing, "le créneau suit le premier");
+        assert!(
+            repris >= pose + pause,
+            "la requête du dormeur part {:?} après la pause, moins que {pause:?}",
+            repris.saturating_duration_since(pose)
+        );
     }
 
     #[test]

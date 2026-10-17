@@ -264,6 +264,15 @@ fn two_months() -> Series {
     }
 }
 
+/// Les mêmes deux mois, sans bougie `confirm = "0"` : les deux fichiers peuvent être clos (S7-OKX-2 : une
+/// bougie non clôturée de la période, absente du fichier, interdit la clôture).
+fn two_closed_months() -> Series {
+    Series {
+        unclosed: Vec::new(),
+        ..two_months()
+    }
+}
+
 // --- Ingestion de plusieurs mois ----------------------------------------------------------------
 
 #[test]
@@ -294,8 +303,9 @@ fn ingere_deux_mois_fichiers_manifestes_et_rejets() {
         assert_eq!(manifest.period, label);
         assert_eq!(manifest.source, "okx-history-candles");
         assert_eq!(manifest.hash_format, "dsh-v1");
-        // Les deux mois sont passés et couverts de bout en bout : clos.
-        assert!(manifest.closed, "{label}");
+        // Les deux mois sont passés et couverts de bout en bout. Janvier est clos ; février ne l'est pas,
+        // parce que sa bougie confirm = "0" manque au fichier (S7-OKX-2).
+        assert_eq!(manifest.closed, label == "2024-01", "{label}");
         let continuity = manifest.continuity.expect("bloc continuity");
         assert_eq!(continuity.duplicates, 0, "{label}");
         assert_eq!(continuity.ohlc_errors, 0, "{label}");
@@ -514,7 +524,7 @@ fn arret_en_milieu_de_mois_puis_reprise_identique_a_une_ingestion_continue() {
 #[test]
 fn resume_sans_nouvelle_donnee_ne_fait_aucune_requete_sur_les_mois_clos() {
     let dir = tempfile::tempdir().unwrap();
-    let mocked = Mocked::exchange(two_months());
+    let mocked = Mocked::exchange(two_closed_months());
     let client = mocked.client(10);
     let tf = Timeframe::M30;
     run(&client, &options(dir.path(), &["BTC-USDC"], tf, JAN, MAR));
@@ -793,7 +803,7 @@ fn tf_de_1h_et_plus_fichier_annuel_barres_okx() {
 fn un_mois_en_echec_laisse_les_autres_valides_et_la_reprise_le_complete() {
     let tf = Timeframe::M30;
     let broken = Arc::new(AtomicI64::new(1));
-    let datasets = BTreeMap::from([("BTC-USDC".to_string(), two_months())]);
+    let datasets = BTreeMap::from([("BTC-USDC".to_string(), two_closed_months())]);
     let flag = Arc::clone(&broken);
     let mocked = Mocked::start(move |query| {
         // Tant que `broken` vaut 1, la fenêtre de février (after = MAR) échoue en 500.
@@ -1008,4 +1018,236 @@ fn arguments_invalides_erreur_d_usage() {
         let output = tv4_ingest(&args);
         assert_eq!(output.status.code(), Some(2), "{args:?}");
     }
+}
+
+// --- Constats de la revue de la PR S7 -------------------------------------------------------------
+
+/// Fichier `[JAN, JAN + 59 min]` déjà présent (cron d'il y a longtemps), échange à 200 bougies de 1m dont
+/// le budget de requêtes est piloté. Rend le client, le budget, le serveur et le dossier.
+fn fichier_de_60_minutes() -> (
+    tempfile::TempDir,
+    Mocked,
+    Arc<AtomicI64>,
+    OkxClient,
+    OkxIngestOptions,
+) {
+    let series = Series {
+        confirmed: run_of(JAN, MINUTE, 200),
+        unclosed: vec![],
+    };
+    let budget = Arc::new(AtomicI64::new(-1));
+    let mocked = Mocked::with_budget(series, Arc::clone(&budget));
+    let client = mocked.client(10);
+    let dir = tempfile::tempdir().unwrap();
+    let mut o = options(
+        dir.path(),
+        &["BTC-USDC"],
+        Timeframe::M1,
+        JAN,
+        JAN + 60 * MINUTE,
+    );
+    o.workers = 1;
+    o.batch_pages = 2;
+    o.resume = true;
+    run(&client, &o);
+    let (m1, c1) = read_period(dir.path(), "BTC-USDC", Timeframe::M1, month(2024, 1));
+    assert_eq!((m1.ts_min, m1.ts_max), (JAN, JAN + 59 * MINUTE));
+    assert_eq!(c1.len(), 60);
+    let mut o = options(dir.path(), &["BTC-USDC"], Timeframe::M1, JAN, FEB);
+    o.workers = 1;
+    o.batch_pages = 2;
+    o.resume = true;
+    (dir, mocked, budget, client, o)
+}
+
+/// S7-OKX-1 : une sous-fenêtre haute au-dessus de données déjà présentes n'écrit pas de lot qui ne soit
+/// pas collé au fichier. Un échec en cours de route laisse le fichier intact, et la reprise le complète
+/// sans trou.
+#[test]
+fn revue_trou_au_milieu_apres_echec_dans_la_sous_fenetre_haute() {
+    let tf = Timeframe::M1;
+    let jan = month(2024, 1);
+    let (dir, _mocked, budget, client, mut o) = fichier_de_60_minutes();
+
+    // Run 2 : --resume jusqu'à FEB ; 2 pages servies puis panne durable.
+    budget.store(2, Ordering::SeqCst);
+    let r2 = run(&client, &o);
+    assert_eq!(statuses(&r2), [MonthStatus::Failed]);
+    // Aucun lot intermédiaire n'a été écrit : le fichier est exactement celui du run 1 (60 lignes). Avant
+    // la correction il en avait 80, [0, 59] plus [180, 199], avec un trou de 2 h invisible pour la reprise.
+    let (m2, c2) = read_period(dir.path(), "BTC-USDC", tf, jan);
+    assert_eq!((m2.ts_min, m2.ts_max), (JAN, JAN + 59 * MINUTE));
+    assert_eq!(c2.len(), 60);
+    assert!(!m2.closed);
+    assert_eq!(m2.continuity.unwrap().gaps, 0);
+
+    // Run 3 : --resume, échange rétabli : fichier complet et clos, 200 lignes sans trou.
+    budget.store(-1, Ordering::SeqCst);
+    let r3 = run(&client, &o);
+    assert_eq!(statuses(&r3), [MonthStatus::Rewritten]);
+    let (m3, c3) = read_period(dir.path(), "BTC-USDC", tf, jan);
+    assert!(m3.closed);
+    assert_eq!(c3, expected(&run_of(JAN, MINUTE, 200)));
+    assert_eq!(m3.continuity.unwrap().gaps, 0);
+
+    // Run 4 : --resume ignore le fichier clos ; sans --resume, contenu identique donc inchangé.
+    let r4 = run(&client, &o);
+    assert_eq!(statuses(&r4), [MonthStatus::SkippedClosed]);
+    o.resume = false;
+    let r5 = run(&client, &o);
+    assert_eq!(statuses(&r5), [MonthStatus::Unchanged]);
+}
+
+/// S7-OKX-1, variante : fenêtre entière sans `--resume` sur un fichier existant (la pagination part du
+/// haut, loin des données présentes) : une seule écriture, à la fin.
+#[test]
+fn fenetre_entiere_sans_resume_sur_fichier_existant_ecrit_une_seule_fois() {
+    let tf = Timeframe::M1;
+    let jan = month(2024, 1);
+    let (dir, _mocked, budget, client, mut o) = fichier_de_60_minutes();
+    o.resume = false;
+
+    budget.store(2, Ordering::SeqCst);
+    let echec = run(&client, &o);
+    assert_eq!(statuses(&echec), [MonthStatus::Failed]);
+    let (m, c) = read_period(dir.path(), "BTC-USDC", tf, jan);
+    assert_eq!((m.ts_min, m.ts_max, c.len()), (JAN, JAN + 59 * MINUTE, 60));
+    // Le compte rendu décrit le disque (S7-OKX-3), pas zéro.
+    assert_eq!(echec.months[0].rows, 60);
+    assert_eq!(echec.months[0].writes, 0);
+
+    budget.store(-1, Ordering::SeqCst);
+    let ok = run(&client, &o);
+    assert_eq!(ok.months[0].writes, 1);
+    let (m, c) = read_period(dir.path(), "BTC-USDC", tf, jan);
+    assert!(m.closed);
+    assert_eq!(c, expected(&run_of(JAN, MINUTE, 200)));
+}
+
+/// S7-OKX-2 : un fichier n'est pas clos tant qu'une bougie `confirm = "0"` de la période manque encore ;
+/// une reprise la récupère, puis clôt.
+#[test]
+fn revue_cloture_malgre_une_bougie_non_cloturee_dans_la_periode() {
+    let tf = Timeframe::M1;
+    let jan = month(2024, 1);
+    let dir = tempfile::tempdir().unwrap();
+    // La dernière minute de janvier est encore confirm = "0" (ingestion lancée à FEB + quelques s).
+    let lagging = Series {
+        confirmed: run_of(JAN, MINUTE, 95),
+        unclosed: vec![FEB - MINUTE],
+    };
+    let mocked = Mocked::exchange(lagging);
+    let client = mocked.client(10);
+    let mut o = options(dir.path(), &["BTC-USDC"], tf, JAN, FEB);
+    o.now_ms = FEB + 5_000;
+    o.to = FEB + 5_000;
+    o.workers = 1;
+    o.resume = true;
+    let r1 = run(&client, &o);
+    let (m, c) = read_period(dir.path(), "BTC-USDC", tf, jan);
+    // Avant la correction : closed = true avec rejected_unclosed = 1 (bougie manquante pour toujours).
+    assert!(
+        !m.closed,
+        "un mois à qui il manque une bougie n'est pas clos"
+    );
+    assert_eq!(m.continuity.unwrap().rejected_unclosed, 1);
+    assert_eq!(c, expected(&run_of(JAN, MINUTE, 95)));
+    assert!(!r1.months[0].closed);
+
+    // Quelques secondes plus tard la bougie est clôturée chez OKX : la reprise la prend et clôt.
+    let fixed = Series {
+        confirmed: [run_of(JAN, MINUTE, 95), vec![FEB - MINUTE]].concat(),
+        unclosed: vec![],
+    };
+    let mocked2 = Mocked::exchange(fixed);
+    let client2 = mocked2.client(10);
+    let mut o2 = o.clone();
+    o2.now_ms = FEB + 600_000;
+    o2.to = FEB + 600_000;
+    let r2 = run(&client2, &o2);
+    assert_eq!(statuses(&r2)[0], MonthStatus::Rewritten);
+    let (m, c) = read_period(dir.path(), "BTC-USDC", tf, jan);
+    assert!(m.closed);
+    assert_eq!(m.continuity.unwrap().rejected_unclosed, 0);
+    assert_eq!(
+        c,
+        expected(&[run_of(JAN, MINUTE, 95), vec![FEB - MINUTE]].concat())
+    );
+
+    // Sans --resume, le fichier clos relu à l'identique reste inchangé.
+    o2.resume = false;
+    let r3 = run(&client2, &o2);
+    assert_eq!(statuses(&r3)[0], MonthStatus::Unchanged);
+}
+
+/// S7-OKX-3 : le compte rendu d'un job en échec décrit le disque (lignes, hash du fichier déjà écrit), pas
+/// zéro.
+#[test]
+fn compte_rendu_d_un_job_en_echec_decrit_le_disque() {
+    let tf = Timeframe::M1;
+    let jan = month(2024, 1);
+    let series = Series {
+        confirmed: run_of(JAN, MINUTE, 100),
+        unclosed: vec![],
+    };
+    let budget = Arc::new(AtomicI64::new(2));
+    let mocked = Mocked::with_budget(series, Arc::clone(&budget));
+    let client = mocked.client(10);
+    let dir = tempfile::tempdir().unwrap();
+    let mut o = options(dir.path(), &["BTC-USDC"], tf, JAN, FEB);
+    o.workers = 1;
+    o.batch_pages = 1;
+
+    // Fichier absent : les lots sont collés, deux pages sont écrites avant la panne.
+    let r = run(&client, &o);
+    let m = &r.months[0];
+    assert_eq!(m.status, MonthStatus::Failed);
+    assert!(m.error.is_some());
+    let (manifest, candles) = read_period(dir.path(), "BTC-USDC", tf, jan);
+    assert_eq!(candles.len(), 20);
+    assert_eq!(m.rows, 20, "rows = lignes du fichier, pas 0");
+    assert!(!m.closed);
+    assert_eq!(
+        m.content_hash.as_deref(),
+        Some(manifest.content_hash.as_str())
+    );
+}
+
+/// S7-OKX-3 : sans `--resume`, un fichier existant que le job n'a pas modifié n'est pas « vide ».
+#[test]
+fn sans_resume_un_fichier_existant_sans_nouvelle_ecriture_n_est_pas_vide() {
+    let tf = Timeframe::M1;
+    let jan = month(2024, 1);
+    let dir = tempfile::tempdir().unwrap();
+    let mocked = Mocked::exchange(Series {
+        confirmed: run_of(JAN, MINUTE, 60),
+        unclosed: vec![],
+    });
+    let client = mocked.client(10);
+    let mut o = options(dir.path(), &["BTC-USDC"], tf, JAN, JAN + 60 * MINUTE);
+    o.workers = 1;
+    run(&client, &o);
+    let (avant, _) = read_period(dir.path(), "BTC-USDC", tf, jan);
+
+    // Même fenêtre partielle contre un échange vide : aucune bougie, aucune clôture, aucune écriture.
+    let vide = Mocked::exchange(Series::default());
+    let client_vide = vide.client(10);
+    o.to = JAN + 30 * MINUTE;
+    let r = run(&client_vide, &o);
+    let m = &r.months[0];
+    assert_eq!(m.status, MonthStatus::Unchanged);
+    assert_eq!(m.rows, 60);
+    assert!(!m.closed);
+    assert_eq!(m.content_hash.as_deref(), Some(avant.content_hash.as_str()));
+    // Le disque n'a pas bougé.
+    let (apres, _) = read_period(dir.path(), "BTC-USDC", tf, jan);
+    assert_eq!(apres, avant);
+
+    // Aucun fichier du tout : seul cas où le statut est « vide ».
+    let autre = tempfile::tempdir().unwrap();
+    o.root = autre.path().to_path_buf();
+    let r = run(&client_vide, &o);
+    assert_eq!(r.months[0].status, MonthStatus::Empty);
+    assert_eq!(r.months[0].rows, 0);
+    assert_eq!(r.months[0].content_hash, None);
 }
