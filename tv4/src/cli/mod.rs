@@ -3,8 +3,8 @@
 //!
 //! Les sous-commandes pas encore codées sortent en erreur en nommant l'étape du jalon 1 qui les
 //! implémentera (docs/03 §11) ; `backtest` existe depuis S3 (fixture CSV 1m), `ingest csv` et
-//! `dataset build` depuis S4, `ingest kraken` depuis S5, `ingest okx` depuis S7. `grid` arrive au
-//! jalon 1.5.
+//! `dataset build` depuis S4, `ingest kraken` depuis S5, `ingest okx` et `compare-sources` depuis S7.
+//! `grid` arrive au jalon 1.5.
 //!
 //! La CLI est le seul module qui lit l'horloge système ([`now_ms`]) : le store reçoit l'instant en
 //! paramètre (docs/03 §5.3, écart 5 de S4).
@@ -16,6 +16,12 @@ use clap::{Parser, Subcommand};
 use crate::model::Ts;
 
 pub use backtest::BacktestArgs;
+pub use compare_sources::{
+    BarReport, CompareReport, CompareSourcesArgs, CompareSourcesOptions, DAY_DELTA_THRESHOLD,
+    DAYS_ABOVE_MAX_PERCENT, DateRange, DeltaStats, FileReport, MEDIAN_ABS_DELTA_4H_MAX,
+    MinuteCounts, RangeReport, ShareReport, SourceReport, ThresholdsReport, Verdict,
+    WICK_THRESHOLDS, WickReport, WickSide, compare_sources,
+};
 pub use dataset::DatasetBuildArgs;
 pub use ingest::{IngestCsvArgs, IngestKrakenArgs, IngestSummary, ingest_kraken};
 pub use ingest_okx::{
@@ -25,6 +31,7 @@ pub use ingest_okx::{
 
 mod backtest;
 mod bench;
+mod compare_sources;
 mod dataset;
 mod ingest;
 mod ingest_okx;
@@ -106,6 +113,21 @@ pub enum CliError {
     )]
     OkxWorkerPanicked,
 
+    /// `compare-sources` : une partition 1m est absente ou vide.
+    #[error(
+        "compare-sources : aucune bougie 1m pour {partition} sous `{dir}` (ingérer d'abord la source)"
+    )]
+    CompareMissingSource { partition: String, dir: String },
+
+    /// `compare-sources` : les plages des deux sources, bornées par --from et --to, ne se recoupent pas.
+    #[error("compare-sources : recouvrement vide ({detail})")]
+    CompareNoOverlap { detail: String },
+
+    /// `compare-sources` : les plages se recoupent mais aucune minute n'est présente des deux côtés
+    /// hors des plages exclues.
+    #[error("compare-sources : aucune minute commune aux deux sources sur {detail}")]
+    CompareNoCommonMinute { detail: String },
+
     /// L'horloge système ne donne pas un instant exploitable.
     #[error("horloge système antérieure à 1970 ou hors plage : impossible de dater l'écriture")]
     Clock,
@@ -170,6 +192,8 @@ pub enum Command {
     },
     /// Lance un backtest sur une fixture CSV Kraken 1m (S3) ou un dataset figé (S4).
     Backtest(BacktestArgs),
+    /// Mesure le biais de lieu Kraken / OKX sur leur recouvrement (clôtures 4h et 1d, mèches 1m).
+    CompareSources(CompareSourcesArgs),
     /// Compare deux runs à l'octet.
     Verify,
     /// Mesure le coût moyen par bougie.
@@ -206,6 +230,7 @@ pub fn run(command: &Command) -> Result<(), CliError> {
             DatasetAction::Build(args) => dataset::build(args),
         },
         Command::Backtest(args) => backtest::run(args),
+        Command::CompareSources(args) => compare_sources::run(args),
         Command::Verify => verify::run(),
         Command::Bench => bench::run(),
     }
@@ -539,6 +564,82 @@ mod tests {
                 "tv4", "ingest", "kraken", "--zip", "z", "--sha256", extra_sha, "--pair", paire,
             ];
             assert!(Cli::try_parse_from(args).is_err(), "{extra_sha} {paire}");
+        }
+    }
+
+    #[test]
+    fn compare_sources_se_parse_avec_ses_defauts_et_ses_exclusions() {
+        let cli = Cli::try_parse_from([
+            "tv4",
+            "compare-sources",
+            "--kraken",
+            "BTC-USD",
+            "--okx",
+            "BTC-USDT",
+        ])
+        .expect("compare-sources valide");
+        let Command::CompareSources(args) = cli.command else {
+            panic!("sous-commande attendue : compare-sources");
+        };
+        assert_eq!(args.kraken.as_str(), "BTC-USD");
+        assert_eq!(args.okx.as_str(), "BTC-USDT");
+        assert!(args.from.is_none() && args.to.is_none() && args.exclude.is_empty());
+        assert_eq!(args.root, std::path::PathBuf::from("."));
+
+        let cli = Cli::try_parse_from([
+            "tv4",
+            "compare-sources",
+            "--kraken",
+            "BTC-USD",
+            "--okx",
+            "BTC-USDC",
+            "--from",
+            "2025-08-21",
+            "--to",
+            "2026-01-01",
+            "--exclude",
+            "2022-05-09..2022-05-16",
+            "--exclude",
+            "2025-10-10..2025-10-11",
+            "--root",
+            "R",
+        ])
+        .expect("compare-sources valide");
+        let Command::CompareSources(args) = cli.command else {
+            panic!("sous-commande attendue : compare-sources");
+        };
+        assert_eq!(args.from, Some(UtcDate(1_755_734_400_000)));
+        assert_eq!(args.to, Some(UtcDate(1_767_225_600_000)));
+        assert_eq!(args.exclude.len(), 2);
+        assert_eq!(args.exclude[0].0, 1_652_054_400_000..1_652_659_200_000);
+        assert_eq!(args.root, std::path::PathBuf::from("R"));
+    }
+
+    #[test]
+    fn compare_sources_exige_les_deux_symboles_et_refuse_les_plages_mal_formees() {
+        for incomplet in [
+            vec!["tv4", "compare-sources", "--kraken", "BTC-USD"],
+            vec!["tv4", "compare-sources", "--okx", "BTC-USDC"],
+            vec![
+                "tv4",
+                "compare-sources",
+                "--kraken",
+                "btc-usd",
+                "--okx",
+                "BTC-USDC",
+            ],
+            vec![
+                "tv4",
+                "compare-sources",
+                "--kraken",
+                "BTC-USD",
+                "--okx",
+                "BTC-USDC",
+                "--exclude",
+                "2022-05-16..2022-05-09",
+            ],
+        ] {
+            assert!(Cli::try_parse_from(&incomplet).is_err(), "{incomplet:?}");
         }
     }
 
