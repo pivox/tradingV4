@@ -1,4 +1,5 @@
-//! Sous-commandes `tv4 ingest ...` : `csv` depuis S4, `kraken` depuis S5 ; `okx` (S7) reste vide.
+//! Sous-commandes `tv4 ingest ...` : `csv` depuis S4, `kraken` depuis S5 ; `okx` (S7) est dans
+//! `ingest_okx.rs`.
 //!
 //! `ingest kraken` n'a aucun calcul propre : elle enchaîne `marketdata` (zip vérifié, continuité),
 //! `store` (écriture, rapport de qualité) et `report` (rapports JSON). Les rapports sont écrits sous
@@ -62,11 +63,6 @@ pub struct IngestCsvArgs {
     /// Racine de travail (contient data/, datasets/, state/).
     #[arg(long, value_name = "DOSSIER", default_value = ".")]
     pub root: PathBuf,
-}
-
-/// `tv4 ingest okx` : API REST OKX `history-candles`, écrite à l'étape S7.
-pub(super) fn okx() -> Result<(), CliError> {
-    Err(CliError::not_implemented("ingest okx", "S7"))
 }
 
 /// `tv4 ingest csv` : lit un CSV Kraken (lecteur S2) et écrit les fichiers mensuels ou annuels du

@@ -40,11 +40,7 @@ fn le_sha_vient_de_git_quand_git_est_disponible() {
 
 #[test]
 fn les_sous_commandes_vides_sortent_en_erreur_avec_leur_etape() {
-    let cas: [(&[&str], &str); 3] = [
-        (&["ingest", "okx"], "S7"),
-        (&["verify"], "S8"),
-        (&["bench"], "S8"),
-    ];
+    let cas: [(&[&str], &str); 2] = [(&["verify"], "S8"), (&["bench"], "S8")];
     for (args, etape) in cas {
         let sortie = tv4(args);
         // Code 1 : erreur applicative (clap utilise 2 pour une erreur d'usage).

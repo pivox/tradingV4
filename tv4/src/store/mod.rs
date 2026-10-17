@@ -40,7 +40,9 @@
 //! Les écarts de S4 (lecture vérifiée complète, `period` au lieu de `month`, `gaps_policy` à trois
 //! valeurs, champs ajoutés aux manifestes) sont décrits dans docs/03 §5.3. S5 ajoute le bloc optionnel
 //! `continuity` des manifestes, [`WriteOptions`] (fin de clôture bornée par la couverture du dump) et
-//! [`quality_report`] (rapport de qualité trimestriel, docs/04 §2.5).
+//! [`quality_report`] (rapport de qualité trimestriel, docs/04 §2.5). S7 ajoute [`merge_period_with`]
+//! (fusion d'une période avec le fichier existant, sous le verrou de partition attendu par
+//! [`PartitionLock::acquire_wait`]) pour l'ingestion OKX par lots et sa reprise.
 
 #![forbid(unsafe_code)]
 
@@ -51,6 +53,7 @@ mod durable;
 mod layout;
 mod lock;
 mod manifest;
+mod merge;
 mod parquet;
 mod partition;
 mod quality;
@@ -65,6 +68,7 @@ use crate::model::{ModelError, Timeframe, Ts};
 pub use self::columns::{Columns, ColumnsParts};
 pub use self::dataset::{
     BuildOutcome, BuildRequest, BuildStatus, LoadedDataset, build_dataset, fill_gaps, load_dataset,
+    read_verified_with_hash,
 };
 pub use self::layout::{GapsPolicy, Partition, Period, Symbol, Window, resolve_rel};
 pub use self::lock::{DatasetLock, PartitionLock};
@@ -72,6 +76,7 @@ pub use self::manifest::{
     ContinuityCounts, DatasetFile, DatasetManifest, FileManifest, read_dataset_manifest,
     read_file_manifest,
 };
+pub use self::merge::merge_period_with;
 pub use self::parquet::{
     FileInfo, Projection, ReadOptions, RowGroupInfo, inspect_parquet, read_parquet,
     select_row_groups,
