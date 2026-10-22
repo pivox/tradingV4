@@ -10,6 +10,8 @@
 
 use std::fs::{self, File, TryLockError};
 use std::path::{Path, PathBuf};
+use std::thread;
+use std::time::{Duration, Instant};
 
 use super::StoreError;
 use super::durable::io_error;
@@ -67,11 +69,34 @@ impl PartitionLock {
         }
     }
 
+    /// Comme [`PartitionLock::acquire`], mais attend jusqu'à `timeout` que l'écrivain en cours finisse
+    /// (sondage toutes les 5 ms). Les trois threads de `tv4 ingest okx` écrivent des périodes
+    /// différentes d'une même partition : leurs écritures, de quelques dizaines de millisecondes, se
+    /// succèdent sous le même verrou. [`StoreError::LockBusy`] si le verrou n'est pas libéré à temps.
+    pub fn acquire_wait(
+        root: &Path,
+        partition: &Partition,
+        timeout: Duration,
+    ) -> Result<PartitionLock, StoreError> {
+        let deadline = Instant::now() + timeout;
+        loop {
+            match PartitionLock::acquire(root, partition) {
+                Err(StoreError::LockBusy { .. }) if Instant::now() < deadline => {
+                    thread::sleep(LOCK_POLL);
+                }
+                other => return other,
+            }
+        }
+    }
+
     /// Chemin du fichier de verrou.
     pub fn path(&self) -> &Path {
         &self.path
     }
 }
+
+/// Intervalle de sondage de [`PartitionLock::acquire_wait`].
+const LOCK_POLL: Duration = Duration::from_millis(5);
 
 /// Verrou exclusif d'un nom de dataset : `state/locks/datasets/<nom>.lock`, mêmes propriétés que
 /// [`PartitionLock`]. Le nom est supposé déjà contrôlé (`[a-z0-9_]{1,64}`, jamais de `/`). Ce chemin
@@ -127,6 +152,25 @@ mod tests {
         );
         drop(premier);
         PartitionLock::acquire(dir.path(), &p).unwrap();
+    }
+
+    #[test]
+    fn attente_du_verrou_jusqu_a_sa_liberation_ou_au_delai() {
+        let dir = tempfile::tempdir().unwrap();
+        let p = partition("BTC-USD", Timeframe::M1);
+        let premier = PartitionLock::acquire(dir.path(), &p).unwrap();
+        // Délai trop court : le verrou est toujours tenu.
+        let erreur =
+            PartitionLock::acquire_wait(dir.path(), &p, Duration::from_millis(20)).unwrap_err();
+        assert!(matches!(erreur, StoreError::LockBusy { .. }));
+        // Un autre thread libère le verrou après 40 ms : l'attente aboutit.
+        let libere = thread::spawn(move || {
+            thread::sleep(Duration::from_millis(40));
+            drop(premier);
+        });
+        let verrou = PartitionLock::acquire_wait(dir.path(), &p, Duration::from_secs(10));
+        libere.join().unwrap();
+        assert!(verrou.is_ok(), "{verrou:?}");
     }
 
     #[test]
