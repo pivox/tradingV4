@@ -51,6 +51,8 @@ criterion = { version = "=0.8.2", default-features = false, features = ["cargo_b
 proptest = "=1.12.0"
 insta = "=1.49.0"
 tempfile = "=3.27.0"
+# Serveur HTTP mocké synchrone pour les tests du client OKX (docs/03 §11, S7).
+httpmock = "=0.8.3"
 
 # Lints communs. `clippy::suboptimal_flops` pousse vers `mul_add`, ce qui change les arrondis
 # flottants : désactivé (docs/03 §3 ligne Qualité et §7.4).
