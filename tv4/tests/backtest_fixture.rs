@@ -239,7 +239,7 @@ fn valeurs_de_controle_de_l_oracle() {
     let metrics = metrics_of(&result, &candles);
     assert_eq!(
         metrics.config_hash,
-        "138bd048fe1c2f7551f389b1149b457ae3b2486ce6bbe2b6f426ceb036f88253"
+        "6ea489939050b331f9a2b716a34e52f10ef8dd4a846f9578da4151d6a2e8aa49"
     );
 }
 
@@ -342,7 +342,7 @@ fn sma_cross_15m_valeurs_de_l_oracle() {
     let metrics = metrics_of(&result, &candles);
     assert_eq!(
         metrics.config_hash,
-        "de26831fecaa5f438dddc7148219f81f40fa19537771b299340483a9062dc4b6"
+        "bec4b9066d08b9285645e941819551fcf11cc5b00c4c75f3c2f7e9fb20bb7d0a"
     );
 }
 

@@ -9,7 +9,7 @@ use serde::Serialize;
 use super::SimError;
 
 /// Version des règles du simulateur, entre dans le `config_hash`.
-pub const SIM_RULES_VERSION: &str = "s6";
+pub const SIM_RULES_VERSION: &str = "s6.1";
 
 /// Borne basse de `market_buy_cash_margin` : très au-dessus de l'ulp relative d'un f64 (~1,1e-16),
 /// pour que `1.0 - m` et le plafond de cash gardent un sens.
@@ -41,7 +41,9 @@ pub struct SimRules {
     /// §3.1 point 2). 0 donne un fill au toucher, toléré pour les tests.
     pub limit_cross_ticks: u32,
     pub intrabar: IntrabarRule,
-    /// Un take-profit touché dans la 1m où l'entrée a été remplie est ignoré (docs/04 §3.1 point 3).
+    /// Un take-profit touché dans la 1m où l'entrée a été remplie est ignoré (docs/04 §3.1 point 3). Pour une
+    /// entrée limit au repos remplie en cours de 1m, il l'est toujours, même si ce drapeau est faux (le TP est
+    /// posé après le fill).
     pub tp_ignored_on_fill_bar: bool,
     /// Une 1m à volume nul ne remplit rien : ni market, ni limit, ni stop, ni take-profit.
     pub zero_volume_no_fill: bool,
@@ -77,7 +79,7 @@ impl SimRules {
     pub fn validate(&self) -> Result<(), SimError> {
         if self.version != SIM_RULES_VERSION {
             return Err(SimError::InvalidRules {
-                reason: "version de règles inconnue (attendue : s6)",
+                reason: "version de règles inconnue (attendue : s6.1)",
             });
         }
         if !(1..=256).contains(&self.max_pending) {

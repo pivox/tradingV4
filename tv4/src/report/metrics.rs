@@ -27,17 +27,12 @@ pub const SCHEMA: &str = "tv4-metrics-s6";
 /// - `exit_volume_rule_counted_not_rejected` : la règle des 0,5 % du volume quote ne refuse que les
 ///   achats ; une sortie au-delà est exécutée au prix plein et comptée (`exits_over_volume_share`).
 ///   Précision de docs/04 §3.1 point 4 à valider par le propriétaire.
-/// - `limit_gap_fill_optimistic` : une limit déjà au repos qu'un gap traverse est remplie à
-///   `min(L, open)` (`max(L, open)` en vente), et une limit déjà marketable à son activation est
-///   facturée maker ; un carnet continu la prendrait à `L`, ou en taker. Règles de l'issue S6, à arbitrer
-///   par le propriétaire.
-pub const SIM_DEVIATIONS: [&str; 6] = [
+pub const SIM_DEVIATIONS: [&str; 5] = [
     "market_buy_cash_margin",
     "stop_slippage_fixed",
     "instrument_minimums_unvalidated",
     "no_maker_fill_probability",
     "exit_volume_rule_counted_not_rejected",
-    "limit_gap_fill_optimistic",
 ];
 
 /// Version du moteur qui a produit le fichier.
@@ -189,7 +184,7 @@ pub struct Metrics {
     /// Compteurs du simulateur, tous les `u64` nommés de [`SimCounters`].
     pub sim: SimCounters,
     pub signals: SignalsInfo,
-    pub sim_deviations: [&'static str; 6],
+    pub sim_deviations: [&'static str; 5],
 }
 
 impl Metrics {

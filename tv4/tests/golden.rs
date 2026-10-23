@@ -2,7 +2,7 @@
 //!
 //! Deux familles :
 //!
-//! * dix cas écrits à la main sur des bougies 1m INVENTÉES (aucune donnée de marché), chacun avec son
+//! * onze cas écrits à la main sur des bougies 1m INVENTÉES (aucune donnée de marché), chacun avec son
 //!   snapshot `insta` et des assertions de sens qui ne dépendent pas du snapshot ;
 //! * une grille à 4 niveaux, stratégie de test de `tests/common/grille.rs`, sur une sinusoïde et sur une
 //!   tendance baissière SYNTHÉTIQUES (`tests/common/sinus.rs`).
@@ -102,6 +102,17 @@ const GAP: [Ligne; 6] = [
     (100.0, 100.2, 99.6, 99.8),
     (98.0, 98.5, 97.5, 98.2),
     (98.2, 99.0, 98.0, 98.8),
+    (103.0, 103.5, 102.6, 103.2),
+    (103.2, 103.4, 103.0, 103.1),
+];
+
+const GAP_REPOS: [Ligne; 8] = [
+    (100.0, 100.5, 99.5, 100.0),
+    (100.0, 100.2, 99.6, 99.8),
+    (99.9, 100.0, 99.5, 99.9),
+    (98.0, 98.5, 97.5, 98.2),
+    (98.2, 99.0, 98.0, 98.8),
+    (99.0, 99.5, 98.8, 99.2),
     (103.0, 103.5, 102.6, 103.2),
     (103.2, 103.4, 103.0, 103.1),
 ];
@@ -239,7 +250,7 @@ fn resume(r: &CellResult, avec_trades: bool) -> String {
     texte
 }
 
-// --- Dix cas à la main ---
+// --- Onze cas à la main ---
 
 #[test]
 fn golden_gagnant() {
@@ -369,16 +380,50 @@ fn golden_gap_sous_la_limite() {
         ],
         SimRules::default(),
     );
-    // Achat limit à 99,0 : la 1m 2 ouvre à 98,0, le fill se fait à min(limite, open) = 98,0. La vente
-    // limit à 102,0 est remplie à max(limite, open) = 103,0 à l'ouverture de la 1m 4.
+    // Limits pessimistes (décision du 15/10). Achat limit à 99,0, actif à l'open de la 1m 2 : cet open
+    // (98,0) est déjà sous la limite, l'ordre est marketable à l'arrivée et prend la liquidité en taker
+    // à min(98,0 × 1,001, 99,0) = 98,098. La vente limit à 102,0, active à l'open de la 1m 4 (103,0),
+    // est marketable aussi : taker à max(103,0 × 0,999, 102,0) = 102,897.
+    assert_eq!(r.trades.len(), 1);
+    let t = &r.trades[0];
+    assert_eq!(t.entry_liquidity, Liquidity::Taker);
+    assert_eq!(t.entry_ref_price, 98.0);
+    assert_eq!(t.entry_price, 98.0 * (1.0 + 10.0 / 10_000.0));
+    assert_eq!(t.exit_liquidity, Liquidity::Taker);
+    assert_eq!(t.exit_ref_price, 103.0);
+    assert_eq!(t.exit_price, 103.0 * (1.0 - 10.0 / 10_000.0));
+    assert_eq!(index_1m(t.entry_ms), 2);
+    assert_eq!(index_1m(t.exit_ms), 4);
+    assert_eq!(r.sim.limits_marketable_at_arrival, 2);
+    insta::assert_snapshot!("gap", resume(&r, true));
+}
+
+/// Mêmes ordres que `gap`, mais au repos à leur arrivée : l'open d'activation ne franchit pas la limite
+/// (99,9 >= 99,0 en achat, 99,0 <= 102,0 en vente). Les gaps des 1m 3 et 6 les traversent ensuite.
+#[test]
+fn golden_gap_au_repos() {
+    let r = jouer(
+        &GAP_REPOS,
+        vec![
+            (0, entree(490.0, Some((99.0, 10)), None, None)),
+            (3, sortie(Some((102.0, 10)))),
+        ],
+        SimRules::default(),
+    );
+    // Limits pessimistes : un ordre au repos est rempli à L exactement, en maker, même si toute la 1m est
+    // de l'autre côté de L (le prix sort de [low, high]).
     assert_eq!(r.trades.len(), 1);
     let t = &r.trades[0];
     assert_eq!(t.entry_liquidity, Liquidity::Maker);
-    assert_eq!(t.entry_price, 98.0);
-    assert_eq!(t.exit_price, 103.0);
-    assert_eq!(index_1m(t.entry_ms), 2);
-    assert_eq!(index_1m(t.exit_ms), 4);
-    insta::assert_snapshot!("gap", resume(&r, true));
+    assert_eq!(t.entry_ref_price, 99.0);
+    assert_eq!(t.entry_price, 99.0);
+    assert_eq!(t.exit_liquidity, Liquidity::Maker);
+    assert_eq!(t.exit_ref_price, 102.0);
+    assert_eq!(t.exit_price, 102.0);
+    assert_eq!(index_1m(t.entry_ms), 3);
+    assert_eq!(index_1m(t.exit_ms), 6);
+    assert_eq!(r.sim.limits_marketable_at_arrival, 0);
+    insta::assert_snapshot!("gap_au_repos", resume(&r, true));
 }
 
 #[test]

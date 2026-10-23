@@ -4,7 +4,7 @@
 //! L'ordre des opérations flottantes est imposé et ne change pas (aucun `mul_add`) : c'est lui qui
 //! rend le résultat identique d'un process à l'autre.
 
-use crate::model::Slippage;
+use crate::model::{Candle, Slippage};
 
 /// Prix d'un achat market à l'open `open` : `open × (1 + slippage)`.
 pub(super) fn market_buy_price(open: f64, slippage: Slippage) -> f64 {
@@ -16,14 +16,31 @@ pub(super) fn market_sell_price(reference: f64, slippage: Slippage) -> f64 {
     slippage.sell_price(reference)
 }
 
-/// Prix de fill d'une limit d'achat : `min(limite, open)`, le gap sous la limite donne le meilleur prix.
-pub(super) fn limit_buy_price(limit: f64, open: f64) -> f64 {
-    if limit <= open { limit } else { open }
+/// Prix d'un achat limit déjà marketable à son arrivée et dont l'open franchit encore la limite
+/// (`open < limite`) : `min(open × (1 + slippage), limite)`. L'ordre prend la liquidité (taker) au prix
+/// d'un achat market, plafonné par sa limite.
+pub(super) fn marketable_buy_price(limit: f64, open: f64, slippage: Slippage) -> f64 {
+    let price = slippage.buy_price(open);
+    if price <= limit { price } else { limit }
 }
 
-/// Prix de fill d'une limit de vente (et d'un take-profit) : `max(limite, open)`.
-pub(super) fn limit_sell_price(limit: f64, open: f64) -> f64 {
-    if limit >= open { limit } else { open }
+/// Prix d'une vente limit (ou d'un take-profit) marketable à l'arrivée dont l'open franchit encore la
+/// limite (`open > limite`) : `max(open × (1 − slippage), limite)`.
+pub(super) fn marketable_sell_price(limit: f64, open: f64, slippage: Slippage) -> f64 {
+    let price = slippage.sell_price(open);
+    if price >= limit { price } else { limit }
+}
+
+/// Prix de référence d'un ordre à son arrivée (`active_from_ms`) : l'open de la 1m qui s'ouvre à cet
+/// instant (`candle`, première 1m vue avec `open_time >= active_from_ms`), sinon le close de la dernière
+/// 1m antérieure (minute absente de la série). Sans 1m antérieure (jamais le cas dans un run, où un
+/// ordre naît après une bougie), l'open de `candle`.
+pub(super) fn arrival_price(active_from_ms: i64, candle: &Candle, last_close: Option<f64>) -> f64 {
+    if candle.open_time_ms == active_from_ms {
+        candle.open
+    } else {
+        last_close.unwrap_or(candle.open)
+    }
 }
 
 /// Niveau de référence d'un stop franchi : le pire des deux pour le trader, `min(stop, open)`.
@@ -64,14 +81,33 @@ mod tests {
     }
 
     #[test]
-    fn prix_limit_au_meilleur_des_deux() {
-        // Achat : un gap sous la limite donne l'open.
-        assert_eq!(limit_buy_price(99.0, 98.0), 98.0);
-        assert_eq!(limit_buy_price(99.0, 100.0), 99.0);
-        assert_eq!(limit_buy_price(99.0, 99.0), 99.0);
-        // Vente : un gap au-dessus de la limite donne l'open.
-        assert_eq!(limit_sell_price(102.0, 103.0), 103.0);
-        assert_eq!(limit_sell_price(102.0, 101.0), 102.0);
+    fn prix_limit_marketable_plafonne_par_la_limite() {
+        // Achat : open × (1 + slippage) sous la limite, sinon la limite.
+        assert!((marketable_buy_price(100.0, 98.0, bps(10.0)) - 98.098).abs() < 1e-9);
+        assert_eq!(marketable_buy_price(98.05, 98.0, bps(10.0)), 98.05);
+        assert_eq!(marketable_buy_price(99.0, 98.0, Slippage::ZERO), 98.0);
+        // Vente : open × (1 − slippage) au-dessus de la limite, sinon la limite.
+        assert!((marketable_sell_price(100.0, 103.0, bps(10.0)) - 102.897).abs() < 1e-9);
+        assert_eq!(marketable_sell_price(102.95, 103.0, bps(10.0)), 102.95);
+        assert_eq!(marketable_sell_price(102.0, 103.0, Slippage::ZERO), 103.0);
+    }
+
+    #[test]
+    fn prix_d_arrivee() {
+        let bougie = |open_time_ms| Candle {
+            open_time_ms,
+            open: 101.0,
+            high: 102.0,
+            low: 100.0,
+            close: 101.5,
+            volume: 1.0,
+            trades: None,
+        };
+        // La 1m d'activation existe : son open.
+        assert_eq!(arrival_price(120_000, &bougie(120_000), Some(99.0)), 101.0);
+        // Minute absente : le close de la dernière 1m antérieure.
+        assert_eq!(arrival_price(120_000, &bougie(180_000), Some(99.0)), 99.0);
+        assert_eq!(arrival_price(120_000, &bougie(180_000), None), 101.0);
     }
 
     #[test]

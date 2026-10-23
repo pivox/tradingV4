@@ -16,7 +16,7 @@
 //!    finie.
 //! 3. `BarState.equity = cash + qty × close[i]`, la clôture de la 1m courante (étape 3, même
 //!    instant).
-//! 4. Les six écarts de `sim` encore ouverts après S6 (`SIM_DEVIATIONS`, voir la doc de ce module) ;
+//! 4. Les cinq écarts de `sim` encore ouverts après S6 (`SIM_DEVIATIONS`, voir la doc de ce module) ;
 //!    `single_tf_1m` est levé en S5. La clôture forcée est comptée comme un trade (`n_trades`), avec
 //!    `forced_close` et `n_trades_forced`, et son PnL est isolé dans `pnl_marked`.
 //! 5. Depuis S6, `ctx.pending()` rend les ordres en attente du simulateur (copie dans un tampon alloué

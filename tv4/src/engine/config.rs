@@ -162,7 +162,7 @@ mod tests {
         assert!(json.contains(r#""slippage_bps":5.0"#), "{json}");
         assert!(json.contains(r#""initial_cash":300.0"#), "{json}");
         assert!(json.contains(r#""warmup_bars":240"#), "{json}");
-        assert!(json.contains(r#""version":"s6""#), "{json}");
+        assert!(json.contains(r#""version":"s6.1""#), "{json}");
         assert!(json.contains(r#""activation_delay_bars":1"#), "{json}");
         assert!(json.contains(r#""intrabar":"stop_first""#), "{json}");
         assert!(json.contains(r#""max_volume_share":0.005"#), "{json}");
@@ -189,7 +189,7 @@ mod tests {
                 r#""instrument":{"lot_size":1e-8,"min_notional":0.0,"min_qty":0.0,"tick_size":0.1},"#,
                 r#""sim_rules":{"activation_delay_bars":1,"intrabar":"stop_first","limit_cross_ticks":1,"#,
                 r#""market_buy_cash_margin":0.05,"max_pending":64,"max_volume_share":0.005,"#,
-                r#""stop_stress_bps":0.0,"tp_ignored_on_fill_bar":true,"version":"s6","#,
+                r#""stop_stress_bps":0.0,"tp_ignored_on_fill_bar":true,"version":"s6.1","#,
                 r#""zero_volume_no_fill":true},"slippage_bps":5.0,"strategy":{"id":"sma_cross","#,
                 r#""params":{"fast":60,"slow":240,"stop_atr_mult":2.0,"tf":"1m"},"version":"1.1.0"},"#,
                 r#""tv4_version":"0.1.0","warmup_bars":240}"#
@@ -197,7 +197,7 @@ mod tests {
         );
         assert_eq!(
             run.hash().unwrap(),
-            "138bd048fe1c2f7551f389b1149b457ae3b2486ce6bbe2b6f426ceb036f88253"
+            "6ea489939050b331f9a2b716a34e52f10ef8dd4a846f9578da4151d6a2e8aa49"
         );
     }
 }

@@ -31,6 +31,7 @@ Plateforme de trading crypto **spot** sur OKX : moteur de backtest, de paper tra
 - Un seul utilisateur, aucune notification sortante ; IHM accessible par VPN seul ; machine dédiée à la maison.
 - Pilote : au palier 20 %, ligne BTC = max(risque / stop, minimum d'ordre BTC-USDC) avec un risque effectif plafonné à 1,5 % du capital alloué ; univers live du cycle 1 : BTC et ETH en 1d, BTC seul en 4h maker (décision du 14/10 (05:21)).
 - Qualité des données : un trimestre est exclu pour une (paire, TF de décision) au-delà de 1 % de bougies absentes ; le 1m qui sert aux fills n'exclut rien, une minute absente y vaut « pas de fill » (décision du 15/10 (12:34), `docs/04-protocole-recherche.md` §2.5 et §10 décision 8).
+- Simulation : fills de limit pessimistes, règles `s6.1` (une limit marketable à son arrivée part en taker à l'open, une limit au repos est remplie à son prix exact en maker, même à travers un gap ; décision du 23/10, `docs/04-protocole-recherche.md` §3.1 et §10 décision 9).
 
 ## Code (moteur Rust `tv4`)
 

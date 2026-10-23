@@ -371,9 +371,9 @@ fn preuve_s5_zip_dataset_backtest_reproduit_s3() {
 }
 
 /// Valeurs de l'oracle S6 du `--fixture` 1m (`sma_cross.fixture_1m_defauts` : 3 trades, pnl_net
-/// -3.198931025058812, cash_final 296.8010689749412, config_hash 138bd048…) et 15m
+/// -3.198931025058812, cash_final 296.8010689749412, config_hash 6ea48993…) et 15m
 /// (`sma_cross.fixture_15m_defauts` : 2 trades, pnl_net -4.517856616208519, cash_final
-/// 295.4821433837915, config_hash de26831f…), recoupées au bit avec le moteur par la revue du 15/10.
+/// 295.4821433837915, config_hash bec4b906…), recoupées au bit avec le moteur par la revue du 15/10.
 /// Avant S6 : 23 trades, -15.408523707748486, 284.5914762922515, `3d45e889…` en 1m ; 10 trades,
 /// -7.401437247087472, 292.5985627529125, `e85b28f7…` en 15m.
 #[test]
@@ -407,7 +407,7 @@ fn preuve_s5_valeurs_figees() {
     assert_eq!(m1["cash_final"].as_f64(), Some(296.8010689749412));
     assert_eq!(
         m1["config_hash"],
-        "138bd048fe1c2f7551f389b1149b457ae3b2486ce6bbe2b6f426ceb036f88253"
+        "6ea489939050b331f9a2b716a34e52f10ef8dd4a846f9578da4151d6a2e8aa49"
     );
     let m15 = lancer("config/strategies/sma_cross.toml", "run15m");
     assert_eq!(m15["n_trades"], 2);
@@ -415,7 +415,7 @@ fn preuve_s5_valeurs_figees() {
     assert_eq!(m15["cash_final"].as_f64(), Some(295.4821433837915));
     assert_eq!(
         m15["config_hash"],
-        "de26831fecaa5f438dddc7148219f81f40fa19537771b299340483a9062dc4b6"
+        "bec4b9066d08b9285645e941819551fcf11cc5b00c4c75f3c2f7e9fb20bb7d0a"
     );
 }
 

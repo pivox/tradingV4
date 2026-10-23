@@ -134,7 +134,7 @@ fn assert_valeurs_1m_de_l_oracle(sortie_dir: &Path) {
     assert_eq!(m["sim"]["exits_over_volume_share"], 3);
     assert_eq!(
         m["config_hash"],
-        "138bd048fe1c2f7551f389b1149b457ae3b2486ce6bbe2b6f426ceb036f88253"
+        "6ea489939050b331f9a2b716a34e52f10ef8dd4a846f9578da4151d6a2e8aa49"
     );
     assert_eq!(
         blake3_du_fichier(&sortie_dir.join("trades.csv")),
@@ -164,7 +164,7 @@ fn backtest_ecrit_metrics_json() {
     assert_eq!(valeur["config"]["instrument"]["lot_size"], 1e-8);
     assert_eq!(valeur["config"]["sim_rules"]["activation_delay_bars"], 1);
     assert!(valeur["sim"]["fills"].as_u64().unwrap() >= 2 * n_trades);
-    assert_eq!(valeur["sim_deviations"].as_array().unwrap().len(), 6);
+    assert_eq!(valeur["sim_deviations"].as_array().unwrap().len(), 5);
     assert!(valeur.get("s3_deviations").is_none());
     // Contenu canonique : clés triées, une seule fin de ligne.
     assert_eq!(
@@ -245,8 +245,7 @@ fn metrics_s6_schema() {
             "stop_slippage_fixed",
             "instrument_minimums_unvalidated",
             "no_maker_fill_probability",
-            "exit_volume_rule_counted_not_rejected",
-            "limit_gap_fill_optimistic"
+            "exit_volume_rule_counted_not_rejected"
         ])
     );
     // Champs de premier niveau supprimés en S6 (désormais dans le bloc `sim`).
@@ -263,7 +262,7 @@ fn metrics_s6_schema() {
     }
     // Bloc `sim` : tous les compteurs, dans l'ordre de déclaration (clés triées par le JSON canonique).
     let sim = m["sim"].as_object().unwrap();
-    assert_eq!(sim.len(), 22);
+    assert_eq!(sim.len(), 23);
     for cle in [
         "fills",
         "fills_market",
@@ -273,6 +272,7 @@ fn metrics_s6_schema() {
         "entries_capped_by_cash",
         "buys_rejected_volume_share",
         "exits_over_volume_share",
+        "limits_marketable_at_arrival",
         "limits_expired",
         "orders_cancelled",
         "sells_cancelled_by_exit",
@@ -331,7 +331,7 @@ fn backtest_2tf_sur_la_fixture() {
     // simulateur.
     assert_eq!(
         valeur["config_hash"],
-        "8bb6293e521f69348168495e4a288bb797739371de8ed9b1ba4abe45771da9d7"
+        "dc9137c97f0ae42b32d4a5302e5fef06a4c5d9621a4b1c07b533b7289ee5d172"
     );
     // Valeurs de l'oracle S6 (`sma_cross.fixture_2tf_defauts`) : mêmes trades que le 15m seul, 9 signaux
     // au lieu de 11 parce que la tendance 1h filtre deux entrées, 6 achats rejetés par la règle de volume.
@@ -372,9 +372,9 @@ fn backtest_15m_sur_la_fixture() {
     assert_eq!(valeur["window"]["start_index"], 482);
     assert_eq!(valeur["window"]["bars"], 9_518);
     assert_eq!(valeur["config"]["strategy"]["params"]["tf"], "15m");
-    // Six écarts du simulateur restent ouverts (S6) ; `single_tf_1m` n'y figure plus.
+    // Cinq écarts du simulateur restent ouverts (S6) ; `single_tf_1m` n'y figure plus.
     let ecarts = valeur["sim_deviations"].as_array().unwrap();
-    assert_eq!(ecarts.len(), 6);
+    assert_eq!(ecarts.len(), 5);
     assert!(ecarts.iter().all(|e| e != "single_tf_1m"));
     assert!(valeur["config_hash"].as_str().unwrap().len() == 64);
 }
@@ -404,7 +404,7 @@ fn backtest_15m_valeurs_figees() {
     assert_eq!(valeur["sim"]["exits_over_volume_share"], 1);
     assert_eq!(
         valeur["config_hash"],
-        "de26831fecaa5f438dddc7148219f81f40fa19537771b299340483a9062dc4b6"
+        "bec4b9066d08b9285645e941819551fcf11cc5b00c4c75f3c2f7e9fb20bb7d0a"
     );
     assert_eq!(
         blake3_du_fichier(&sortie_dir.join("trades.csv")),

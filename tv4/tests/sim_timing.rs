@@ -141,7 +141,7 @@ fn prix_de_fill_dans_la_bougie_de_fill() {
     let sortie = &bougies[((t.exit_ms - T0) / MINUTE) as usize];
     assert!(t.entry_price >= entree.low && t.entry_price <= entree.high);
     assert!(t.exit_price >= sortie.low && t.exit_price <= sortie.high);
-    // Limit de vente à 100,5 avec un open à 100 : fill à max(limite, open) = 100,5.
+    // Limit de vente à 100,5 avec un open à 100 : ordre au repos, fill à la limite 100,5.
     assert_eq!(t.exit_price, 100.5);
 }
 
