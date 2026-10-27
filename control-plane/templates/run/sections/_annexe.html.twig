@@ -1,0 +1,53 @@
+{% set c = manifest.config %}
+<section id="annexe" class="section" aria-labelledby="annexe-titre">
+  <h2 id="annexe-titre">Annexe</h2>
+  <div class="cols">
+    <table class="kv">
+      <caption>Configuration</caption>
+      <tbody>
+        <tr><th scope="row">Stratégie</th><td>{{ c.strategyId }} {{ c.strategyVersion }}</td></tr>
+        {% for name, value in c.strategyParams %}
+          <tr class="sub"><th scope="row"><code>{{ name }}</code></th><td class="num">{{ value|scalar }}</td></tr>
+        {% endfor %}
+        <tr><th scope="row">Grille de frais</th><td>{{ c.feesExchange }}</td></tr>
+        <tr class="sub"><th scope="row">maker</th><td class="num">{{ c.makerBps|num(2) }} bps</td></tr>
+        <tr class="sub"><th scope="row">taker</th><td class="num">{{ c.takerBps|num(2) }} bps</td></tr>
+        <tr><th scope="row">Slippage</th><td class="num">{{ c.slippageBps|num(2) }} bps</td></tr>
+        <tr><th scope="row">Capital initial</th><td class="num">{{ c.initialCash|money }}</td></tr>
+        <tr><th scope="row"><code>min_trades</code></th><td class="num">{{ c.minTrades|int }}</td></tr>
+        <tr><th scope="row">Warmup</th><td class="num">{{ c.warmupBars|int }} bougies</td></tr>
+        <tr><th scope="row">Version du moteur (hachée)</th><td>{{ c.tv4Version }}</td></tr>
+      </tbody>
+    </table>
+    <table class="kv">
+      <caption>Règles du simulateur</caption>
+      <tbody>
+        {% for name, value in c.simRules %}
+          <tr><th scope="row"><code>{{ name }}</code></th><td class="num">{{ value|scalar }}</td></tr>
+        {% endfor %}
+      </tbody>
+    </table>
+    <table class="kv">
+      <caption>Instrument</caption>
+      <tbody>
+        {% for name, value in c.instrument %}
+          <tr><th scope="row"><code>{{ name }}</code></th><td class="num">{{ value|scalar }}</td></tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  <h3>Écarts connus du simulateur</h3>
+  <ul>
+    {% for deviation in metrics.simDeviations %}<li><code>{{ deviation }}</code></li>{% else %}<li>Aucun écart déclaré.</li>{% endfor %}
+  </ul>
+  <h3>Exécution</h3>
+  <table class="kv">
+    <tbody>
+      <tr><th scope="row"><code>started_at</code></th><td>{{ manifest.startedAt }}</td></tr>
+      <tr><th scope="row">Chargement</th><td class="num">{{ manifest.timings.loadMs|int }} ms</td></tr>
+      <tr><th scope="row">Simulation</th><td class="num">{{ manifest.timings.runMs|int }} ms</td></tr>
+      <tr><th scope="row">Commande complète</th><td class="num">{{ manifest.timings.cliColdMs|int }} ms</td></tr>
+      <tr><th scope="row"><code>equity_step</code></th><td>{{ manifest.equityStep }}</td></tr>
+    </tbody>
+  </table>
+</section>

@@ -1,40 +1,49 @@
-//! Sous-commande `tv4 backtest` : backtest minimal sur une fixture CSV Kraken 1m (S3) ou sur un
-//! dataset figé du store (S4).
+//! Sous-commande `tv4 backtest` : backtest sur une fixture CSV Kraken 1m (S3) ou sur un dataset figé
+//! du store (S4), qui écrit les quatre fichiers d'un run (S8) : `metrics.json`, `trades.csv`,
+//! `equity.csv` puis `manifest.json`.
 //!
 //! Aucune logique métier ici (docs/03-architecture.md §2) : lecture des fichiers, appel du registre,
-//! de `store`, de `engine::run_cell` et de `report`.
+//! de `store`, de `engine::run_cell` et de `report`. Les entrées communes à `backtest` et à `bench`
+//! (S8) sont dans [`RunInputArgs`] et préparées par [`prepare`].
 
-use std::fs;
+use std::fs::{self, File};
+use std::io::Read;
 use std::path::{Path, PathBuf};
+use std::time::Instant;
 
 use clap::Args;
 
-use super::CliError;
-use crate::engine::{self, CellConfig};
+use super::{CliError, now_ms};
+use crate::engine::{self, CellConfig, DEFAULT_MIN_TRADES};
 use crate::marketdata::kraken;
 use crate::model::hash;
-use crate::model::{Candle, ExchangeId, FeeSchedule, InstrumentRules, Slippage, Timeframe};
-use crate::report::{self, DataInfo, DatasetRef, EngineInfo, Metrics};
+use crate::model::{Candle, ExchangeId, FeeSchedule, InstrumentRules, Slippage, Timeframe, Ts};
+use crate::report::manifest::{ManifestInputs, OutputFiles, Timings};
+use crate::report::{self, DataInfo, DatasetRef, EngineInfo, Manifest, Metrics, TradesContext};
 use crate::sim::SimRules;
-use crate::store;
-use crate::strategy::registry;
+use crate::store::{self, Columns, GapsPolicy, Window, dsh};
+use crate::strategy::{Strategy, registry};
 
 /// Symbole canonique de la fixture (XBTUSD Kraken, docs/03 §4).
 const FIXTURE_SYMBOL: &str = "BTC-USD";
 /// Exchange de la fixture : un dump Kraken, dont `config/instruments.toml` donne tick et lot.
 const FIXTURE_EXCHANGE: ExchangeId = ExchangeId::Kraken;
+/// Durée d'une 1m en millisecondes.
+const MINUTE_MS: Ts = 60_000;
+/// Taille du tampon de lecture du binaire pour son hash.
+const BINARY_HASH_BUFFER: usize = 64 * 1024;
 
-/// Arguments de `tv4 backtest`.
+/// Entrées d'un run, communes à `tv4 backtest` et à `tv4 bench`.
 #[derive(Debug, Args)]
 #[command(group(clap::ArgGroup::new("donnees").required(true).args(["fixture", "dataset"])))]
-pub struct BacktestArgs {
+pub struct RunInputArgs {
     /// CSV Kraken OHLCVT en 1m, sans en-tête (par exemple fixtures/kraken_xbtusd_1m.csv).
     /// Exclusif avec --dataset.
     #[arg(long, value_name = "CSV")]
     pub fixture: Option<PathBuf>,
-    /// Manifeste de dataset figé (datasets/<nom>.json), relatif à --root s'il est relatif.
-    /// Exclusif avec --fixture.
-    #[arg(long, value_name = "JSON")]
+    /// Dataset figé : un nom (`btcusd_2y`, résolu en <root>/datasets/<nom>.json) ou le chemin d'un
+    /// manifeste (relatif à --root s'il est relatif). Exclusif avec --fixture.
+    #[arg(long, value_name = "NOM|JSON")]
     pub dataset: Option<PathBuf>,
     /// Racine de travail pour --dataset (contient data/ et datasets/).
     #[arg(long, value_name = "DOSSIER", default_value = ".")]
@@ -71,23 +80,70 @@ pub struct BacktestArgs {
         allow_negative_numbers = true
     )]
     pub capital: f64,
-    /// Dossier de sortie (créé au besoin) ; metrics.json et trades.csv y sont écrits.
+    /// Nombre minimal de trades en dessous duquel le verdict est `rejected_too_few_trades`.
+    #[arg(
+        long,
+        value_name = "N",
+        default_value_t = DEFAULT_MIN_TRADES,
+        value_parser = clap::value_parser!(u32).range(1..)
+    )]
+    pub min_trades: u32,
+}
+
+/// Arguments de `tv4 backtest`.
+#[derive(Debug, Args)]
+pub struct BacktestArgs {
+    #[command(flatten)]
+    pub inputs: RunInputArgs,
+    /// Dossier de sortie (créé au besoin) ; défaut `<root>/runs/<run_id>`.
     #[arg(long, value_name = "DOSSIER")]
-    pub out: PathBuf,
+    pub out: Option<PathBuf>,
+    /// Pas d'échantillonnage de `equity.csv` (1m, 5m, 15m, 30m, 1h, 4h, 12h, 1d).
+    #[arg(long, value_name = "TF", default_value = "1h")]
+    pub equity_step: Timeframe,
 }
 
-/// Bougies à rejouer et description des données pour `metrics.json`.
-struct Input {
-    candles: Vec<Candle>,
-    /// Exchange et symbole canonique des données : ils choisissent la ligne de `--instruments-file`.
-    exchange: ExchangeId,
-    symbol: String,
-    data: DataInfo,
+/// Run préparé : données lues et vérifiées, paramètres lus, tout ce qu'il faut pour rejouer.
+pub(super) struct PreparedRun {
+    pub candles: Vec<Candle>,
+    /// Symbole canonique des données.
+    pub symbol: String,
+    pub data: DataInfo,
+    /// `blake3:<hex>` (`dsh-v1`).
+    pub dataset_hash: String,
+    pub hash_format: String,
+    /// BLAKE3 hexadécimal nu des octets du CSV, en fixture seulement.
+    pub fixture_blake3: Option<String>,
+    pub fees: FeeSchedule,
+    pub instrument: InstrumentRules,
+    pub slippage: Slippage,
+    pub capital: f64,
+    pub min_trades: u32,
+    strategy_id: String,
+    params: toml::Value,
 }
 
-/// `tv4 backtest` : lit les données (fixture ou dataset vérifié) et les paramètres, rejoue la
-/// stratégie, écrit `metrics.json`.
-pub(super) fn run(args: &BacktestArgs) -> Result<(), CliError> {
+impl PreparedRun {
+    /// Une stratégie fraîche, construite par le registre.
+    pub fn build_strategy(&self) -> Result<Box<dyn Strategy>, CliError> {
+        Ok(registry::build(&self.strategy_id, &self.params)?)
+    }
+
+    /// Configuration de cellule (sans la stratégie).
+    pub fn cell_config(&self) -> CellConfig<'_> {
+        CellConfig {
+            symbol: &self.symbol,
+            fees: self.fees,
+            slippage: self.slippage,
+            initial_cash: self.capital,
+            sim_rules: SimRules::default(),
+            instrument: self.instrument,
+        }
+    }
+}
+
+/// Lit les données (fixture ou dataset vérifié), les frais, l'instrument et les paramètres.
+pub(super) fn prepare(args: &RunInputArgs) -> Result<PreparedRun, CliError> {
     let input = match (&args.fixture, &args.dataset) {
         (Some(fixture), None) => load_fixture(fixture)?,
         (None, Some(dataset)) => load_dataset(&args.root, dataset)?,
@@ -106,35 +162,163 @@ pub(super) fn run(args: &BacktestArgs) -> Result<(), CliError> {
             path: args.params.display().to_string(),
             source,
         })?;
-    let strategy = registry::build(&args.strategy, &params)?;
+    // Construction d'essai : une stratégie inconnue ou des paramètres invalides échouent avant tout calcul.
+    registry::build(&args.strategy, &params)?;
 
-    let config = CellConfig {
-        symbol: &input.symbol,
+    Ok(PreparedRun {
+        candles: input.candles,
+        symbol: input.symbol,
+        data: input.data,
+        dataset_hash: input.dataset_hash,
+        hash_format: input.hash_format,
+        fixture_blake3: input.fixture_blake3,
         fees,
-        slippage: args.slippage_bps,
-        initial_cash: args.capital,
-        sim_rules: SimRules::default(),
         instrument,
-    };
-    let result = engine::run_cell(&input.candles, strategy, &config)?;
+        slippage: args.slippage_bps,
+        capital: args.capital,
+        min_trades: args.min_trades,
+        strategy_id: args.strategy.clone(),
+        params,
+    })
+}
 
-    let engine_info = EngineInfo {
-        tv4_version: env!("CARGO_PKG_VERSION"),
-        git_sha: crate::GIT_SHA,
+/// Bougies à rejouer et description des données.
+struct Input {
+    candles: Vec<Candle>,
+    exchange: ExchangeId,
+    symbol: String,
+    data: DataInfo,
+    dataset_hash: String,
+    hash_format: String,
+    fixture_blake3: Option<String>,
+}
+
+/// `tv4 backtest` : prépare le run, rejoue la stratégie, écrit `metrics.json`, `trades.csv`,
+/// `equity.csv` puis `manifest.json`.
+pub(super) fn run(args: &BacktestArgs) -> Result<(), CliError> {
+    let t0 = Instant::now();
+    let started_at_ms = now_ms()?;
+
+    let prepared = prepare(&args.inputs)?;
+    let strategy = prepared.build_strategy()?;
+    let config = prepared.cell_config();
+    let load_ms = elapsed_ms(t0);
+
+    let t_run = Instant::now();
+    let result = engine::run_cell(&prepared.candles, strategy, &config)?
+        .with_min_trades(prepared.min_trades)?;
+    let run_ms = elapsed_ms(t_run);
+
+    let window_candles = prepared
+        .candles
+        .get(result.start_index..)
+        .ok_or(report::ReportError::NoCandles)?;
+    let open_times: Vec<Ts> = window_candles.iter().map(|c| c.open_time_ms).collect();
+    let metrics = Metrics::new(
+        &result,
+        &open_times,
+        prepared.data.clone(),
+        prepared.dataset_hash.clone(),
+    )?;
+    let context = TradesContext {
+        symbol: &prepared.symbol,
+        span_ms: metrics.window.span_ms(),
     };
-    let metrics = Metrics::new(&result, input.data, engine_info);
-    report::write_json_atomic(&args.out, "metrics.json", &metrics)?;
-    report::write_trades_csv(&args.out, &result.trades)?;
+    let metrics_bytes = report::json_bytes(&metrics)?;
+    let trades_bytes = report::writers::trades_csv(&result.trades, &context)?;
+    let equity_bytes = report::equity::equity_csv(
+        &open_times,
+        &result.equity,
+        result.config.initial_cash,
+        args.equity_step,
+    )?;
+    let files = OutputFiles {
+        equity_csv: hash::blake3_prefixed(&equity_bytes),
+        metrics_json: hash::blake3_prefixed(&metrics_bytes),
+        trades_csv: hash::blake3_prefixed(&trades_bytes),
+    };
+
+    let end_ms = metrics.window.last_open_time_ms + MINUTE_MS;
+    let run_id = report::run_id(
+        &metrics.config_hash,
+        &metrics.dataset_hash,
+        metrics.window.first_open_time_ms,
+        end_ms,
+    );
+    let out = args
+        .out
+        .clone()
+        .unwrap_or_else(|| args.inputs.root.join("runs").join(&run_id));
+
+    report::write_bytes_atomic(&out, "metrics.json", &metrics_bytes)?;
+    report::write_bytes_atomic(&out, report::writers::TRADES_FILE, &trades_bytes)?;
+    report::write_bytes_atomic(&out, report::equity::EQUITY_FILE, &equity_bytes)?;
+    let cli_cold_ms = elapsed_ms(t0);
+
+    // Hash du binaire après l'arrêt du chronomètre ; un run sans hash de binaire n'est pas un résultat
+    // valide : il échoue avant le manifeste.
+    let engine_info = EngineInfo::current(binary_hash()?);
+    let manifest = Manifest::new(
+        &metrics,
+        ManifestInputs {
+            hash_format: prepared.hash_format.clone(),
+            fixture_blake3: prepared.fixture_blake3.clone(),
+            engine: engine_info,
+            equity_step: args.equity_step,
+            files,
+            started_at_ms,
+            timings: Timings {
+                load_ms,
+                run_ms,
+                cli_cold_ms,
+            },
+        },
+    )?;
+    debug_assert_eq!(manifest.run_id, run_id);
+    report::write_json_atomic(&out, "manifest.json", &manifest)?;
     println!(
-        "metrics.json et trades.csv écrits dans {} : {} trades, PnL net {:.2}",
-        args.out.display(),
+        "run {run_id} écrit dans {} : {} trades, PnL net {:.2}, verdict {}",
+        out.display(),
         result.trades.len(),
-        result.pnl_net
+        result.pnl_net,
+        metrics.verdict
     );
     Ok(())
 }
 
-/// Chemin S3, inchangé : CSV Kraken 1m lu en entier, hash de ses octets.
+/// Millisecondes écoulées depuis `since`, saturées.
+fn elapsed_ms(since: Instant) -> u64 {
+    u64::try_from(since.elapsed().as_millis()).unwrap_or(u64::MAX)
+}
+
+/// `blake3:<hex>` de l'exécutable en cours, lu en flux.
+fn binary_hash() -> Result<String, CliError> {
+    let path = std::env::current_exe().map_err(|source| CliError::BinaryHash {
+        path: "<exécutable courant>".to_string(),
+        source,
+    })?;
+    let fail = |source| CliError::BinaryHash {
+        path: path.display().to_string(),
+        source,
+    };
+    let mut file = File::open(&path).map_err(fail)?;
+    let mut hasher = blake3::Hasher::new();
+    let mut buffer = vec![0u8; BINARY_HASH_BUFFER];
+    loop {
+        let read = file.read(&mut buffer).map_err(fail)?;
+        if read == 0 {
+            break;
+        }
+        if let Some(chunk) = buffer.get(..read) {
+            hasher.update(chunk);
+        }
+    }
+    Ok(format!("blake3:{}", hasher.finalize().to_hex()))
+}
+
+/// Chemin S3 : CSV Kraken 1m lu en entier, hash de ses octets. Le `dataset_hash` (`dsh-v1`) est celui
+/// d'un segment unique (kraken, BTC-USD, 1m, fenêtre des bougies lues, politique `skip`) : il diffère
+/// de celui d'un dataset construit sur les mêmes bougies avec une autre fenêtre.
 fn load_fixture(fixture: &Path) -> Result<Input, CliError> {
     let bytes = fs::read(fixture).map_err(|source| CliError::Read {
         path: fixture.display().to_string(),
@@ -142,22 +326,57 @@ fn load_fixture(fixture: &Path) -> Result<Input, CliError> {
     })?;
     let fixture_blake3 = hash::blake3_hex(&bytes);
     let candles = kraken::read_all(bytes.as_slice(), Timeframe::M1)?;
-    let data = DataInfo::fixture(fixture_blake3, FIXTURE_SYMBOL, &candles)?;
+    let data = DataInfo::fixture(FIXTURE_EXCHANGE, FIXTURE_SYMBOL, &candles)?;
+    let window = Window::new(
+        data.first_open_time_ms,
+        data.last_open_time_ms.saturating_add(MINUTE_MS),
+    )?;
+    let columns = Columns::from_candles(&candles);
+    let (hex, _rows) = dsh::dataset_hash(
+        FIXTURE_EXCHANGE.as_str(),
+        window,
+        GapsPolicy::Skip,
+        &[(FIXTURE_SYMBOL, Timeframe::M1, &columns)],
+    )?;
     Ok(Input {
         candles,
         exchange: FIXTURE_EXCHANGE,
         symbol: FIXTURE_SYMBOL.to_string(),
         data,
+        dataset_hash: dsh::prefixed(&hex),
+        hash_format: dsh::HASH_FORMAT.to_string(),
+        fixture_blake3: Some(fixture_blake3),
     })
+}
+
+/// Vrai si la valeur de `--dataset` est un nom (ni séparateur de chemin, ni suffixe `.json`).
+fn is_bare_name(value: &str) -> bool {
+    !value.contains('/') && !value.contains('\\') && !value.ends_with(".json")
+}
+
+/// Nom de dataset valide : `[a-z0-9_]{1,64}`, règle de `tv4 dataset build`.
+fn is_valid_name(name: &str) -> bool {
+    (1..=64).contains(&name.len())
+        && name
+            .bytes()
+            .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'_')
 }
 
 /// Chemin S4 : dataset figé. Le store recalcule le `content_hash` de chaque fichier listé puis le
 /// `dataset_hash` et refuse de démarrer au moindre écart, en nommant le fichier.
 fn load_dataset(root: &Path, dataset: &Path) -> Result<Input, CliError> {
-    // Un chemin absolu remplace la racine (comportement de `Path::join`).
-    let path = root.join(dataset);
     // Les messages d'erreur citent le chemin tel que l'utilisateur l'a passé à --dataset.
     let shown = dataset.display().to_string();
+    // Un nom nu se résout en `<root>/datasets/<nom>.json` ; sinon un chemin, où un chemin absolu
+    // remplace la racine (comportement de `Path::join`).
+    let path = if is_bare_name(&shown) {
+        if !is_valid_name(&shown) {
+            return Err(store::StoreError::InvalidDatasetName(shown).into());
+        }
+        root.join("datasets").join(format!("{shown}.json"))
+    } else {
+        root.join(dataset)
+    };
     let manifest = store::read_dataset_manifest(&path)?;
     // Un manifeste sans symbole ou sans timeframe (ou avec plusieurs) n'est pas rejouable : message
     // de série, pas de repli silencieux sur le 1m.
@@ -180,16 +399,23 @@ fn load_dataset(root: &Path, dataset: &Path) -> Result<Input, CliError> {
     let candles = loaded.columns.to_candles();
     let reference = DatasetRef {
         name: loaded.manifest.name.clone(),
-        dataset_hash: loaded.manifest.dataset_hash.clone(),
-        hash_format: loaded.manifest.hash_format.clone(),
         gaps_policy: loaded.manifest.gaps_policy.as_str().to_string(),
         synthetic_bars: loaded.columns.synthetic_count(),
     };
-    let data = DataInfo::dataset(reference, &symbol, Timeframe::M1, &candles)?;
+    let data = DataInfo::dataset(
+        reference,
+        manifest.exchange,
+        &symbol,
+        Timeframe::M1,
+        &candles,
+    )?;
     Ok(Input {
         candles,
         exchange: manifest.exchange,
         symbol,
         data,
+        dataset_hash: loaded.manifest.dataset_hash.clone(),
+        hash_format: loaded.manifest.hash_format.clone(),
+        fixture_blake3: None,
     })
 }

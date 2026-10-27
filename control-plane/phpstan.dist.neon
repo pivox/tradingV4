@@ -1,0 +1,9 @@
+# Niveau fixé par la spécification S8 : max sur src/ et tests/.
+# Repli au niveau 8 seulement sur une contrainte de Symfony documentée ici ; aucun repli à ce jour.
+parameters:
+    level: max
+    paths:
+        - src
+        - tests
+    excludePaths:
+        - tests/fixtures

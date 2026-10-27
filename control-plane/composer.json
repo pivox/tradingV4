@@ -1,0 +1,43 @@
+{
+    "name": "pivox/tradingv4-control-plane",
+    "description": "Control plane de tradingV4 : rendu du rapport HTML statique d'un run (jalon 1)",
+    "type": "project",
+    "license": "proprietary",
+    "require": {
+        "php": ">=8.3",
+        "symfony/console": "7.4.*",
+        "symfony/framework-bundle": "7.4.*",
+        "symfony/twig-bundle": "7.4.*",
+        "twig/twig": "^3.30"
+    },
+    "require-dev": {
+        "phpstan/phpstan": "^2.3",
+        "phpunit/phpunit": "^12.5",
+        "squizlabs/php_codesniffer": "^4.0"
+    },
+    "autoload": {
+        "psr-4": {
+            "App\\": "src/"
+        }
+    },
+    "autoload-dev": {
+        "psr-4": {
+            "App\\Tests\\": "tests/"
+        }
+    },
+    "scripts": {
+        "test": "phpunit",
+        "stan": "phpstan analyse --no-progress",
+        "cs": "phpcs"
+    },
+    "config": {
+        "allow-plugins": {},
+        "platform": {
+            "php": "8.3.6"
+        },
+        "sort-packages": true,
+        "optimize-autoloader": true
+    },
+    "minimum-stability": "stable",
+    "prefer-stable": true
+}

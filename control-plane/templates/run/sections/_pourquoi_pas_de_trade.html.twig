@@ -1,0 +1,69 @@
+{% set f = metrics.funnel %}
+<section id="pourquoi" class="section" aria-labelledby="pourquoi-titre">
+  <h2 id="pourquoi-titre">Pourquoi pas de trade</h2>
+  <p class="note">Entonnoir des signaux, dans l'ordre : une ligne à zéro n'est détaillée que si elle compte.</p>
+  <table class="kv wide">
+    <caption>Entrées</caption>
+    <tbody>
+      <tr><th scope="row">Évaluations de la stratégie</th><td class="num">{{ f.evaluations|int }}</td></tr>
+      {% if f.rawEntrySignals is not null %}
+        <tr><th scope="row">Signaux d'entrée bruts (déclarés par la stratégie)</th><td class="num">{{ f.rawEntrySignals|int }}</td></tr>
+        {% for reason, count in f.entryFilteredByReason %}
+          {% if count != 0 %}
+          <tr class="sub"><th scope="row">dont filtrés : <code>{{ reason }}</code></th><td class="num">{{ count|int }}</td></tr>
+          {% endif %}
+        {% endfor %}
+      {% endif %}
+      <tr><th scope="row">Signaux d'entrée émis</th><td class="num">{{ f.entrySignals|int }}</td></tr>
+      {% for reason, count in f.entryRejectedByReason %}
+        {% if count != 0 %}
+        <tr class="sub"><th scope="row">dont rejetés : <code>{{ reason }}</code></th><td class="num">{{ count|int }}</td></tr>
+        {% endif %}
+      {% endfor %}
+      <tr><th scope="row">Ordres d'entrée acceptés</th><td class="num">{{ f.entryOrders|int }}</td></tr>
+      {% for reason, count in f.entryNotFilledByReason %}
+        {% if count != 0 %}
+        <tr class="sub"><th scope="row">dont non remplis : <code>{{ reason }}</code></th><td class="num">{{ count|int }}</td></tr>
+        {% endif %}
+      {% endfor %}
+      <tr><th scope="row">Lots ouverts</th><td class="num">{{ f.entryFills|int }}</td></tr>
+      <tr><th scope="row">Trades</th><td class="num">{{ f.trades|int }}</td></tr>
+    </tbody>
+  </table>
+  <div class="cols">
+    <table class="kv">
+      <caption>Sorties et autres signaux</caption>
+      <tbody>
+        <tr><th scope="row">Signaux de sortie émis</th><td class="num">{{ f.exitSignals|int }}</td></tr>
+        <tr><th scope="row">Ordres de sortie acceptés</th><td class="num">{{ f.exitOrders|int }}</td></tr>
+        <tr><th scope="row">Autres signaux émis (stop, annulation)</th><td class="num">{{ f.otherSignals|int }}</td></tr>
+        <tr><th scope="row">Autres signaux acceptés</th><td class="num">{{ f.otherAccepted|int }}</td></tr>
+        <tr><th scope="row">Signaux émis / acceptés / rejetés</th><td class="num">{{ metrics.signalsEmitted|int }} / {{ metrics.signalsAccepted|int }} / {{ metrics.signalsRejected|int }}</td></tr>
+        {% for reason, count in metrics.rejectedByReason %}
+          {% if count != 0 %}
+          <tr class="sub"><th scope="row">rejet : <code>{{ reason }}</code></th><td class="num">{{ count|int }}</td></tr>
+          {% endif %}
+        {% endfor %}
+      </tbody>
+    </table>
+    <table class="kv">
+      <caption>Trades par type de sortie</caption>
+      <tbody>
+        {% for type, count in f.exitsByType %}
+          <tr><th scope="row"><code>{{ type }}</code></th><td class="num">{{ count|int }}</td></tr>
+        {% endfor %}
+      </tbody>
+    </table>
+    <table class="kv">
+      <caption>Compteurs du simulateur non nuls</caption>
+      <tbody>
+        {% for name, count in metrics.sim %}
+          {% if count != 0 or name == 'bars_zero_volume_blocked' %}
+          <tr><th scope="row"><code>{{ name }}</code></th><td class="num">{{ count|int }}</td></tr>
+          {% endif %}
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  <p class="note"><code>bars_zero_volume_blocked</code> est toujours affiché : une minute sans volume ne donne aucun fill.</p>
+</section>

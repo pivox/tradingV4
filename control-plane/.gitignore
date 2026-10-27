@@ -1,0 +1,16 @@
+# Dépendances et caches (composer.lock est commité)
+/vendor/
+/var/
+
+# Rapports HTML produits à la racine du projet
+/*.html
+
+# Jamais de secret : ni .env, ni variante
+.env
+.env.*
+
+# Cache des outils
+.phpunit.cache/
+.phpunit.result.cache
+/.phpcs-cache
+/config/reference.php

@@ -26,6 +26,14 @@
 //!     réexportés : un champ privé reste visible des modules descendants, donc définis ici, ils
 //!     auraient été lisibles par `sma_cross` et toute stratégie future (fuite du futur sans `unsafe`).
 //!     `tests/architecture.rs` interdit aux autres fichiers de `strategy/` d'accéder aux champs.
+//!
+//! Ajouts de S8 :
+//!
+//! 12. [`Strategy::funnel`] (méthode par défaut, `None`) : la stratégie déclare, hors boucle, le nombre
+//!     de signaux d'entrée bruts qu'elle a vus et ceux qu'elle a filtrés par motif ; le moteur en fait
+//!     l'entonnoir de `metrics.json`.
+//! 13. Tag de sortie réservé [`TIME_STOP_TAG`] : une stratégie qui sort sur un délai l'utilise pour que
+//!     `trades.csv` écrive `exit_type = time_stop` (sinon `strategy_exit`).
 
 #![forbid(unsafe_code)]
 
@@ -238,6 +246,19 @@ pub use context::{BarContext, BarState, TfView};
 // Trait Strategy
 // ---------------------------------------------------------------------------------------------
 
+/// Tag de sortie réservé aux sorties temporelles : `trades.csv` en fait un `exit_type` `time_stop`.
+pub const TIME_STOP_TAG: &str = "time_stop";
+
+/// Entonnoir d'une stratégie : signaux d'entrée bruts et signaux filtrés par motif, déclarés par la
+/// stratégie elle-même (le moteur ne voit que les signaux émis).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct StrategyFunnel {
+    /// Signaux d'entrée vus avant tout filtre de la stratégie.
+    pub raw_entry_signals: u64,
+    /// Signaux écartés par la stratégie, par motif (identifiants stables), dans un ordre stable.
+    pub filtered: Vec<(&'static str, u64)>,
+}
+
 /// Une stratégie. Le trait est volontairement neutre (`params_json`, pas de type associé).
 ///
 /// `Send` interdit `Rc` et `RefCell` dans l'état d'une stratégie : garde-fou bon marché pour la grille
@@ -264,6 +285,12 @@ pub trait Strategy: Send {
     /// Appelée uniquement sur les bougies 1m où un timeframe déclaré vient de clôturer. `out` est
     /// réutilisé par le moteur (`clear()` avant l'appel) : aucune allocation par bougie.
     fn on_bar(&mut self, ctx: &BarContext<'_>, out: &mut Vec<Signal>);
+
+    /// Entonnoir de la stratégie, lu une fois après la boucle (peut allouer). `None` si elle ne
+    /// déclare rien.
+    fn funnel(&self) -> Option<StrategyFunnel> {
+        None
+    }
 }
 
 /// Vérifie la déclaration d'une stratégie ; appelée par `registry::build`.

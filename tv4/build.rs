@@ -9,6 +9,16 @@
 //!
 //! Repli : la valeur `unknown` quand git est absent ou que le dossier n'est pas un dépôt (archive,
 //! image Docker sans `.git`).
+//!
+//! S8 ajoute les variables de l'identité du binaire (`engine` de `manifest.json`) :
+//!
+//! - `TV4_RUSTC_VERSION` et `TV4_RUSTC_COMMIT` : lignes `release:` et `commit-hash:` de `$RUSTC -vV`
+//!   (repli `unknown`) ;
+//! - `TV4_TARGET` : variable `TARGET` du script de build ; `TV4_PROFILE` : variable `PROFILE` ;
+//! - `TV4_TARGET_CPU` : valeur de `-C target-cpu=X` dans `CARGO_ENCODED_RUSTFLAGS` (formes `-C
+//!   target-cpu=X`, `-Ctarget-cpu=X` et `-C` suivi de `target-cpu=X`), sinon la ligne de
+//!   `$RUSTC --print target-cpus --target $TARGET` qui porte `This is the default target CPU`
+//!   (premier mot), sinon `default`.
 
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -26,7 +36,83 @@ fn main() {
         .unwrap_or_else(|| "unknown".to_string());
     println!("cargo:rustc-env=TV4_GIT_SHA={sha}");
 
+    emit_toolchain_identity();
     watch_git_files();
+}
+
+/// Variable d'environnement du script de build, ou `unknown` si elle manque (ne devrait pas arriver).
+fn env_or_unknown(name: &str) -> String {
+    std::env::var(name).unwrap_or_else(|_| "unknown".to_string())
+}
+
+/// Sortie texte de `$RUSTC` avec ces arguments (`None` en cas d'échec).
+fn rustc_output(args: &[&str]) -> Option<String> {
+    let rustc = std::env::var("RUSTC").unwrap_or_else(|_| "rustc".to_string());
+    let output = Command::new(rustc).args(args).output().ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    String::from_utf8(output.stdout).ok()
+}
+
+/// Valeur de la ligne `key: valeur` de `rustc -vV`.
+fn rustc_verbose_field(verbose: &str, key: &str) -> Option<String> {
+    verbose
+        .lines()
+        .find_map(|line| line.strip_prefix(key))
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty())
+}
+
+/// `target-cpu` demandé par les drapeaux de compilation (`CARGO_ENCODED_RUSTFLAGS`, séparés par
+/// `\x1f`), le dernier l'emportant comme pour rustc.
+fn target_cpu_from_flags(encoded: &str) -> Option<String> {
+    let flags: Vec<&str> = encoded.split('\x1f').collect();
+    let mut found = None;
+    let mut index = 0;
+    while let Some(flag) = flags.get(index) {
+        if let Some(value) = flag.strip_prefix("-Ctarget-cpu=") {
+            found = Some(value.to_string());
+        } else if *flag == "-C"
+            && let Some(value) = flags
+                .get(index + 1)
+                .and_then(|next| next.strip_prefix("target-cpu="))
+        {
+            found = Some(value.to_string());
+            index += 1;
+        }
+        index += 1;
+    }
+    found.filter(|value| !value.is_empty())
+}
+
+/// CPU par défaut de la cible : ligne de `--print target-cpus` marquée `This is the default target CPU`.
+fn default_target_cpu(target: &str) -> Option<String> {
+    let listing = rustc_output(&["--print", "target-cpus", "--target", target])?;
+    listing
+        .lines()
+        .find(|line| line.contains("This is the default target CPU"))
+        .and_then(|line| line.split_whitespace().next())
+        .map(str::to_string)
+}
+
+/// Exporte la version et le commit du compilateur, la cible, son CPU et le profil.
+fn emit_toolchain_identity() {
+    println!("cargo:rerun-if-env-changed=CARGO_ENCODED_RUSTFLAGS");
+    let verbose = rustc_output(&["-vV"]).unwrap_or_default();
+    let version = rustc_verbose_field(&verbose, "release:").unwrap_or_else(|| "unknown".into());
+    let commit = rustc_verbose_field(&verbose, "commit-hash:").unwrap_or_else(|| "unknown".into());
+    let target = env_or_unknown("TARGET");
+    let cpu = std::env::var("CARGO_ENCODED_RUSTFLAGS")
+        .ok()
+        .and_then(|flags| target_cpu_from_flags(&flags))
+        .or_else(|| default_target_cpu(&target))
+        .unwrap_or_else(|| "default".to_string());
+    println!("cargo:rustc-env=TV4_RUSTC_VERSION={version}");
+    println!("cargo:rustc-env=TV4_RUSTC_COMMIT={commit}");
+    println!("cargo:rustc-env=TV4_TARGET={target}");
+    println!("cargo:rustc-env=TV4_TARGET_CPU={cpu}");
+    println!("cargo:rustc-env=TV4_PROFILE={}", env_or_unknown("PROFILE"));
 }
 
 /// Lance `git` avec ces arguments et rend la première ligne de la sortie, ou `None` en cas d'échec.

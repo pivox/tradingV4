@@ -7,6 +7,9 @@ use crate::model::{FeeSchedule, InstrumentRules, ModelError, Slippage, hash};
 use crate::sim::SimRules;
 use crate::strategy::Strategy;
 
+/// Nombre minimal de trades en dessous duquel le verdict est `rejected_too_few_trades` (docs/03 §5.3).
+pub const DEFAULT_MIN_TRADES: u32 = 30;
+
 /// Paramètres d'une cellule : tout ce que `run_cell` reçoit en dehors de la stratégie et des données.
 #[derive(Clone, Copy, Debug)]
 pub struct CellConfig<'a> {
@@ -41,10 +44,7 @@ impl StrategyRecord {
 }
 
 /// Objet haché du `config_hash` : `{ strategy, fees, slippage_bps, initial_cash, sim_rules,
-/// instrument, warmup_bars, tv4_version }`.
-///
-/// La composition est provisoire jusqu'à S8 (`min_trades` arrivera avec le verdict ; aucun run n'est
-/// encore archivé).
+/// instrument, min_trades, warmup_bars, tv4_version }` (composition définitive depuis S8).
 #[derive(Clone, Debug, PartialEq, Serialize)]
 pub struct RunConfig {
     pub strategy: StrategyRecord,
@@ -55,6 +55,8 @@ pub struct RunConfig {
     pub tv4_version: &'static str,
     pub sim_rules: SimRules,
     pub instrument: InstrumentRules,
+    /// Seuil d'effectif du verdict (S8).
+    pub min_trades: u32,
 }
 
 impl RunConfig {
@@ -68,6 +70,7 @@ impl RunConfig {
             tv4_version: env!("CARGO_PKG_VERSION"),
             sim_rules: config.sim_rules,
             instrument: config.instrument,
+            min_trades: DEFAULT_MIN_TRADES,
         }
     }
 
@@ -162,6 +165,7 @@ mod tests {
         assert!(json.contains(r#""slippage_bps":5.0"#), "{json}");
         assert!(json.contains(r#""initial_cash":300.0"#), "{json}");
         assert!(json.contains(r#""warmup_bars":240"#), "{json}");
+        assert!(json.contains(r#""min_trades":30"#), "{json}");
         assert!(json.contains(r#""version":"s6.1""#), "{json}");
         assert!(json.contains(r#""activation_delay_bars":1"#), "{json}");
         assert!(json.contains(r#""intrabar":"stop_first""#), "{json}");
@@ -187,7 +191,7 @@ mod tests {
             concat!(
                 r#"{"fees":{"exchange":"okx","maker_bps":20,"taker_bps":35},"initial_cash":300.0,"#,
                 r#""instrument":{"lot_size":1e-8,"min_notional":0.0,"min_qty":0.0,"tick_size":0.1},"#,
-                r#""sim_rules":{"activation_delay_bars":1,"intrabar":"stop_first","limit_cross_ticks":1,"#,
+                r#""min_trades":30,"sim_rules":{"activation_delay_bars":1,"intrabar":"stop_first","limit_cross_ticks":1,"#,
                 r#""market_buy_cash_margin":0.05,"max_pending":64,"max_volume_share":0.005,"#,
                 r#""stop_stress_bps":0.0,"tp_ignored_on_fill_bar":true,"version":"s6.1","#,
                 r#""zero_volume_no_fill":true},"slippage_bps":5.0,"strategy":{"id":"sma_cross","#,
@@ -195,9 +199,11 @@ mod tests {
                 r#""tv4_version":"0.1.0","warmup_bars":240}"#
             )
         );
+        // S8 : `"min_trades":30` s'insère entre `instrument` et `sim_rules`. Valeur recoupée avec le
+        // module Python `blake3` ; sans cette clé la chaîne redonne `6ea48993…` (valeur de S6).
         assert_eq!(
             run.hash().unwrap(),
-            "6ea489939050b331f9a2b716a34e52f10ef8dd4a846f9578da4151d6a2e8aa49"
+            "00fbee51dfb4bad5be96083449df30220e155a5d14cf1f29944fa58e3e046cc5"
         );
     }
 }

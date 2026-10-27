@@ -20,9 +20,10 @@ use common::{
     fixture_1m, kraken_btc_usd, okx_fees, repo_path, slippage, sma_cross_1m, strategy_from_file,
 };
 use tv4::engine::{CellConfig, CellResult, run_cell};
+use tv4::model::ExchangeId;
 use tv4::model::hash;
-use tv4::report::writers::trades_csv;
-use tv4::report::{DataInfo, EngineInfo, Metrics};
+use tv4::report::writers::trades_csv_s6;
+use tv4::report::{DataInfo, Metrics};
 use tv4::sim::{ExitReason, SimRules};
 
 const CAPITAL: f64 = 300.0;
@@ -233,13 +234,14 @@ fn valeurs_de_controle_de_l_oracle() {
 
     // `trades.csv` entier, à l'octet : BLAKE3 du fichier attendu de l'oracle.
     assert_eq!(
-        hash::blake3_hex(&trades_csv(&result.trades).unwrap()),
+        hash::blake3_hex(&trades_csv_s6(&result.trades).unwrap()),
         "43865c157588a1471936e4cc25dbbe8f00f6a715866b8e08610733ae3f4763cc"
     );
     let metrics = metrics_of(&result, &candles);
     assert_eq!(
         metrics.config_hash,
-        "6ea489939050b331f9a2b716a34e52f10ef8dd4a846f9578da4151d6a2e8aa49"
+        // S8 : `"min_trades":30` entre dans la configuration hachée (S6 : `6ea48993…`).
+        "00fbee51dfb4bad5be96083449df30220e155a5d14cf1f29944fa58e3e046cc5"
     );
 }
 
@@ -336,23 +338,24 @@ fn sma_cross_15m_valeurs_de_l_oracle() {
     assert_eq!(stop.stop_at_exit, Some(7956.394900919436));
 
     assert_eq!(
-        hash::blake3_hex(&trades_csv(&result.trades).unwrap()),
+        hash::blake3_hex(&trades_csv_s6(&result.trades).unwrap()),
         "e26a9b934782945495ab36aa5e38b755573027c60312d0a0526d4ff6fe9e9cc4"
     );
     let metrics = metrics_of(&result, &candles);
     assert_eq!(
         metrics.config_hash,
-        "bec4b9066d08b9285645e941819551fcf11cc5b00c4c75f3c2f7e9fb20bb7d0a"
+        // S8 : `"min_trades":30` entre dans la configuration hachée (S6 : `bec4b906…`).
+        "be17a04653d1d815ec618657732ea7f4a0da3e0d0ce2f7f272bea11118a1a2d1"
     );
 }
 
 fn metrics_of(result: &CellResult, candles: &[tv4::model::Candle]) -> Metrics {
-    let data = DataInfo::fixture("0".repeat(64), "BTC-USD", candles).unwrap();
-    let engine = EngineInfo {
-        tv4_version: env!("CARGO_PKG_VERSION"),
-        git_sha: tv4::GIT_SHA,
-    };
-    Metrics::new(result, data, engine)
+    let data = DataInfo::fixture(ExchangeId::Kraken, "BTC-USD", candles).unwrap();
+    let times: Vec<i64> = candles[result.start_index..]
+        .iter()
+        .map(|c| c.open_time_ms)
+        .collect();
+    Metrics::new(result, &times, data, format!("blake3:{}", "0".repeat(64))).unwrap()
 }
 
 #[test]
@@ -654,7 +657,7 @@ fn les_douze_runs_de_l_oracle_s6() {
             "{id} : minutes sans volume"
         );
         assert_eq!(
-            hash::blake3_hex(&trades_csv(&r.trades).unwrap()),
+            hash::blake3_hex(&trades_csv_s6(&r.trades).unwrap()),
             attendu.trades_csv_blake3,
             "{id} : trades.csv"
         );

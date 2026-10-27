@@ -10,7 +10,9 @@ use crate::strategy::{
 };
 
 use super::config::{CellConfig, RunConfig};
-use super::signals::{SignalRejections, dispatch};
+use super::signals::{
+    EngineFunnel, SignalClass, SignalRejections, StrategyFunnelCounts, classify, dispatch,
+};
 use super::{EngineError, LoopObserver, NoopObserver};
 
 /// Capacité initiale du vecteur de trades. Un aller-retour occupe au moins deux bougies ; au-delà de
@@ -51,8 +53,25 @@ pub struct CellResult {
     pub slippage_total: f64,
     pub signals_emitted: u64,
     pub signals_accepted: u64,
+    /// Somme champ à champ des rejets de toutes les classes de signaux.
     pub rejections: SignalRejections,
     pub sim: SimCounters,
+    /// Entonnoir des signaux (S8).
+    pub funnel: EngineFunnel,
+    /// 1m de la fenêtre à la clôture desquelles la position est non nulle (S8).
+    pub bars_in_position: u64,
+}
+
+impl CellResult {
+    /// Remplace le seuil `min_trades` (refuse 0) et recalcule le `config_hash`.
+    pub fn with_min_trades(mut self, min_trades: u32) -> Result<CellResult, EngineError> {
+        if min_trades == 0 {
+            return Err(EngineError::InvalidMinTrades);
+        }
+        self.config.min_trades = min_trades;
+        self.config_hash = self.config.hash()?;
+        Ok(self)
+    }
 }
 
 /// Rejoue `candles` avec `strategy` (voir [`run_cell_observed`]).
@@ -258,7 +277,8 @@ fn run_prepared(
         equity: Vec::with_capacity(window),
         emitted: 0,
         accepted: 0,
-        rejections: SignalRejections::default(),
+        funnel: EngineFunnel::default(),
+        bars_in_position: 0,
     };
 
     // --- Boucle : 0 allocation attendue (tolérance documentée : 1 pour 10 000 bougies) ---
@@ -282,6 +302,10 @@ fn run_prepared(
     looped?;
 
     // --- Fin de run, hors boucle ---
+    buffers.funnel.strategy = strategy.funnel().map(|f| StrategyFunnelCounts {
+        raw_entry_signals: f.raw_entry_signals,
+        filtered: f.filtered,
+    });
     let last = candles.last().ok_or(EngineError::EmptyData)?;
     let out = sim.finish(last)?;
 
@@ -303,6 +327,8 @@ fn run_prepared(
             pnl_realized += trade.pnl_net;
         }
     }
+    let mut rejections = buffers.funnel.entry_rejections;
+    rejections.add(&buffers.funnel.other_rejections);
     let first_in_window = window_candles
         .first()
         .map_or(last.open_time_ms, |c| c.open_time_ms);
@@ -329,8 +355,10 @@ fn run_prepared(
         slippage_total,
         signals_emitted: buffers.emitted,
         signals_accepted: buffers.accepted,
-        rejections: buffers.rejections,
+        rejections,
         sim: out.counters,
+        funnel: buffers.funnel,
+        bars_in_position: buffers.bars_in_position,
     })
 }
 
@@ -370,7 +398,9 @@ struct LoopBuffers {
     equity: Vec<f64>,
     emitted: u64,
     accepted: u64,
-    rejections: SignalRejections,
+    /// Entonnoir par classe de signal ; ses rejets sont sommés après la boucle.
+    funnel: EngineFunnel,
+    bars_in_position: u64,
 }
 
 /// Vues par timeframe déclaré et index de clôture, préparés hors boucle.
@@ -439,6 +469,9 @@ fn run_loop(
         let i = start + offset;
         // 1. Annulations, expirations, fills et stops de la 1m (ordres actifs seulement).
         sim.on_bar(candle)?;
+        if sim.position().is_some() {
+            buffers.bars_in_position += 1;
+        }
         // 2. Equity à la clôture de la bougie.
         let equity_i = sim.equity_at(candle.close);
         buffers.equity.push(equity_i);
@@ -476,6 +509,7 @@ fn run_loop(
                 BarContext::new(config.symbol, state, &buffers.pending, &views.current, mask)?;
             strategy.on_bar(&ctx, &mut buffers.signals);
         }
+        buffers.funnel.evaluations += 1;
         // 4. Soumission des signaux : actifs au plus tôt `activation_delay_bars` minutes après la clôture.
         buffers.emitted += buffers.signals.len() as u64;
         let context = SubmitContext {
@@ -484,7 +518,27 @@ fn run_loop(
             ref_price: candle.close,
         };
         for signal in &buffers.signals {
-            if dispatch(signal, context, sim, &mut buffers.rejections) {
+            let funnel = &mut buffers.funnel;
+            let (emitted, orders, rejections) = match classify(signal) {
+                SignalClass::Entry => (
+                    &mut funnel.entry_signals,
+                    &mut funnel.entry_orders,
+                    &mut funnel.entry_rejections,
+                ),
+                SignalClass::Exit => (
+                    &mut funnel.exit_signals,
+                    &mut funnel.exit_orders,
+                    &mut funnel.other_rejections,
+                ),
+                SignalClass::Other => (
+                    &mut funnel.other_signals,
+                    &mut funnel.other_accepted,
+                    &mut funnel.other_rejections,
+                ),
+            };
+            *emitted += 1;
+            if dispatch(signal, context, sim, rejections) {
+                *orders += 1;
                 buffers.accepted += 1;
             }
         }

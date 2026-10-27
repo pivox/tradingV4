@@ -1,0 +1,43 @@
+{% if equityChart.empty %}
+  {% include 'run/_absent.html.twig' with {
+    id: 'equity',
+    title: 'Equity',
+    reason: "equity.csv ne contient aucun point : aucune courbe à tracer."
+  } only %}
+{% else %}
+<section id="equity" class="section" aria-labelledby="equity-titre">
+  <h2 id="equity-titre">Equity</h2>
+  <p class="note">Run entier, pas hors échantillon. Pas d'échantillonnage : {{ manifest.equityStep }} ({{ run.equity.count|int }} points{% if equityChart.pointCount < run.equity.count %}, décimés à {{ equityChart.pointCount|int }} par min-max{% endif %}).</p>
+  <figure>
+    <svg class="chart" viewBox="0 0 {{ equityChart.plot.width }} {{ equityChart.plot.height }}" role="img" aria-labelledby="equity-chart-titre">
+      <title id="equity-chart-titre">Courbe d'equity du run entier</title>
+      {% for t in equityChart.yTicks %}
+        <line class="grid" x1="{{ equityChart.plot.left }}" x2="{{ equityChart.plot.xRight }}" y1="{{ t.pos|round(2) }}" y2="{{ t.pos|round(2) }}"/>
+        <text class="tick" x="{{ equityChart.plot.left - 6 }}" y="{{ (t.pos + 4)|round(2) }}" text-anchor="end">{{ t.label }}</text>
+      {% endfor %}
+      {% for t in equityChart.xTicks %}
+        <text class="tick" x="{{ t.pos|round(2) }}" y="{{ equityChart.plot.height - 8 }}" text-anchor="middle">{{ t.label }}</text>
+      {% endfor %}
+      <line class="axis" x1="{{ equityChart.plot.left }}" x2="{{ equityChart.plot.xRight }}" y1="{{ equityChart.plot.yBottom }}" y2="{{ equityChart.plot.yBottom }}"/>
+      <path class="line equity" d="{{ equityChart.path }}"/>
+    </svg>
+    <figcaption>Equity (monnaie de cotation) au fil du temps UTC.</figcaption>
+  </figure>
+  <figure>
+    <svg class="chart" viewBox="0 0 {{ drawdownChart.plot.width }} {{ drawdownChart.plot.height }}" role="img" aria-labelledby="drawdown-chart-titre">
+      <title id="drawdown-chart-titre">Drawdown du run entier</title>
+      {% for t in drawdownChart.yTicks %}
+        <line class="grid" x1="{{ drawdownChart.plot.left }}" x2="{{ drawdownChart.plot.xRight }}" y1="{{ t.pos|round(2) }}" y2="{{ t.pos|round(2) }}"/>
+        <text class="tick" x="{{ drawdownChart.plot.left - 6 }}" y="{{ (t.pos + 4)|round(2) }}" text-anchor="end">{{ t.label }}</text>
+      {% endfor %}
+      {% for t in drawdownChart.xTicks %}
+        <text class="tick" x="{{ t.pos|round(2) }}" y="{{ drawdownChart.plot.height - 8 }}" text-anchor="middle">{{ t.label }}</text>
+      {% endfor %}
+      <path class="area dd" d="{{ drawdownChart.areaPath }}"/>
+      <path class="line dd" d="{{ drawdownChart.path }}"/>
+    </svg>
+    <figcaption>Drawdown depuis le pic courant (fraction, calculée par tv4 sur les bougies 1m).</figcaption>
+  </figure>
+  <p class="absent-note"><strong>Absent au jalon 1.</strong> Plis du walk-forward, buy &amp; hold net de frais et médiane des contrôles aléatoires : jalon 2.</p>
+</section>
+{% endif %}

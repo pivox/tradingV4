@@ -1,0 +1,13 @@
+<section id="verdict" class="section verdict verdict-{{ metrics.verdict }}" aria-labelledby="verdict-titre">
+  <h2 id="verdict-titre">Verdict et marche</h2>
+  <p class="badge">Verdict de tv4 : <strong>{{ metrics.verdict }}</strong></p>
+  {% if metrics.verdict == 'rejected_too_few_trades' %}
+    <p>Règle : {{ metrics.nTrades|int }} trades contre un minimum de {{ metrics.minTrades|int }} (<code>min_trades</code>). Une espérance mesurée sur si peu de trades ne se lit pas.</p>
+  {% elseif metrics.verdict == 'rejected_negative_expectancy' %}
+    <p>Règle : {{ metrics.nTrades|int }} trades (minimum {{ metrics.minTrades|int }} atteint) mais espérance nette de {{ metrics.expectancyNet|money }} par trade, soit 0 ou moins.</p>
+  {% else %}
+    <p>Règle : {{ metrics.nTrades|int }} trades (minimum {{ metrics.minTrades|int }} atteint) et espérance nette positive de {{ metrics.expectancyNet|money }} par trade.</p>
+  {% endif %}
+  <p class="note">Ce verdict concerne ce run seul ; il n'est pas le franchissement d'une porte du protocole de recherche.</p>
+  <p class="absent-note"><strong>Marche du protocole : absent au jalon 1.</strong> Les portes G0 à G7 ne sont pas calculées au jalon 1.</p>
+</section>

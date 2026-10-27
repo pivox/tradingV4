@@ -10,6 +10,7 @@
 
 use super::{
     BarContext, IndicatorKind, IndicatorSpec, OrderKind, Signal, Size, Strategy, StrategyError,
+    StrategyFunnel,
 };
 use crate::model::{MAX_INDICATOR_PERIOD, Timeframe};
 use serde::{Deserialize, Serialize};
@@ -53,6 +54,12 @@ pub struct SmaCross {
     params_json: serde_json::Value,
     /// Écart `fast - slow` de la dernière bougie valide ; `None` en warmup.
     prev_diff: Option<f64>,
+    /// Croisements haussiers vus sans position (avant tout filtre).
+    raw_entry_signals: u64,
+    /// Croisements écartés parce que le stop calculé n'est pas strictement positif.
+    stop_not_positive: u64,
+    /// Croisements écartés par le filtre de tendance.
+    trend_filter: u64,
 }
 
 impl SmaCross {
@@ -105,6 +112,9 @@ impl SmaCross {
             tfs,
             params_json,
             prev_diff: None,
+            raw_entry_signals: 0,
+            stop_not_positive: 0,
+            trend_filter: 0,
         })
     }
 }
@@ -208,7 +218,12 @@ impl Strategy for SmaCross {
             (Some(p), true) if p <= 0.0 && d > 0.0 => {
                 // Un stop non positif n'a pas de sens pour un long spot : pas d'entrée. Le filtre de
                 // tendance n'est évalué qu'à ce moment, après le croisement et le stop.
-                if stop > 0.0 && self.trend_allows(ctx) {
+                self.raw_entry_signals += 1;
+                if stop <= 0.0 || stop.is_nan() {
+                    self.stop_not_positive += 1;
+                } else if !self.trend_allows(ctx) {
+                    self.trend_filter += 1;
+                } else {
                     out.push(Signal::EnterLong {
                         size: Size::RiskPct(RISK_PCT),
                         kind: OrderKind::Market,
@@ -225,6 +240,16 @@ impl Strategy for SmaCross {
             _ => {}
         }
         self.prev_diff = Some(d);
+    }
+
+    fn funnel(&self) -> Option<StrategyFunnel> {
+        Some(StrategyFunnel {
+            raw_entry_signals: self.raw_entry_signals,
+            filtered: vec![
+                ("stop_not_positive", self.stop_not_positive),
+                ("trend_filter", self.trend_filter),
+            ],
+        })
     }
 }
 

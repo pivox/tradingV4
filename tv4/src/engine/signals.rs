@@ -8,8 +8,62 @@
 
 use serde::Serialize;
 
+use crate::model::Side;
 use crate::sim::{Instruction, OrderPrice, Rejection, Simulator, SizeSpec, SubmitContext};
 use crate::strategy::{OrderKind, Signal, Size};
+
+/// Classe d'un signal pour l'entonnoir (docs/03 §15.1) : entrée (`EnterLong`, `PlaceLimit` d'achat),
+/// sortie (`ExitLong`, `PlaceLimit` de vente) ou autre (`MoveStop`, `CancelPending`, `CancelSlot`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SignalClass {
+    Entry,
+    Exit,
+    Other,
+}
+
+/// Classe un signal, sans allocation.
+pub fn classify(signal: &Signal) -> SignalClass {
+    match signal {
+        Signal::EnterLong { .. }
+        | Signal::PlaceLimit {
+            side: Side::Buy, ..
+        } => SignalClass::Entry,
+        Signal::ExitLong { .. }
+        | Signal::PlaceLimit {
+            side: Side::Sell, ..
+        } => SignalClass::Exit,
+        Signal::MoveStop { .. } | Signal::CancelPending | Signal::CancelSlot { .. } => {
+            SignalClass::Other
+        }
+    }
+}
+
+/// Entonnoir déclaré par la stratégie (copie de [`StrategyFunnel`](crate::strategy::StrategyFunnel)
+/// dans un type propre à `engine`, que `report` lit sans dépendre de `strategy`).
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct StrategyFunnelCounts {
+    pub raw_entry_signals: u64,
+    pub filtered: Vec<(&'static str, u64)>,
+}
+
+/// Compteurs de l'entonnoir tenus par la boucle (S8) : des incréments d'entiers, aucune allocation.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct EngineFunnel {
+    /// Appels de `Strategy::on_bar`.
+    pub evaluations: u64,
+    pub entry_signals: u64,
+    pub entry_orders: u64,
+    pub exit_signals: u64,
+    pub exit_orders: u64,
+    pub other_signals: u64,
+    pub other_accepted: u64,
+    /// Rejets des signaux d'entrée.
+    pub entry_rejections: SignalRejections,
+    /// Rejets des autres signaux (sorties comprises).
+    pub other_rejections: SignalRejections,
+    /// Entonnoir déclaré par la stratégie, lu après la boucle.
+    pub strategy: Option<StrategyFunnelCounts>,
+}
 
 /// Rejets de signaux par motif, tous des `u64` nommés (jamais une map). Un champ par variante de
 /// [`Rejection`], dans l'ordre de la spécification.
@@ -57,6 +111,27 @@ impl SignalRejections {
             Rejection::CancelUnknownSlot => &mut self.cancel_unknown_slot,
         };
         *field += 1;
+    }
+
+    /// Ajoute champ à champ les rejets de `other` (somme des classes de signaux, S8).
+    pub fn add(&mut self, other: &SignalRejections) {
+        self.pending_full += other.pending_full;
+        self.entry_while_long += other.entry_while_long;
+        self.exit_without_position += other.exit_without_position;
+        self.duplicate_exit += other.duplicate_exit;
+        self.risk_without_stop += other.risk_without_stop;
+        self.invalid_risk_sizing += other.invalid_risk_sizing;
+        self.invalid_size += other.invalid_size;
+        self.invalid_price += other.invalid_price;
+        self.invalid_ttl += other.invalid_ttl;
+        self.invalid_slot += other.invalid_slot;
+        self.place_limit_risk_pct += other.place_limit_risk_pct;
+        self.slot_already_open += other.slot_already_open;
+        self.insufficient_quote += other.insufficient_quote;
+        self.sell_without_free_qty += other.sell_without_free_qty;
+        self.below_minimum += other.below_minimum;
+        self.move_stop_without_position += other.move_stop_without_position;
+        self.cancel_unknown_slot += other.cancel_unknown_slot;
     }
 
     /// Somme de tous les motifs.

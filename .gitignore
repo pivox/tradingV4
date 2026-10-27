@@ -28,3 +28,7 @@ lcov.info
 # insta : fichiers en attente de relecture (les .snap acceptés sont commités)
 *.snap.new
 .pending-snap
+
+# Sorties locales des étapes de CI rejouées à la main (S8)
+bench-summary.json
+rapport-fumee.html

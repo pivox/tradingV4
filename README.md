@@ -4,6 +4,31 @@ Plateforme de trading crypto spot sur OKX : un moteur Rust de backtest, de paper
 
 Les décisions du propriétaire et les règles de travail du dépôt sont dans `CLAUDE.md`. Le moteur se construit et se teste depuis la racine avec `cargo build --release` et `cargo test --locked --all-targets`.
 
+## Backtest, preuve et rapport (S8)
+
+Depuis la racine du dépôt, sur la fixture de 10 000 bougies (le dataset `btcusd_2y` de la preuve se construit sur le poste du propriétaire, `docs/03-architecture.md` §11 S8) :
+
+```sh
+# Run : metrics.json, trades.csv, equity.csv puis manifest.json (écrit en dernier) dans --out
+# (défaut : <root>/runs/<run_id>)
+cargo run --release --bin tv4 -- backtest --fixture fixtures/kraken_xbtusd_1m.csv --strategy sma_cross \
+  --params config/strategies/sma_cross.toml --fees okx --out runs/exemple-a
+
+# Comparaison à l'octet de deux runs : code 0 identiques, 3 différents, 1 erreur ou run incohérent
+cargo run --release --bin tv4 -- verify runs/exemple-a runs/exemple-b
+
+# Coût de la boucle par 1m et coût moyen par appel de on_bar (mêmes entrées que backtest, rien d'écrit)
+cargo run --release --bin tv4 -- bench --fixture fixtures/kraken_xbtusd_1m.csv --strategy sma_cross \
+  --params config/strategies/sma_cross.toml --repeat 5
+
+# Rapport HTML statique d'un run (control plane Symfony, PHP 8.3)
+(cd control-plane && composer install && php bin/console tv4:report ../runs/exemple-a --output ../runs/exemple-a/report.html)
+```
+
+`tv4 verify` ne lit du manifeste que les hashes annoncés (cohérence interne), `config_hash`, `dataset_hash` et `engine` à titre d'information ; `timings`, `started_at` et `run_id` sont ignorés.
+
+Contrôles de reproductibilité en CI (`.github/workflows/ci.yml`) : le backtest de fumée tourne deux fois en deux process puis `tv4 verify` ; le golden de run `tv4/tests/golden_runs/sma_cross_15m_okx/` détecte la dérive entre commits (mise à jour : `TV4_GOLDEN_UPDATE=1 cargo test --test golden_run`, refusée si `CI` est définie, puis relecture du diff) ; le bench criterion `engine_2y_1m` (`cargo bench --locked --bench engine -- engine_2y_1m`) est archivé et sa borne basse est limitée à 50 ns par 1m par `.github/scripts/criterion-gate.sh`.
+
 ## Exploration DuckDB
 
 Les bougies sont des fichiers Parquet ordinaires sous `data/candles/<exchange>/<SYMBOLE>/<tf>/`, lisibles par DuckDB sans import. `open_time_ms` est un entier en millisecondes UTC : `epoch_ms(open_time_ms)` le convertit en horodatage UTC sans dépendre du fuseau de la session (contrairement à `to_timestamp`, qui rend un `TIMESTAMP WITH TIME ZONE` affiché dans le fuseau local).

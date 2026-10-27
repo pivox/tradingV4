@@ -1,0 +1,51 @@
+{% if run.trades is empty %}
+  {% include 'run/_absent.html.twig' with {
+    id: 'trades',
+    title: 'Trades',
+    reason: "Ce run ne contient aucun trade."
+  } only %}
+{% else %}
+<section id="trades" class="section" aria-labelledby="trades-titre">
+  <h2 id="trades-titre">Trades</h2>
+  {% if hiddenTrades > 0 %}
+    <p class="note">{{ shownTrades|length|int }} premiers trades sur {{ run.trades|length|int }} ; {{ hiddenTrades|int }} de plus non affichés. Export complet : <code>trades.csv</code>.</p>
+  {% else %}
+    <p class="note">{{ run.trades|length|int }} trades, dans l'ordre du simulateur. Export complet : <code>trades.csv</code>.</p>
+  {% endif %}
+  <div class="scroll">
+  <table class="data">
+    <thead>
+      <tr>
+        <th scope="col">Lot</th><th scope="col">Entrée</th><th scope="col">Sortie</th>
+        <th scope="col" class="num">Prix d'entrée</th><th scope="col" class="num">Prix de sortie</th>
+        <th scope="col" class="num">Durée</th><th scope="col" class="num">Frais</th><th scope="col" class="num">Slippage</th>
+        <th scope="col" class="num">PnL net</th><th scope="col" class="num">R</th>
+        <th scope="col" class="num">MFE</th><th scope="col" class="num">MAE</th>
+        <th scope="col">Type de sortie</th><th scope="col">Tags</th>
+      </tr>
+    </thead>
+    <tbody>
+    {% for t in shownTrades %}
+      <tr>
+        <td class="num">{{ t.lotId }}</td>
+        <td>{{ t.entryMs|datetime }}</td>
+        <td>{{ t.exitMs|datetime }}</td>
+        <td class="num">{{ t.entryPrice|money }}</td>
+        <td class="num">{{ t.exitPrice|money }}</td>
+        <td class="num">{{ t.holdingMs|duration }}</td>
+        <td class="num">{{ (t.entryFee + t.exitFee)|money }}</td>
+        <td class="num">{{ (t.entrySlippage + t.exitSlippage)|money }}</td>
+        <td class="num {{ t.pnlNet < 0 ? 'neg' : 'pos' }}">{{ t.pnlNet|money }}</td>
+        <td class="num">{{ t.rMultiple|num(2) }}</td>
+        <td class="num">{{ t.mfe|money }}</td>
+        <td class="num">{{ t.mae|money }}</td>
+        <td><code>{{ t.exitType }}</code>{% if t.forcedClose %} (forcée){% endif %}</td>
+        <td><code>{{ t.entryTag }}</code> → <code>{{ t.exitTag }}</code></td>
+      </tr>
+    {% endfor %}
+    </tbody>
+  </table>
+  </div>
+  <p class="absent-note"><strong>Absent au jalon 1.</strong> Tri, pagination (le rapport est statique, sans JavaScript) et colonne pli du walk-forward.</p>
+</section>
+{% endif %}

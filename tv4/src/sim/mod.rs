@@ -197,6 +197,8 @@ struct Sale {
     ref_price: f64,
     reason: ExitReason,
     signal_ms: Ts,
+    /// Instant d'arrivée de l'ordre de sortie (voir `Trade::exit_order_ms`).
+    order_ms: Ts,
     /// `exit_ms` du trade : `open_time` de la 1m, ou clôture de la dernière 1m pour la clôture forcée.
     exit_ms: Ts,
     tag: &'static str,
@@ -226,6 +228,11 @@ pub struct Simulator {
     opened_at_ms: Ts,
     stop: Option<f64>,
     stop_signal_ms: Ts,
+    /// Instant à partir duquel le stop en vigueur est actif : la 1m de fill de l'entrée qui l'a posé,
+    /// ou l'instant d'effet du dernier `MoveStop` appliqué. Information de rapport, sans effet sur les fills.
+    stop_active_from_ms: Ts,
+    /// Vrai si un `MoveStop` a été appliqué depuis l'ouverture de la position (rapport seulement).
+    stop_moved: bool,
     take_profit: Option<f64>,
     tp_signal_ms: Ts,
     /// Instant à partir duquel le take-profit est « arrivé » : la 1m qui suit le fill de l'entrée (la 1m
@@ -333,6 +340,8 @@ impl Simulator {
             opened_at_ms: 0,
             stop: None,
             stop_signal_ms: 0,
+            stop_active_from_ms: 0,
+            stop_moved: false,
             take_profit: None,
             tp_signal_ms: 0,
             tp_active_from_ms: 0,
@@ -842,6 +851,8 @@ impl Simulator {
             if self.qty_lots > 0 {
                 self.stop = Some(stop);
                 self.stop_signal_ms = signal_ms;
+                self.stop_active_from_ms = from;
+                self.stop_moved = true;
                 self.counters.move_stops_applied += 1;
             } else {
                 self.counters.move_stops_dropped_flat += 1;
@@ -979,6 +990,7 @@ impl Simulator {
                 ref_price: candle.open,
                 reason: ExitReason::Signal,
                 signal_ms: order.signal_ms,
+                order_ms: order.active_from_ms,
                 exit_ms: candle.open_time_ms,
                 tag: order.tag,
             },
@@ -1192,6 +1204,7 @@ impl Simulator {
                     ref_price: if taker { candle.open } else { order.limit },
                     reason,
                     signal_ms: order.signal_ms,
+                    order_ms: order.active_from_ms,
                     exit_ms: t,
                     tag: order.tag,
                 },
@@ -1223,6 +1236,7 @@ impl Simulator {
                 ref_price: worst,
                 reason: ExitReason::Stop,
                 signal_ms: self.stop_signal_ms,
+                order_ms: self.stop_active_from_ms,
                 exit_ms: candle.open_time_ms,
                 tag: "stop",
             },
@@ -1267,6 +1281,7 @@ impl Simulator {
                 ref_price: if taker { candle.open } else { tp },
                 reason: ExitReason::TakeProfit,
                 signal_ms: self.tp_signal_ms,
+                order_ms: self.tp_active_from_ms,
                 exit_ms: candle.open_time_ms,
                 tag: "take_profit",
             },
@@ -1308,12 +1323,20 @@ impl Simulator {
         self.cash = cash;
         let id = self.next_lot_id;
         self.next_lot_id += 1;
+        // Stop de la position juste après ce fill : celui de l'entrée, ou le stop déjà en vigueur.
+        let stop_after_fill = if order.origin == Origin::Enter {
+            order.stop
+        } else {
+            self.stop
+        };
         self.lots.push_back(Lot {
             id,
             entry_signal_ms: order.signal_ms,
+            order_ms: order.active_from_ms,
             entry_ms: t,
             entry_ref_price: entry.ref_price,
             entry_price: entry.price,
+            stop_at_entry: stop_after_fill,
             lots_init: entry.lots,
             lots_left: entry.lots,
             cost: entry.cost,
@@ -1336,6 +1359,8 @@ impl Simulator {
         self.qty_lots += entry.lots;
         if order.origin == Origin::Enter {
             self.stop = order.stop;
+            self.stop_active_from_ms = t;
+            self.stop_moved = false;
             self.take_profit = order.take_profit;
             self.stop_signal_ms = order.signal_ms;
             self.tp_signal_ms = order.signal_ms;
@@ -1396,6 +1421,7 @@ impl Simulator {
         };
         let forced = sale.reason == ExitReason::ForcedClose;
         let stop_at_exit = self.stop;
+        let stop_moved = self.stop_moved;
         let mut left = total;
         while left > 0 {
             let Some(&lot) = self.lots.front() else {
@@ -1415,6 +1441,7 @@ impl Simulator {
             self.trades.push(Trade {
                 lot_id: lot.id,
                 entry_signal_ms: lot.entry_signal_ms,
+                entry_order_ms: lot.order_ms,
                 entry_ms: lot.entry_ms,
                 entry_ref_price: lot.entry_ref_price,
                 entry_price: lot.entry_price,
@@ -1422,6 +1449,7 @@ impl Simulator {
                 entry_slippage,
                 entry_liquidity: lot.liquidity,
                 exit_signal_ms: sale.signal_ms,
+                exit_order_ms: sale.order_ms,
                 exit_ms: sale.exit_ms,
                 exit_ref_price: sale.ref_price,
                 exit_price: sale.price,
@@ -1433,6 +1461,8 @@ impl Simulator {
                 mfe: qty * (lot.hi - lot.entry_price),
                 mae: qty * (lot.lo - lot.entry_price),
                 stop_at_exit,
+                stop_at_entry: lot.stop_at_entry,
+                stop_moved,
                 capped_by_cash: lot.capped,
                 exit_reason: sale.reason,
                 forced_close: forced,
@@ -1451,6 +1481,7 @@ impl Simulator {
         if self.qty_lots == 0 {
             self.avg_price = 0.0;
             self.stop = None;
+            self.stop_moved = false;
             self.take_profit = None;
         }
         Ok(())
@@ -1476,6 +1507,7 @@ impl Simulator {
                     ref_price: last.close,
                     reason: ExitReason::ForcedClose,
                     signal_ms: end_ms,
+                    order_ms: end_ms,
                     exit_ms: end_ms,
                     tag: "forced_close",
                 },

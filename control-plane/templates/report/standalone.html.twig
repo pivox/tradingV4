@@ -1,0 +1,85 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="color-scheme" content="light dark">
+<title>Run {{ manifest.runId|slice(0, 12) }} · {{ manifest.config.strategyId }} · rapport tradingV4</title>
+<style>
+:root {
+  --bg: #ffffff;
+  --surface: #f4f6f8;
+  --text: #1b1f24;
+  --muted: #57606a;
+  --border: #d0d7de;
+  --accent: #0b5cad;
+  --win: #0a6a9e;
+  --loss: #b3420b;
+  --neutral: #4a5560;
+  --absent-bg: #eef0f2;
+}
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #14171a;
+    --surface: #1d2227;
+    --text: #e6e8eb;
+    --muted: #a3acb5;
+    --border: #3a424a;
+    --accent: #6cb2f0;
+    --win: #5cb8e6;
+    --loss: #f08a5d;
+    --neutral: #aab4bd;
+    --absent-bg: #1a1e22;
+  }
+}
+* { box-sizing: border-box; }
+body { margin: 0; background: var(--bg); color: var(--text); font: 15px/1.5 system-ui, -apple-system, "Segoe UI", sans-serif; }
+.run { max-width: 1100px; margin: 0 auto; padding: 24px 16px 64px; }
+h1 { font-size: 1.5rem; margin: 0 0 8px; overflow-wrap: anywhere; }
+h2 { font-size: 1.2rem; margin: 0 0 12px; }
+h3 { font-size: 1rem; margin: 20px 0 8px; }
+.kicker { color: var(--muted); margin: 0; font-size: .85rem; text-transform: uppercase; letter-spacing: .05em; }
+.section { border: 1px solid var(--border); border-radius: 8px; padding: 16px; margin: 20px 0; background: var(--surface); }
+.section.absent { background: var(--absent-bg); border-style: dashed; }
+.absent-note { color: var(--muted); }
+.note { color: var(--muted); font-size: .9rem; }
+.badge { display: inline-block; border: 2px solid var(--neutral); border-radius: 6px; padding: 4px 10px; font-size: 1.05rem; }
+.verdict-ok .badge { border-color: var(--win); }
+.verdict-rejected_too_few_trades .badge, .verdict-rejected_negative_expectancy .badge { border-color: var(--loss); border-style: dashed; }
+code { font: .88em ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
+code.hash { overflow-wrap: anywhere; word-break: break-all; }
+table { border-collapse: collapse; width: 100%; }
+caption { text-align: left; font-weight: 600; padding-bottom: 4px; }
+th, td { text-align: left; padding: 4px 8px; border-bottom: 1px solid var(--border); vertical-align: top; }
+thead th { border-bottom: 2px solid var(--border); }
+.num { text-align: right; font-variant-numeric: tabular-nums; white-space: nowrap; }
+td.neg { color: var(--loss); }
+td.pos { color: var(--win); }
+tr.sub th { padding-left: 24px; font-weight: 400; color: var(--muted); }
+.kv th { font-weight: 400; }
+.cols { display: grid; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); gap: 16px; align-items: start; }
+.scroll { overflow-x: auto; }
+table.data { font-size: .85rem; }
+table.data td, table.data th { white-space: nowrap; }
+figure { margin: 12px 0; }
+figcaption { color: var(--muted); font-size: .85rem; }
+svg.chart { width: 100%; height: auto; display: block; }
+svg .grid { stroke: var(--border); stroke-width: 1; }
+svg .axis { stroke: var(--muted); stroke-width: 1; }
+svg .zero { stroke: var(--muted); stroke-width: 1; stroke-dasharray: 4 3; }
+svg .tick { fill: var(--muted); font: 11px system-ui, sans-serif; }
+svg .line { fill: none; stroke-width: 1.8; stroke-linejoin: round; }
+svg .line.equity { stroke: var(--win); }
+svg .line.dd { stroke: var(--loss); stroke-width: 1.2; }
+svg .area.dd { fill: var(--loss); fill-opacity: .25; stroke: none; }
+svg .bar.win { fill: var(--win); }
+svg .bar.loss { fill: var(--loss); fill-opacity: .55; stroke: var(--loss); }
+svg .pt.win { fill: var(--win); fill-opacity: .8; }
+svg .pt.loss { fill: var(--loss); fill-opacity: .8; }
+@media print { body { background: #fff; color: #000; } .section { break-inside: avoid; } }
+</style>
+</head>
+<body>
+{% include 'run/fiche.html.twig' %}
+</body>
+</html>

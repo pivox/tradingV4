@@ -1,0 +1,24 @@
+{# Fiche de run (docs/05-ihm.md §4) : sections dans l'ordre, réutilisable telle quelle par le jalon 2a. #}
+<article class="run">
+  <header class="run-header">
+    <p class="kicker">tradingV4 · rapport de run</p>
+    <h1>Run <code class="hash">{{ manifest.runId }}</code></h1>
+    <p>
+      Stratégie <strong>{{ manifest.config.strategyId }}</strong> version {{ manifest.config.strategyVersion }}
+      · {% if manifest.data.source == 'dataset' %}dataset <strong>{{ manifest.data.dataset }}</strong>{% else %}fixture <strong>{{ manifest.data.symbol }}</strong>{% endif %}
+      ({{ manifest.data.exchange }}, {{ manifest.data.symbol }}, {{ manifest.data.tf }})
+    </p>
+    <p>Fenêtre jouée : {{ windowStart }} → {{ windowEnd }} (fin exclue, après warmup)</p>
+  </header>
+
+  {% include 'run/sections/_verdict.html.twig' %}
+  {% include 'run/sections/_resume.html.twig' %}
+  {% include 'run/sections/_lineage.html.twig' %}
+  {% include 'run/sections/_portes.html.twig' %}
+  {% include 'run/sections/_equity.html.twig' %}
+  {% include 'run/sections/_plis.html.twig' %}
+  {% include 'run/sections/_distribution.html.twig' %}
+  {% include 'run/sections/_pourquoi_pas_de_trade.html.twig' %}
+  {% include 'run/sections/_trades.html.twig' %}
+  {% include 'run/sections/_annexe.html.twig' %}
+</article>

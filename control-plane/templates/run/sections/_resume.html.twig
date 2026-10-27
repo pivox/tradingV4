@@ -1,0 +1,34 @@
+<section id="resume" class="section" aria-labelledby="resume-titre">
+  <h2 id="resume-titre">Résumé</h2>
+  <div class="cols">
+    <table class="kv">
+      <caption>Résultat</caption>
+      <tr><th scope="row">PnL net</th><td class="num {{ metrics.pnlNet < 0 ? 'neg' : 'pos' }}">{{ metrics.pnlNet|money }}</td></tr>
+      <tr><th scope="row">PnL réalisé</th><td class="num">{{ metrics.pnlRealized|money }}</td></tr>
+      <tr><th scope="row">PnL marked</th><td class="num">{{ metrics.pnlMarked|money }}</td></tr>
+      <tr><th scope="row">Rendement total</th><td class="num">{{ metrics.returnTotal|pct }}</td></tr>
+      <tr><th scope="row">Frais totaux</th><td class="num">{{ metrics.feesTotal|money }}</td></tr>
+      <tr><th scope="row">Slippage total</th><td class="num">{{ metrics.slippageTotal|money }}</td></tr>
+      <tr><th scope="row">Clôture forcée en fin de fenêtre</th><td class="num">{{ metrics.forcedClose ? 'oui' : 'non' }}</td></tr>
+    </table>
+    <table class="kv">
+      <caption>Trades</caption>
+      <tr><th scope="row">Trades</th><td class="num">{{ metrics.nTrades|int }}</td></tr>
+      <tr><th scope="row">Espérance nette par trade</th><td class="num">{{ metrics.expectancyNet|money }}</td></tr>
+      <tr><th scope="row">Espérance en R ({{ metrics.tradesWithR|int }} trades avec R)</th><td class="num">{{ metrics.expectancyR|num(2) }}</td></tr>
+      <tr><th scope="row">Profit factor</th><td class="num">{{ metrics.profitFactor|num(2) }}</td></tr>
+      <tr><th scope="row">Taux de gain ({{ metrics.nWins|int }} gagnants, {{ metrics.nLosses|int }} perdants)</th><td class="num">{{ metrics.winRate|pct }}</td></tr>
+      <tr><th scope="row">Durée moyenne en position</th><td class="num">{{ metrics.avgHoldingMs|duration }}</td></tr>
+      <tr><th scope="row">MFE moyen</th><td class="num">{{ metrics.mfeMean|money }}</td></tr>
+      <tr><th scope="row">MAE moyen</th><td class="num">{{ metrics.maeMean|money }}</td></tr>
+    </table>
+    <table class="kv">
+      <caption>Risque</caption>
+      <tr><th scope="row">Drawdown max (1m)</th><td class="num">{{ metrics.drawdownM1.pct|pct }} · {{ metrics.drawdownM1.quote|money }}</td></tr>
+      <tr><th scope="row">Drawdown max (1h)</th><td class="num">{{ metrics.drawdownH1.pct|pct }} · {{ metrics.drawdownH1.quote|money }}</td></tr>
+      <tr><th scope="row">Exposition</th><td class="num">{{ metrics.exposure.fraction|pct }} ({{ metrics.exposure.barsInPosition|int }} sur {{ metrics.exposure.barsInWindow|int }} bougies 1m)</td></tr>
+      <tr><th scope="row">Equity finale</th><td class="num">{{ metrics.equityFinal|money }}</td></tr>
+    </table>
+  </div>
+  <p class="note">Montants en monnaie de cotation des données ({{ manifest.data.symbol }}). Drawdowns : fraction du pic, puis montant.</p>
+</section>

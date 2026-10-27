@@ -1,0 +1,15 @@
+#!/usr/bin/env php
+<?php
+
+declare(strict_types=1);
+
+use App\Kernel;
+use Symfony\Bundle\FrameworkBundle\Console\Application;
+use Symfony\Component\Console\Input\ArgvInput;
+
+require dirname(__DIR__) . '/vendor/autoload.php';
+
+$env = $_SERVER['APP_ENV'] ?? 'prod';
+$debug = filter_var($_SERVER['APP_DEBUG'] ?? '0', FILTER_VALIDATE_BOOL);
+$kernel = new Kernel(is_string($env) ? $env : 'prod', $debug);
+exit((new Application($kernel))->run(new ArgvInput()));

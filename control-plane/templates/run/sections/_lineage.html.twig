@@ -1,0 +1,26 @@
+<section id="lineage" class="section" aria-labelledby="lineage-titre">
+  <h2 id="lineage-titre">Lineage</h2>
+  <p class="note">Hashes affichés tels que tv4 les a écrits ; le control plane n'en recalcule aucun.</p>
+  <table class="kv wide">
+    <tr><th scope="row"><code>config_hash</code></th><td><code class="hash">{{ manifest.configHash }}</code></td></tr>
+    <tr><th scope="row"><code>dataset_hash</code> ({{ manifest.hashFormat }})</th><td><code class="hash">{{ manifest.datasetHash }}</code></td></tr>
+    <tr><th scope="row"><code>result_hash</code></th><td><code class="hash">{{ manifest.resultHash }}</code></td></tr>
+    <tr><th scope="row"><code>run_id</code></th><td><code class="hash">{{ manifest.runId }}</code></td></tr>
+    <tr><th scope="row">Version de la stratégie</th><td>{{ manifest.config.strategyId }} {{ manifest.config.strategyVersion }}</td></tr>
+    <tr><th scope="row">Moteur : version</th><td>{{ manifest.engine.tv4Version }}</td></tr>
+    <tr><th scope="row">Moteur : commit</th><td><code class="hash">{{ manifest.engine.gitSha }}</code></td></tr>
+    <tr><th scope="row">Moteur : rustc</th><td>{{ manifest.engine.rustc }} (<code class="hash">{{ manifest.engine.rustcCommit }}</code>)</td></tr>
+    <tr><th scope="row">Moteur : cible</th><td>{{ manifest.engine.target }}, cpu {{ manifest.engine.targetCpu }}, profil {{ manifest.engine.profile }}</td></tr>
+    <tr><th scope="row">Moteur : <code>binary_hash</code></th><td><code class="hash">{{ manifest.engine.binaryHash }}</code></td></tr>
+    <tr>
+      <th scope="row">Données</th>
+      <td>
+        {{ metrics.dataBars|int }} bougies · {{ metrics.minutesMissing|int }} minutes absentes ·
+        warmup {{ manifest.config.warmupBars|int }} bougies ·
+        {{ metrics.dataSyntheticBars|int }} synthétiques · trous : <code>{{ manifest.data.gapsPolicy }}</code>
+        {% if manifest.data.fixtureBlake3 is not null %}<br>Fixture <code>blake3</code> : <code class="hash">{{ manifest.data.fixtureBlake3 }}</code>{% endif %}
+      </td>
+    </tr>
+  </table>
+  <p class="absent-note"><strong>Absent au jalon 1.</strong> <code>version_hash</code> : le jalon 1 identifie la version du code par la version de la stratégie. Reproductibilité (« rejoué le …, identique à l'octet ») et bouton « Rejouer » : aucun <code>tv4 verify</code> n'est enregistré dans le run, jalon 2.</p>
+</section>

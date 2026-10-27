@@ -275,7 +275,7 @@ fn preuve_s5_zip_dataset_backtest_reproduit_s3() {
     // Les valeurs de l'oracle S6 sont dans `preuve_s5_valeurs_figees` ; la preuve
     // d'égalité entre chemins de données reste active ci-dessous.
     assert!(metrics["n_trades"].as_u64().unwrap() > 0);
-    assert_eq!(metrics["data"]["dataset_hash"], DATASET_HASH_SKIP);
+    assert_eq!(metrics["dataset_hash"], DATASET_HASH_SKIP);
     let direct = tmp.path().join("run_fixture_1m");
     let run = tv4(&[
         "backtest".to_string(),
@@ -407,7 +407,8 @@ fn preuve_s5_valeurs_figees() {
     assert_eq!(m1["cash_final"].as_f64(), Some(296.8010689749412));
     assert_eq!(
         m1["config_hash"],
-        "6ea489939050b331f9a2b716a34e52f10ef8dd4a846f9578da4151d6a2e8aa49"
+        // S8 : `"min_trades":30` entre dans la configuration hachée (S6 : `6ea48993…`).
+        "00fbee51dfb4bad5be96083449df30220e155a5d14cf1f29944fa58e3e046cc5"
     );
     let m15 = lancer("config/strategies/sma_cross.toml", "run15m");
     assert_eq!(m15["n_trades"], 2);
@@ -415,7 +416,8 @@ fn preuve_s5_valeurs_figees() {
     assert_eq!(m15["cash_final"].as_f64(), Some(295.4821433837915));
     assert_eq!(
         m15["config_hash"],
-        "bec4b9066d08b9285645e941819551fcf11cc5b00c4c75f3c2f7e9fb20bb7d0a"
+        // S8 : `"min_trades":30` entre dans la configuration hachée (S6 : `bec4b906…`).
+        "be17a04653d1d815ec618657732ea7f4a0da3e0d0ce2f7f272bea11118a1a2d1"
     );
 }
 
