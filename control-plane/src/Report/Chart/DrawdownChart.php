@@ -6,7 +6,10 @@ namespace App\Report\Chart;
 
 use App\Report\Format;
 
-/** Drawdown sous l'equity : aire entre la courbe (≤ 0) et la ligne zéro, un axe pour lui seul. */
+/**
+ * Drawdown sous l'equity : aire entre la courbe (≤ 0) et la ligne zéro, un axe pour lui seul.
+ * Le haut du domaine ne dépasse jamais 0 ; une série toute à 0 prend le domaine [−1 %, 0].
+ */
 final class DrawdownChart
 {
     public function __construct(
@@ -27,6 +30,8 @@ final class DrawdownChart
             fn (float $v): string => $this->format->percent($v),
             0.0,
             $plot ?? new Plot(height: 140.0),
+            0.0,
+            0.01,
         );
     }
 }

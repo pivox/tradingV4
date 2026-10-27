@@ -1,0 +1,10 @@
+# Paramètres du second golden de run (tests/golden_run.rs) : sma_cross 1m 5/20 sur la fixture
+# fixtures/kraken_xbtusd_1m.csv, avec les frais OKX. Ils produisent 49 trades (au-dessus du seuil de 30
+# de `min_trades`), donc un verdict autre que `rejected_too_few_trades`, et remplissent
+# `pnl_without_best` (n = 3, 5, 10) et `histogram_r`. Ce n'est pas une hypothèse de recherche :
+# aucune fiche H-NNN, aucun run sur DEV (docs/04-protocole-recherche.md §4.3). Modifier ce fichier
+# change le golden : le régénérer avec TV4_GOLDEN_UPDATE=1 cargo test --test golden_run.
+tf = "1m"
+fast = 5
+slow = 20
+stop_atr_mult = 2.0

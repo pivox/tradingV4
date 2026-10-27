@@ -19,7 +19,8 @@ use Symfony\Component\Console\Style\SymfonyStyle;
 
 /**
  * `tv4:report <run_dir> [--output <fichier.html>]` : rend le rapport HTML statique d'un run produit
- * par `tv4`. Codes : 0 rendu écrit, 1 run invalide ou écriture impossible, 2 usage (Symfony).
+ * par `tv4`. Codes : 0 rendu écrit, 1 run invalide ou écriture impossible, 2 erreur d'usage (argument
+ * manquant, option ou commande inconnue), code posé par `App\Console\Tv4Application`.
  */
 #[AsCommand(name: 'tv4:report', description: "Rend le rapport HTML statique d'un run de tv4")]
 final class Tv4ReportCommand extends Command

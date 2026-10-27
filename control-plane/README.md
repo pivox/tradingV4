@@ -20,12 +20,14 @@ Prérequis : PHP 8.3 et Composer 2. Symfony **7.4 LTS** (la 7.3 n'a plus de vers
 ```sh
 cd control-plane
 composer install --no-interaction
-php bin/console tv4:report <run_dir> [--output <fichier.html>]
+php bin/console tv4:report <run_dir> [--output <fichier.html>] [--env <env>] [--no-debug]
 ```
 
 - `<run_dir>` contient les quatre fichiers écrits par `tv4 backtest` : `manifest.json` (`tv4-manifest-s8`), `metrics.json` (`tv4-metrics-s8`), `trades.csv` (36 colonnes) et `equity.csv`. Un fichier absent, un JSON invalide, un schéma inconnu, une clé manquante, un en-tête CSV inattendu ou un nombre mal formé arrêtent le rendu avec le nom du fichier, le chemin JSON ou la ligne CSV en cause.
 - `--output` : défaut `<run_dir>/report.html`, écriture atomique.
-- Codes : 0 rendu écrit, 1 run invalide ou écriture impossible, 2 usage (Symfony).
+- Codes de sortie : 0 rendu écrit ; 1 run invalide ou écriture impossible ; 2 erreur d'usage (argument manquant, option ou commande inconnue), posé par `App\Console\Tv4Application`, que Symfony sortirait sinon en 1.
+- Environnement et debug, lus par `bin/console` comme avant Symfony Runtime (`App\Console\KernelFactory`) : `--env=<env>` ou `-e <env>` (défaut : variable `APP_ENV`, sinon `prod`) ; debug **actif par défaut** (`APP_DEBUG` absent), éteint par `APP_DEBUG=0` ou par `--no-debug`.
+- Cache et fraîcheur : le cache Twig compilé est désactivé (`config/packages/twig.php`) et le debug actif par défaut fait vérifier à Symfony la fraîcheur des ressources du conteneur. Après un `git pull`, le rapport ne reflète donc jamais un template ou une configuration antérieurs. Avec `APP_DEBUG=0` ou `--no-debug`, le conteneur de `var/cache/<env>` n'est plus revérifié : vider `var/cache/` après chaque `git pull` (`rm -rf var/cache`).
 - Le HTML est autonome (CSS en ligne, SVG calculés en PHP, aucun JavaScript, aucune ressource externe) et déterministe : aucune date de génération, aucun chemin absolu, deux rendus du même run sont identiques à l'octet.
 - À `--equity-step 1m`, `equity.csv` approche le million de lignes : `php -d memory_limit=512M bin/console tv4:report …`.
 
@@ -35,7 +37,7 @@ Le control plane ne recalcule ni hash ni métrique : il affiche ce que `tv4` a �
 
 - `src/Run/` : lecture et validation (`RunDirectoryReader`, `Json/JsonObject`, `Csv/*`), DTO immuables dans `Run/Dto/`, `InvalidRunException`.
 - `src/Report/` : mise en forme française (`Format`), graphiques SVG (`Chart/*`), `ReportRenderer`, `ReportWriter`.
-- `src/Command/Tv4ReportCommand.php` : la commande.
+- `src/Command/Tv4ReportCommand.php` : la commande ; `src/Console/` : `Tv4Application` (code de sortie 2 pour l'usage) et `KernelFactory` (environnement et debug).
 - `templates/report/standalone.html.twig` (document complet, CSS) inclut `templates/run/fiche.html.twig` (fiche de run de `docs/05-ihm.md` §4, une section par partial dans `templates/run/sections/`), réutilisable telle quelle par la fiche du jalon 2a.
 - `tests/fixtures/run-exemple/` : run d'exemple **fabriqué** (voir son `README.md`) : ce n'est pas une sortie de `tv4`.
 

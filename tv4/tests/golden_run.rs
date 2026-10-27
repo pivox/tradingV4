@@ -1,15 +1,24 @@
-//! Golden file de run (S8, spécification §13) : le backtest de fumée (fixture, `sma_cross.toml`, frais
-//! OKX, défauts de la CLI) doit redonner les trois fichiers versionnés dans `tests/golden_runs/`.
+//! Golden files de run (S8, `docs/specs/s8.md` §13) : deux backtests sur la fixture, avec les frais OKX et
+//! les défauts de la CLI, doivent redonner les trois fichiers versionnés dans `tests/golden_runs/`.
+//!
+//! * `sma_cross_15m_okx/` : le backtest de fumée (`config/strategies/sma_cross.toml`), 2 trades,
+//!   verdict `rejected_too_few_trades` ;
+//! * `sma_cross_1m_court_okx/` : `sma_cross` 1m 5/20 (`params.toml` versionné dans le dossier), 49
+//!   trades, verdict `rejected_negative_expectancy`. Il couvre ce que le premier ne voit pas : un
+//!   verdict autre que `rejected_too_few_trades`, `pnl_without_best` pour n = 3, 5 et 10, un
+//!   `histogram_r` garni. `return_annualized` y reste `null` : la fixture dure moins de 30 jours, et la
+//!   valeur est couverte par la table de référence de `report/approx.rs`.
 //!
 //! Le double run de la CI ne voit que les écarts entre deux exécutions du même binaire ; ce golden voit
 //! la dérive entre commits (docs/03-architecture.md §7.4).
 //!
 //! * `trades.csv` et `equity.csv` : égalité à l'octet.
 //! * `metrics.json` : la chaîne canonique privée du bloc `approx` est égale à l'octet ; chaque valeur
-//!   de `approx` (seule à passer par la libm) est à 1 ULP au plus. La relecture JSON n'est pas utilisée
-//!   pour les flottants (sans `float_roundtrip`, `serde_json` peut les relire à un ULP).
-//! * la projection S6 de `trades.csv` redonne le BLAKE3 de l'oracle, pour que le golden ne dérive pas en
-//!   silence sur les colonnes S6.
+//!   de `approx` (seule à passer par la libm) est à `approx::ULP_TOLERANCE` ULP au plus, et
+//!   `ulp_tolerance` y est égale à cette constante. La relecture JSON n'est pas utilisée pour les
+//!   flottants (sans `float_roundtrip`, `serde_json` peut les relire à un ULP).
+//! * pour le run de fumée, la projection S6 de `trades.csv` redonne le BLAKE3 de l'oracle, pour que le
+//!   golden ne dérive pas en silence sur les colonnes S6.
 //!
 //! Mise à jour : `TV4_GOLDEN_UPDATE=1 cargo test --test golden_run` réécrit les fichiers (refusée si la
 //! variable `CI` est définie). Relire le diff avant de commiter, comme pour les `.snap`.
@@ -19,6 +28,7 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 
 use tv4::model::hash;
+use tv4::report::approx::ULP_TOLERANCE;
 use tv4::report::writers::project_s6;
 
 /// BLAKE3 de la projection S6 de `trades.csv` pour `sma_cross.toml` : valeur de l'oracle S6.
@@ -26,8 +36,10 @@ const ORACLE_S6_TRADES_BLAKE3: &str =
     "e26a9b934782945495ab36aa5e38b755573027c60312d0a0526d4ff6fe9e9cc4";
 /// Fichiers déterministes d'un run (le manifeste ne l'est pas).
 const GOLDEN_FILES: [&str; 3] = ["metrics.json", "trades.csv", "equity.csv"];
-/// Écart maximal admis sur une valeur de `approx`, en ULP (`approx.ulp_tolerance`).
-const ULP_TOLERANCE: u64 = 1;
+/// Dossier du golden de fumée.
+const SMOKE_DIR: &str = "sma_cross_15m_okx";
+/// Dossier du second golden (≥ 30 trades) ; il contient aussi son `params.toml`.
+const SHORT_DIR: &str = "sma_cross_1m_court_okx";
 
 fn repo(relative: &str) -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
@@ -35,21 +47,21 @@ fn repo(relative: &str) -> PathBuf {
         .join(relative)
 }
 
-fn golden_dir() -> PathBuf {
+fn golden_dir(name: &str) -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .join("tests")
         .join("golden_runs")
-        .join("sma_cross_15m_okx")
+        .join(name)
 }
 
-/// Lance le backtest de fumée dans `out`.
-fn smoke_run(out: &Path) {
+/// Lance le backtest de la fixture avec le fichier de paramètres `params`, dans `out`.
+fn golden_run(params: &Path, out: &Path) {
     let sortie = Command::new(env!("CARGO_BIN_EXE_tv4"))
         .arg("backtest")
         .arg("--fixture")
         .arg(repo("fixtures/kraken_xbtusd_1m.csv"))
         .args(["--strategy", "sma_cross", "--params"])
-        .arg(repo("config/strategies/sma_cross.toml"))
+        .arg(params)
         .args(["--fees", "okx", "--fees-file"])
         .arg(repo("config/fees.toml"))
         .arg("--instruments-file")
@@ -124,12 +136,13 @@ fn ulp_distance(a: f64, b: f64) -> u64 {
     a.to_bits().abs_diff(b.to_bits())
 }
 
-#[test]
-fn le_run_de_fumee_redonne_le_golden() {
+/// Relance le run avec `params`, puis le compare au golden `name` (ou le réécrit avec
+/// `TV4_GOLDEN_UPDATE`). Retourne le dossier du golden.
+fn compare_golden(name: &str, params: &Path) -> PathBuf {
     let dossier = tempfile::tempdir().unwrap();
     let out = dossier.path().join("run");
-    smoke_run(&out);
-    let golden = golden_dir();
+    golden_run(params, &out);
+    let golden = golden_dir(name);
 
     if std::env::var_os("TV4_GOLDEN_UPDATE").is_some() {
         assert!(
@@ -140,7 +153,7 @@ fn le_run_de_fumee_redonne_le_golden() {
         for file in GOLDEN_FILES {
             fs::copy(out.join(file), golden.join(file)).unwrap();
         }
-        return;
+        return golden;
     }
 
     for file in ["trades.csv", "equity.csv"] {
@@ -174,10 +187,21 @@ fn le_run_de_fumee_redonne_le_golden() {
         "clés de approx différentes"
     );
     for ((key, golden_value), (_, run_value)) in golden_values.iter().zip(&run_values) {
+        if key == "ulp_tolerance" {
+            // La tolérance annoncée est celle du code, pas une valeur à comparer en ULP.
+            let annoncee = Some(f64::from(ULP_TOLERANCE));
+            assert_eq!(
+                (*golden_value, *run_value),
+                (annoncee, annoncee),
+                "approx.ulp_tolerance diffère de approx::ULP_TOLERANCE ; si le changement est voulu : \
+                 TV4_GOLDEN_UPDATE=1 cargo test --test golden_run, puis relire le diff"
+            );
+            continue;
+        }
         match (golden_value, run_value) {
             (None, None) => {}
             (Some(g), Some(r)) => assert!(
-                ulp_distance(*g, *r) <= ULP_TOLERANCE,
+                ulp_distance(*g, *r) <= u64::from(ULP_TOLERANCE),
                 "approx.{key} : {g} contre {r}, plus de {ULP_TOLERANCE} ULP d'écart"
             ),
             _ => panic!(
@@ -186,20 +210,84 @@ fn le_run_de_fumee_redonne_le_golden() {
         }
     }
 
+    golden
+}
+
+#[test]
+fn le_run_de_fumee_redonne_le_golden() {
+    let golden = compare_golden(SMOKE_DIR, &repo("config/strategies/sma_cross.toml"));
+    if std::env::var_os("TV4_GOLDEN_UPDATE").is_some() {
+        return;
+    }
     // Les colonnes S6 ne dérivent pas en silence : projection = valeur de l'oracle.
     let projete = project_s6(&fs::read(golden.join("trades.csv")).unwrap()).unwrap();
     assert_eq!(hash::blake3_hex(&projete), ORACLE_S6_TRADES_BLAKE3);
 }
 
 #[test]
-fn le_golden_est_complet_et_sans_manifeste() {
-    let golden = golden_dir();
-    let mut noms: Vec<String> = fs::read_dir(&golden)
+fn le_run_court_a_trente_trades_redonne_le_golden() {
+    compare_golden(SHORT_DIR, &golden_dir(SHORT_DIR).join("params.toml"));
+}
+
+/// Noms des fichiers d'un dossier golden, triés.
+fn noms_du_dossier(golden: &Path) -> Vec<String> {
+    let mut noms: Vec<String> = fs::read_dir(golden)
         .expect("dossier golden absent")
         .map(|entree| entree.unwrap().file_name().to_string_lossy().into_owned())
         .collect();
     noms.sort();
-    assert_eq!(noms, ["equity.csv", "metrics.json", "trades.csv"]);
+    noms
+}
+
+#[test]
+fn les_goldens_sont_complets_et_sans_manifeste() {
+    assert_eq!(
+        noms_du_dossier(&golden_dir(SMOKE_DIR)),
+        ["equity.csv", "metrics.json", "trades.csv"]
+    );
+    assert_eq!(
+        noms_du_dossier(&golden_dir(SHORT_DIR)),
+        ["equity.csv", "metrics.json", "params.toml", "trades.csv"]
+    );
+}
+
+/// Le second golden doit couvrir ce que le premier ne voit pas ; si une mise à jour le vide (moins de
+/// 30 trades, verdict `rejected_too_few_trades`, champs `null`), ce test échoue.
+#[test]
+fn le_second_golden_couvre_les_champs_du_verdict_et_de_la_distribution() {
+    let texte = fs::read_to_string(golden_dir(SHORT_DIR).join("metrics.json")).unwrap();
+    let m: serde_json::Value = serde_json::from_str(&texte).unwrap();
+    assert!(m["n_trades"].as_u64().unwrap() >= 30, "moins de 30 trades");
+    assert_ne!(m["verdict"], "rejected_too_few_trades");
+    assert_eq!(m["verdict"], "rejected_negative_expectancy");
+    let distribution = &m["distribution"];
+    let sans_meilleurs = distribution["pnl_without_best"].as_array().unwrap();
+    let ns: Vec<u64> = sans_meilleurs
+        .iter()
+        .map(|e| e["n"].as_u64().unwrap())
+        .collect();
+    assert_eq!(ns, [1, 3, 5, 10]);
+    for entree in sans_meilleurs {
+        assert!(!entree["pnl_net"].is_null(), "{entree}");
+    }
+    let histogramme = &distribution["histogram_r"];
+    let comptes: u64 = histogramme["counts"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|c| c.as_u64().unwrap())
+        .sum();
+    let (sous, sur) = (
+        histogramme["underflow"].as_u64().unwrap(),
+        histogramme["overflow"].as_u64().unwrap(),
+    );
+    assert_eq!(comptes + sous + sur, m["trades_with_r"].as_u64().unwrap());
+    assert!(comptes >= 20, "histogramme peu garni : {comptes}");
+    assert_eq!(m["approx"]["ulp_tolerance"], ULP_TOLERANCE);
+    assert!(
+        m["approx"]["return_annualized"].is_null(),
+        "la fixture dure moins de 30 jours"
+    );
 }
 
 #[test]

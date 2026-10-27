@@ -30,6 +30,10 @@ const FIXTURE_SYMBOL: &str = "BTC-USD";
 const FIXTURE_EXCHANGE: ExchangeId = ExchangeId::Kraken;
 /// Durée d'une 1m en millisecondes.
 const MINUTE_MS: Ts = 60_000;
+/// Manifeste d'un run : sa présence marque un run complet.
+const MANIFEST_FILE: &str = "manifest.json";
+/// Rapport HTML rendu par `tv4:report` à côté d'un run.
+const REPORT_FILE: &str = "report.html";
 /// Taille du tampon de lecture du binaire pour son hash.
 const BINARY_HASH_BUFFER: usize = 64 * 1024;
 
@@ -250,6 +254,13 @@ pub(super) fn run(args: &BacktestArgs) -> Result<(), CliError> {
         .clone()
         .unwrap_or_else(|| args.inputs.root.join("runs").join(&run_id));
 
+    // Un dossier de sortie existant (même `run_id` sous un autre commit) ne doit pas garder l'ancien
+    // manifeste, qui marque un run complet, pendant que les autres fichiers sont réécrits : une
+    // interruption laisserait des fichiers du nouveau run sous le manifeste de l'ancien. Le manifeste
+    // est réécrit en dernier ; le rapport HTML d'un rendu précédent est périmé lui aussi.
+    for stale in [MANIFEST_FILE, REPORT_FILE] {
+        remove_stale(&out, stale)?;
+    }
     report::write_bytes_atomic(&out, "metrics.json", &metrics_bytes)?;
     report::write_bytes_atomic(&out, report::writers::TRADES_FILE, &trades_bytes)?;
     report::write_bytes_atomic(&out, report::equity::EQUITY_FILE, &equity_bytes)?;
@@ -275,7 +286,7 @@ pub(super) fn run(args: &BacktestArgs) -> Result<(), CliError> {
         },
     )?;
     debug_assert_eq!(manifest.run_id, run_id);
-    report::write_json_atomic(&out, "manifest.json", &manifest)?;
+    report::write_json_atomic(&out, MANIFEST_FILE, &manifest)?;
     println!(
         "run {run_id} écrit dans {} : {} trades, PnL net {:.2}, verdict {}",
         out.display(),
@@ -284,6 +295,19 @@ pub(super) fn run(args: &BacktestArgs) -> Result<(), CliError> {
         metrics.verdict
     );
     Ok(())
+}
+
+/// Supprime `dir/name` s'il existe ; une absence (fichier ou dossier) n'est pas une erreur.
+fn remove_stale(dir: &Path, name: &str) -> Result<(), report::ReportError> {
+    let path = dir.join(name);
+    match fs::remove_file(&path) {
+        Ok(()) => Ok(()),
+        Err(source) if source.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(source) => Err(report::ReportError::Io {
+            path: path.display().to_string(),
+            source,
+        }),
+    }
 }
 
 /// Millisecondes écoulées depuis `since`, saturées.

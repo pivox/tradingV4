@@ -10,9 +10,14 @@ Depuis la racine du dépôt, sur la fixture de 10 000 bougies (le dataset `btcus
 
 ```sh
 # Run : metrics.json, trades.csv, equity.csv puis manifest.json (écrit en dernier) dans --out
-# (défaut : <root>/runs/<run_id>)
+# (défaut : <root>/runs/<run_id>). Dans un dossier existant, l'ancien manifest.json et l'ancien
+# report.html sont supprimés avant l'écriture : un dossier sans manifeste n'est pas un run complet
 cargo run --release --bin tv4 -- backtest --fixture fixtures/kraken_xbtusd_1m.csv --strategy sma_cross \
   --params config/strategies/sma_cross.toml --fees okx --out runs/exemple-a
+
+# Second run identique, dans un autre dossier, pour la comparaison qui suit
+cargo run --release --bin tv4 -- backtest --fixture fixtures/kraken_xbtusd_1m.csv --strategy sma_cross \
+  --params config/strategies/sma_cross.toml --fees okx --out runs/exemple-b
 
 # Comparaison à l'octet de deux runs : code 0 identiques, 3 différents, 1 erreur ou run incohérent
 cargo run --release --bin tv4 -- verify runs/exemple-a runs/exemple-b
@@ -25,9 +30,11 @@ cargo run --release --bin tv4 -- bench --fixture fixtures/kraken_xbtusd_1m.csv -
 (cd control-plane && composer install && php bin/console tv4:report ../runs/exemple-a --output ../runs/exemple-a/report.html)
 ```
 
+Le rapport s'écrit par défaut dans `<run_dir>/report.html`. Codes de sortie de `tv4:report` : 0 rendu écrit, 1 run invalide ou écriture impossible, 2 erreur d'usage (argument manquant, option ou commande inconnue). L'environnement se règle par `--env`/`-e` (sinon `APP_ENV`, sinon `prod`) ; le debug est actif par défaut, `APP_DEBUG=0` ou `--no-debug` le coupe, et dans ce cas il faut vider `var/cache/` du control plane après un `git pull` (le cache Twig compilé est désactivé, mais pas le conteneur Symfony). Détail : `control-plane/README.md`.
+
 `tv4 verify` ne lit du manifeste que les hashes annoncés (cohérence interne), `config_hash`, `dataset_hash` et `engine` à titre d'information ; `timings`, `started_at` et `run_id` sont ignorés.
 
-Contrôles de reproductibilité en CI (`.github/workflows/ci.yml`) : le backtest de fumée tourne deux fois en deux process puis `tv4 verify` ; le golden de run `tv4/tests/golden_runs/sma_cross_15m_okx/` détecte la dérive entre commits (mise à jour : `TV4_GOLDEN_UPDATE=1 cargo test --test golden_run`, refusée si `CI` est définie, puis relecture du diff) ; le bench criterion `engine_2y_1m` (`cargo bench --locked --bench engine -- engine_2y_1m`) est archivé et sa borne basse est limitée à 50 ns par 1m par `.github/scripts/criterion-gate.sh`.
+Contrôles de reproductibilité en CI (`.github/workflows/ci.yml`) : le backtest de fumée tourne deux fois en deux process puis `tv4 verify` ; les deux goldens de run `tv4/tests/golden_runs/sma_cross_15m_okx/` (fumée, 2 trades) et `tv4/tests/golden_runs/sma_cross_1m_court_okx/` (49 trades, verdict, distribution) détectent la dérive entre commits, le bloc `approx` à `approx::ULP_TOLERANCE` ULP (20) et le reste à l'octet (mise à jour des deux : `TV4_GOLDEN_UPDATE=1 cargo test --test golden_run`, refusée si `CI` est définie, puis relecture du diff) ; le bench criterion `engine_2y_1m` (`cargo bench --locked --bench engine -- engine_2y_1m`) est archivé et sa borne basse est limitée à 50 ns par 1m par `.github/scripts/criterion-gate.sh`. La spécification de S8 est `docs/specs/s8.md` ; les points qu'elle laisse à la validation du propriétaire sont en §17.
 
 ## Exploration DuckDB
 

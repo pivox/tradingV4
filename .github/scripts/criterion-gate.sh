@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Porte criterion (docs/03-architecture.md §8, spécification S8 §11.2).
+# Porte criterion (docs/03-architecture.md §8, docs/specs/s8.md §11.2).
 #
 # Usage : criterion-gate.sh <estimates.json> <éléments> <seuil_ns>
 #

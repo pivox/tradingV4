@@ -1,5 +1,5 @@
 //! `tv4 verify` : comparaison de deux dossiers de run, à l'octet (docs/03-architecture.md §7.4,
-//! spécification S8 §9).
+//! docs/specs/s8.md §9).
 //!
 //! Le module lit les fichiers d'un run (`manifest.json`, `metrics.json`, `trades.csv`, `equity.csv`) et
 //! rend un compte rendu en lignes de texte ; il ne contient aucune logique métier. La comparaison

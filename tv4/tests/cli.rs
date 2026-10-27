@@ -353,7 +353,10 @@ fn metrics_s8_schema() {
         17
     );
     assert_eq!(m["max_drawdown"].as_object().unwrap().len(), 2);
-    assert_eq!(m["approx"]["ulp_tolerance"], 1);
+    assert_eq!(
+        m["approx"]["ulp_tolerance"],
+        tv4::report::approx::ULP_TOLERANCE
+    );
     assert!(
         m["approx"]["return_annualized"].is_null(),
         "fixture de 8 jours"
@@ -521,6 +524,53 @@ fn backtest_fichier_absent() {
     let sortie = tv4_owned(&args);
     assert_eq!(sortie.status.code(), Some(1));
     assert!(String::from_utf8_lossy(&sortie.stderr).contains("/n/existe/pas.csv"));
+}
+
+/// Dossier de sortie préexistant (même `run_id` sous un autre commit) : l'ancien manifeste, qui marque
+/// un run complet, ne doit pas survivre à une réécriture interrompue.
+#[test]
+fn backtest_dans_un_dossier_existant_ne_garde_pas_l_ancien_manifeste() {
+    let dossier = tempfile::tempdir().unwrap();
+    let out = dossier.path().join("run");
+    std::fs::create_dir_all(&out).unwrap();
+    std::fs::write(out.join("manifest.json"), b"{\"ancien\":true}\n").unwrap();
+    std::fs::write(out.join("report.html"), b"<html>ancien</html>").unwrap();
+    // Écriture de equity.csv forcée en échec : un dossier porte ce nom.
+    std::fs::create_dir(out.join("equity.csv")).unwrap();
+
+    let sortie = tv4_owned(&backtest_args(PARAMS_1M, &out));
+    assert_eq!(sortie.status.code(), Some(1), "le backtest doit échouer");
+    assert!(String::from_utf8_lossy(&sortie.stderr).contains("equity.csv"));
+    assert!(
+        !out.join("manifest.json").exists(),
+        "l'ancien manifeste ne doit pas subsister à côté de fichiers du nouveau run"
+    );
+    assert!(!out.join("report.html").exists(), "rapport périmé");
+    // metrics.json et trades.csv sont ceux du nouveau run (écrits avant l'échec).
+    assert!(out.join("metrics.json").is_file());
+    assert!(out.join("trades.csv").is_file());
+}
+
+/// Réécriture réussie : l'ancien manifeste et l'ancien rapport sont remplacés, pas conservés.
+#[test]
+fn backtest_dans_un_dossier_existant_reecrit_le_manifeste_et_retire_le_rapport() {
+    let dossier = tempfile::tempdir().unwrap();
+    let out = dossier.path().join("run");
+    std::fs::create_dir_all(&out).unwrap();
+    std::fs::write(out.join("manifest.json"), b"{\"ancien\":true}\n").unwrap();
+    std::fs::write(out.join("report.html"), b"<html>ancien</html>").unwrap();
+
+    let sortie = tv4_owned(&backtest_args(PARAMS_1M, &out));
+    assert_eq!(
+        sortie.status.code(),
+        Some(0),
+        "{}",
+        String::from_utf8_lossy(&sortie.stderr)
+    );
+    assert!(!out.join("report.html").exists(), "rapport périmé");
+    let manifeste = json(&out.join("manifest.json"));
+    assert!(manifeste.get("ancien").is_none());
+    assert_eq!(manifeste["schema"], "tv4-manifest-s8");
 }
 
 // --- tv4 ingest csv, dataset build, backtest --dataset (S4) ---

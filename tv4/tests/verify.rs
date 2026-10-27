@@ -1,4 +1,4 @@
-//! `tv4 verify` (S8, spécification §9) : on lance le vrai binaire sur des runs écrits par `tv4 backtest`.
+//! `tv4 verify` (S8, docs/specs/s8.md §9) : on lance le vrai binaire sur des runs écrits par `tv4 backtest`.
 
 use std::fs;
 use std::path::{Path, PathBuf};

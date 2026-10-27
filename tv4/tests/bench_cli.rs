@@ -1,4 +1,4 @@
-//! `tv4 bench` (S8, spécification §10) : on lance le vrai binaire sur la fixture.
+//! `tv4 bench` (S8, `docs/specs/s8.md` §10) : on lance le vrai binaire sur la fixture.
 
 use std::path::PathBuf;
 use std::process::{Command, Output};

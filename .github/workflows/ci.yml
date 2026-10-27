@@ -99,7 +99,7 @@ jobs:
           path: lcov.info
           if-no-files-found: error
 
-  # Criterion `engine_2y_1m` (docs/03 §8, S8 §11) : la boucle de `sma_cross` 15m doit rester sous 50 ns
+  # Criterion `engine_2y_1m` (docs/03 §8, docs/specs/s8.md §11) : la boucle de `sma_cross` 15m doit rester sous 50 ns
   # par 1m. La porte lit la BORNE BASSE de l'intervalle de la médiane : sur un runner partagé la médiane
   # bouge de quelques dizaines de pour cent, la borne basse ne dépasse le seuil que si même la meilleure
   # estimation est au-dessus (régression grossière : une allocation ou un hachage par bougie). Elle ne
@@ -143,7 +143,7 @@ jobs:
             bench-summary.json
           if-no-files-found: error
 
-  # Control plane PHP (docs/05, S8 §14) : Symfony 7.4 LTS, PHP 8.3 (Symfony 8.x exige PHP 8.4.1).
+  # Control plane PHP (docs/05, docs/specs/s8.md §14) : Symfony 7.4 LTS, PHP 8.3 (Symfony 8.x exige PHP 8.4.1).
   control-plane:
     name: Control plane (PHP)
     runs-on: ubuntu-latest

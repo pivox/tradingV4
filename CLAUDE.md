@@ -40,6 +40,7 @@ Plateforme de trading crypto **spot** sur OKX : moteur de backtest, de paper tra
 - `Cargo.lock` est commité. Une crate de `docs/03-architecture.md` §3.1 pas encore utilisée est déclarée avec `=` dans `[workspace.dependencies]` pour garder la version vérifiée jusqu'à son premier usage.
 - Identifiants en anglais ; commentaires, messages d'erreur et documentation en français. `HashMap`/`HashSet` interdits par clippy (ordre non déterministe) ; `unwrap()` interdit dans la lib.
 - Format du hash des données : `docs/dataset-hash.md` (`dsh-v1`), qui fait foi pour l'implémentation de S4 et pour un recalcul en PHP au jalon 2.
+- Spécification de S8 (rapports `metrics.json`, `trades.csv`, `equity.csv`, `manifest.json`, `tv4 verify`, `tv4 bench`, squelette Symfony `control-plane/`) : `docs/specs/s8.md`, qui fait foi pour le détail de S8 ; ses points « à valider » sont récapitulés au §17.
 
 ## Règles de travail
 

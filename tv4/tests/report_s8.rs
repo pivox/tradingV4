@@ -1,5 +1,5 @@
 //! Rapports de S8 : `metrics.json` (`tv4-metrics-s8`), `trades.csv` (36 colonnes), `equity.csv` et
-//! `manifest.json` (docs/03-architecture.md §7.3, spécification S8 §2 à §6).
+//! `manifest.json` (docs/03-architecture.md §7.3, docs/specs/s8.md §2 à §6).
 //!
 //! Trois familles :
 //!
@@ -178,7 +178,7 @@ fn index_1m(ms: i64) -> i64 {
     (ms - T0) / MINUTE
 }
 
-/// Invariants d'horodatage de `trades.csv` (spécification §3.3).
+/// Invariants d'horodatage de `trades.csv` (docs/specs/s8.md §3.3).
 fn assert_horodatages(trades: &[Trade]) {
     for t in trades {
         assert!(

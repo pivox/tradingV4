@@ -55,6 +55,14 @@ final class ChartTest extends TestCase
         self::assertSame(50.0, $scale->map(0.0));
     }
 
+    public function testConstantDomainAwayFromZeroKeepsRelativePadding(): void
+    {
+        $scale = new Scale(-5.0, -5.0, 0.0, 1.0);
+
+        self::assertSame(-5.05, $scale->domainMin);
+        self::assertSame(-4.95, $scale->domainMax);
+    }
+
     public function testTicksAreRoundAndInsideTheDomain(): void
     {
         $scale = new Scale(297.3, 304.1, 0.0, 1.0);
@@ -122,6 +130,33 @@ final class ChartTest extends TestCase
         // La ligne zéro est en haut : le premier point (0 %) est sur le bord haut de la zone.
         self::assertStringStartsWith(sprintf('M%.2F,%.2F', $geometry->plot->left, $geometry->plot->top), $geometry->path);
         self::assertStringContainsString('%', $geometry->yTicks[0]->label);
+    }
+
+    public function testDrawdownChartOfAnAllZeroSeriesSpansOneHundredthBelowZero(): void
+    {
+        $chart = new DrawdownChart($this->line(), new Format());
+        $geometry = $chart->build([0, 60_000, 120_000], [0.0, 0.0, 0.0]);
+
+        // Le domaine est [-1 %, 0] : jamais d'axe de -100 % à +100 %, et la ligne zéro reste en haut.
+        self::assertStringStartsWith(sprintf('M%.2F,%.2F', $geometry->plot->left, $geometry->plot->top), $geometry->path);
+        $labels = array_map(static fn ($tick): string => $tick->label, $geometry->yTicks);
+        self::assertSame("\u{2212}1,00\u{00A0}%", $labels[0]);
+        self::assertSame("0,00\u{00A0}%", $labels[count($labels) - 1]);
+        // Le tick 0 % est au bord haut de la zone de tracé, le tick -1 % au bord bas.
+        self::assertEqualsWithDelta($geometry->plot->top, $geometry->yTicks[count($geometry->yTicks) - 1]->pos, 1e-9);
+        self::assertEqualsWithDelta($geometry->plot->yBottom(), $geometry->yTicks[0]->pos, 1e-9);
+    }
+
+    public function testDrawdownChartTopNeverExceedsZero(): void
+    {
+        $chart = new DrawdownChart($this->line(), new Format());
+        $geometry = $chart->build([0, 60_000, 120_000], [0.0, -0.05, -0.02]);
+
+        foreach ($geometry->yTicks as $tick) {
+            self::assertStringNotContainsString('+', $tick->label);
+            self::assertGreaterThanOrEqual($geometry->plot->top - 1e-9, $tick->pos);
+            self::assertLessThanOrEqual($geometry->plot->yBottom() + 1e-9, $tick->pos);
+        }
     }
 
     public function testDecimatorKeepsEverythingBelowTheThreshold(): void

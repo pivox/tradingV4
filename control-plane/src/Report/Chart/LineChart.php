@@ -19,9 +19,19 @@ final class LineChart
      * @param callable(float): string $label étiquette des graduations de l'axe vertical
      * @param float|null $baseline si renseigné, l'aire entre la courbe et cette valeur est aussi calculée
      *                              et le domaine vertical l'inclut
+     * @param float|null $ceiling   si renseigné, le haut du domaine vertical ne le dépasse jamais ; une série
+     *                              réduite à ce plafond prend alors le domaine [plafond - emptySpan, plafond]
+     * @param float      $emptySpan épaisseur du domaine d'une série constante au plafond
      */
-    public function build(array $timesMs, array $values, callable $label, ?float $baseline = null, ?Plot $plot = null): LineGeometry
-    {
+    public function build(
+        array $timesMs,
+        array $values,
+        callable $label,
+        ?float $baseline = null,
+        ?Plot $plot = null,
+        ?float $ceiling = null,
+        float $emptySpan = 0.01,
+    ): LineGeometry {
         $plot ??= new Plot();
         $keep = Decimator::indices($values);
         if ([] === $keep) {
@@ -39,6 +49,12 @@ final class LineChart
         if (null !== $baseline) {
             $yMin = min($yMin, $baseline);
             $yMax = max($yMax, $baseline);
+        }
+        if (null !== $ceiling) {
+            $yMax = min($yMax, $ceiling);
+            if ($yMax - $yMin <= 0.0) {
+                $yMin = $yMax - $emptySpan;
+            }
         }
 
         $xScale = new Scale((float) min($xs), (float) max($xs), $plot->left, $plot->xRight());

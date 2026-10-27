@@ -2,7 +2,7 @@
     "approx": {
         "ln_return": -0.009061026391289846,
         "return_annualized": null,
-        "ulp_tolerance": 1
+        "ulp_tolerance": 20
     },
     "avg_holding_ms": 46200000,
     "cash_final": 297.29397030010006,
