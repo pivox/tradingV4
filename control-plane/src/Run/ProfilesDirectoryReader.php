@@ -16,7 +16,7 @@ use App\Run\Json\JsonObject;
  * trois sous-dossiers `baseline/`, `adverse/` et `maker/`, chacun lu comme un run s10 par {@see RunDirectoryReader}.
  *
  * Aucun hash ni aucune étiquette n'est recalculé. Le lecteur recoupe seulement ce que `profiles.json` répète du
- * manifeste et des métriques de chaque run (identifiants, hashes, profil, graine, grille, effectif) : un écart
+ * manifeste et des métriques de chaque run (identifiants, hashes, rôle, profil, capital, graine, grille, effectif) : un écart
  * veut dire que le fichier ne décrit pas ces sous-dossiers.
  */
 final class ProfilesDirectoryReader
@@ -85,6 +85,13 @@ final class ProfilesDirectoryReader
                     implode(', ', self::PROFILE_NAMES),
                     [] === $names ? 'aucun' : implode(', ', $names),
                 ),
+            );
+        }
+        if ($names !== self::PROFILE_NAMES) {
+            throw InvalidRunException::invalidValue(
+                self::FILE,
+                'profiles',
+                sprintf('ordre %s attendu, trouvé : %s', implode(', ', self::PROFILE_NAMES), implode(', ', $names)),
             );
         }
 
@@ -210,12 +217,36 @@ final class ProfilesDirectoryReader
             throw InvalidRunException::invalidValue(self::FILE, $at('n_trades'), 'différent de celui des métriques de ' . $summary->name);
         }
 
+        // Rôle attendu par profil (s10 §12.4) : porte pour baseline et adverse, informatif pour maker, et celui
+        // que le run déclare dans `costs.gates_profile`.
+        $expectedRole = 'maker' === $summary->name ? 'informative' : 'gate';
+        if ($summary->role !== $expectedRole) {
+            throw InvalidRunException::invalidValue(
+                self::FILE,
+                $at('role'),
+                sprintf('le profil %s attend le rôle "%s"', $summary->name, $expectedRole),
+            );
+        }
+        if ($summary->isGate() !== $costs->gatesProfile) {
+            throw InvalidRunException::invalidValue(
+                self::FILE,
+                $at('role'),
+                'différent de costs.gates_profile du run ' . $summary->name,
+            );
+        }
+
         $shared = [
             ['dataset_hash', $j->string('dataset_hash'), $manifest->datasetHash],
+            ['initial_cash', $j->float('initial_cash'), $manifest->config->initialCash],
             ['costs_file_hash', $j->string('costs_file_hash'), $costs->costsFileHash],
             ['fee_grid', $j->string('fee_grid'), $costs->feeGrid],
             ['seed', $j->int('seed'), $costs->seed],
             ['stress_calibrated', $j->bool('stress_calibrated'), $costs->stressCalibrated],
+            [
+                'cost_measures_hash',
+                $j->has('cost_measures_hash') ? $j->nullableString('cost_measures_hash') : null,
+                $costs->costMeasuresHash,
+            ],
         ];
         foreach ($shared as [$path, $found, $expected]) {
             if ($found !== $expected) {

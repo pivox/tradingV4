@@ -128,6 +128,44 @@ final class Tv4ReportProfilesCommandTest extends KernelTestCase
         self::assertStringNotContainsString('Dépend du fill.', $html);
     }
 
+    public function testNegativeWithAPositiveAdverseDoesNotClaimBothAreNonPositive(): void
+    {
+        $run = $this->copy();
+        $run->setJson('profiles.json', ['label'], 'negative');
+        $run->setJson('profiles.json', ['label_fr'], 'négatif');
+        $run->setJson('profiles.json', ['profiles', '1', 'positive'], true);
+
+        $html = $this->renderProfiles($run);
+
+        self::assertStringContainsString('Baseline non positif, adverse positif', $html);
+        self::assertStringNotContainsString('Baseline et adverse non positifs', $html);
+    }
+
+    public function testNegativeWithBothProfilesNonPositiveKeepsItsSentence(): void
+    {
+        $run = $this->copy();
+        $run->setJson('profiles.json', ['label'], 'negative');
+        $run->setJson('profiles.json', ['label_fr'], 'négatif');
+
+        $html = $this->renderProfiles($run);
+
+        self::assertStringContainsString('Baseline et adverse non positifs, sans profil maker positif', $html);
+        self::assertStringNotContainsString('adverse positif :', $html);
+    }
+
+    public function testFillDependentWithoutConvertedEntriesDoesNotPrintADashAsAShare(): void
+    {
+        $run = $this->copy();
+        $run->setJson('profiles.json', ['maker', 'maker_entry_maker_share'], null);
+
+        $html = $this->renderProfiles($run);
+
+        self::assertStringContainsString('class="callout fill-dependent"', $html);
+        self::assertStringContainsString("n'émet que des limits", $html);
+        self::assertStringNotContainsString('avec — des entrées', $html);
+        self::assertStringNotContainsString('des entrées converties remplies en maker (seuil', explode('Ce résultat dépend', $html)[0]);
+    }
+
     public function testTheMakerStatusAndItsShareAreShown(): void
     {
         $run = $this->copy();
@@ -184,9 +222,15 @@ final class Tv4ReportProfilesCommandTest extends KernelTestCase
         self::assertStringContainsString('Arithmétique du coût (04 §3.3)', $html);
         self::assertStringContainsString('TF de décision</th><td><code>15m</code> (hors TF du protocole)', $html);
         self::assertStringContainsString('≤ 0,10 R', $html);
-        self::assertStringContainsString('dont frais', $html);
-        self::assertStringContainsString('dont slippage', $html);
-        self::assertStringContainsString('dont spread', $html);
+        // cost_breakdown est la somme des trades : une ligne de total explicite précède les sous-lignes « dont ».
+        self::assertStringContainsString('Coût aller-retour moyen</th><td class="num">2,19</td>', $html);
+        self::assertMatchesRegularExpression(
+            '#Taux médian</th><td class="num">[^<]*</td></tr>\s*<tr><th scope="row">Coût total des trades</th><td class="num">21,91</td></tr>\s*<tr class="sub"><th scope="row">dont frais</th><td class="num">19,25</td></tr>#u',
+            $html,
+        );
+        self::assertStringContainsString('<tr class="sub"><th scope="row">dont slippage</th><td class="num">2,39</td></tr>', $html);
+        self::assertStringContainsString('<tr class="sub"><th scope="row">dont spread</th><td class="num">0,28</td></tr>', $html);
+        self::assertStringNotContainsString('sélection adverse</th><td class="num">0,28', $html);
         self::assertStringContainsString('Compteurs de coûts', $html);
         self::assertStringContainsString('<th scope="row">Total</th>', $html);
         self::assertStringContainsString('<code>cost_defaults_unmeasured</code>', $html);
@@ -197,6 +241,15 @@ final class Tv4ReportProfilesCommandTest extends KernelTestCase
         // Colonne Spread du tableau des trades.
         self::assertStringContainsString('<th scope="col" class="num">Spread</th>', $html);
         self::assertStringNotContainsString('Ce run ne porte pas de bloc', $html);
+    }
+
+    public function testTheMakerCostsSectionLabelsSpreadWithAdverseSelection(): void
+    {
+        $html = $this->render(RunFixture::PROFILES_SOURCE . '/maker');
+
+        self::assertStringContainsString('<tr><th scope="row">Coût total des trades</th><td class="num">19,05</td></tr>', $html);
+        self::assertStringContainsString('<tr class="sub"><th scope="row">dont spread et sélection adverse</th><td class="num">0,47</td></tr>', $html);
+        self::assertStringNotContainsString('<th scope="row">dont spread</th>', $html);
     }
 
     public function testTheUncalibratedStressNoteDisappearsOnceCalibrated(): void

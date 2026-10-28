@@ -34,6 +34,18 @@ final readonly class ProfilesReport
     ) {
     }
 
+    /** La ligne de `profiles[]` du profil. */
+    public function profile(string $name): ProfileSummary
+    {
+        foreach ($this->profiles as $summary) {
+            if ($summary->name === $name) {
+                return $summary;
+            }
+        }
+
+        throw new RuntimeException('profil inconnu : ' . $name);
+    }
+
     public function run(string $name): RunReport
     {
         return $this->runs[$name] ?? throw new RuntimeException('profil inconnu : ' . $name);

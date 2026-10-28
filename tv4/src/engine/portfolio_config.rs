@@ -509,8 +509,11 @@ mod tests {
 
     use crate::model::costs::{CostMeasures, CostsFile, resolve_leg};
 
+    /// Copie figée des défauts de §4.1 : la référence v2 ne dépend pas de `config/costs.toml`, que la
+    /// calibration du stress (§11.3) réécrit.
     fn costs_file() -> CostsFile {
-        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../config/costs.toml");
+        let path =
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/costs_c1.toml");
         CostsFile::load(&path).unwrap()
     }
 
@@ -569,11 +572,12 @@ mod tests {
         run.hash().unwrap()
     }
 
-    /// Même configuration que `REFERENCE_JSON`, profil baseline, défauts de `config/costs.toml`, graine 1,
-    /// TF de décision 1m. La chaîne et son hash sont produits par le code du dépôt (aucune donnée de
-    /// marché) ; ce test, et non l'exemple de la spec, fait foi pour un recalcul en PHP. La section
-    /// `costs` porte `rules_version`, la grille déduite de `config.fees` (`okx` → `okx_regular`), les
-    /// valeurs résolues de chaque jambe et la graine ; `fees` et `slippage_bps` n'y sont plus.
+    /// Même configuration que `REFERENCE_JSON`, profil baseline, défauts de la copie figée
+    /// `tests/fixtures/costs_c1.toml`, graine 1, TF de décision 1m. La chaîne et son hash sont
+    /// produits par le code du dépôt (aucune donnée de marché) ; ce test, et non l'exemple de la spec,
+    /// fait foi pour un recalcul en PHP. La section `costs` porte `rules_version`, la grille déduite
+    /// de `config.fees` (`okx` → `okx_regular`), les valeurs résolues de chaque jambe et la graine ;
+    /// `fees` et `slippage_bps` n'y sont plus.
     #[test]
     fn le_json_canonique_v2_de_reference_et_son_hash() {
         let universe = universe();

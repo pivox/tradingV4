@@ -119,8 +119,8 @@ fn day_with_crash(low: f64, close: f64) -> Columns {
 }
 
 fn costs() -> CostsFile {
-    CostsFile::load(&Path::new(env!("CARGO_MANIFEST_DIR")).join("../config/costs.toml"))
-        .expect("config/costs.toml lisible")
+    CostsFile::load(&Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/costs_c1.toml"))
+        .expect("copie figée costs_c1.toml lisible")
 }
 
 fn params(k: &[f64], horizon_bars: usize) -> StressParams {
@@ -196,6 +196,92 @@ fn la_fenetre_se_termine_a_la_fin_des_donnees_sans_etre_comptee() {
     let short = build(885, Some(CRASH + 1), &[(CRASH, crash(90.0, 95.0))], 0..0);
     let r = &run_one(short, 2.0, 3).results[0];
     assert_eq!((r.positions, r.triggered, r.expired), (1, 1, 0));
+    // Le stress 1m compte, le stress tf non : la bougie 1h 14:00-15:00 (range partiel 10,5 > 5 × 1,0)
+    // n'est pas close à la fin des données.
+    assert_eq!(r.stress_m1, 1);
+    assert_eq!(r.stress_tf, 0);
+}
+
+#[test]
+fn le_stop_n_est_actif_qu_une_minute_apres_la_cloture() {
+    // Série calme à 100, sans bascule de niveau. La position de la bougie 13 clôt à 14:00 (minute 840)
+    // avec S = 100 - 2 × 1,0 = 98 ; le stop n'est actif qu'à partir de 14:01 (04 §3.1 point 1).
+    let avec_krach_a = |minute: i64| {
+        run_one(
+            build(DAY_MINUTES, None, &[(minute, crash(90.0, 100.0))], 0..0),
+            2.0,
+            3,
+        )
+    };
+    // Un krach dans la minute qui suit la clôture, [close_time, close_time + 60 000) : pas de
+    // déclenchement, les trois positions expirent (valeurs recalculées avant d'être figées).
+    let r = &avec_krach_a(840).results[0];
+    assert_eq!((r.positions, r.triggered, r.expired), (3, 0, 3));
+    assert_eq!((r.stress_m1, r.stress_tf), (0, 0));
+    // Le même krach une minute plus tard déclenche la position de la bougie 13 : 1 déclenchement, 1
+    // stress 1m et, la bougie 14 (range 10 > 5 × ATR) étant close, 1 stress tf ; les trois positions
+    // suivantes expirent.
+    let r = &avec_krach_a(841).results[0];
+    assert_eq!((r.positions, r.triggered, r.expired), (4, 1, 3));
+    assert_eq!((r.stress_m1, r.stress_tf), (1, 1));
+}
+
+#[test]
+fn un_stop_a_zero_ou_moins_ne_peut_pas_etre_touche_et_la_position_expire() {
+    // k = 200 : S = 100 - 200 × 1,0 = -100 <= 0. Même un krach à 1,0 ne le touche pas : la position
+    // expire (04 §3.1).
+    let r = &run_one(
+        build(DAY_MINUTES, None, &[(CRASH, crash(1.0, 100.0))], 0..0),
+        200.0,
+        3,
+    )
+    .results[0];
+    assert!(r.positions > 0);
+    assert_eq!(r.triggered, 0);
+    assert_eq!(r.expired, r.positions);
+    assert_eq!((r.stress_m1, r.stress_tf), (0, 0));
+}
+
+fn jour_avec_krach_a_1430(level_shift: Option<i64>) -> Columns {
+    build(
+        DAY_MINUTES,
+        level_shift,
+        &[(CRASH, crash(90.0, 95.0))],
+        0..0,
+    )
+}
+
+#[test]
+fn le_measurement_hash_ne_depend_pas_de_l_ordre_des_series() {
+    let btc = jour_avec_krach_a_1430(Some(CRASH + 1));
+    let xrp = jour_avec_krach_a_1430(None);
+    let costs = costs();
+    let params = params(&[2.0, 3.0], 3);
+    let un = calibrate(
+        &[
+            ("BTC-USD".to_string(), btc.clone()),
+            ("XRP-USD".to_string(), xrp.clone()),
+        ],
+        &costs,
+        &params,
+    )
+    .unwrap();
+    let autre = calibrate(
+        &[("XRP-USD".to_string(), xrp), ("BTC-USD".to_string(), btc)],
+        &costs,
+        &params,
+    )
+    .unwrap();
+    assert_eq!(un.results.len(), 4);
+    assert_eq!(un.results[0].symbol, "BTC-USD", "symbole croissant");
+    assert_eq!(un.results, autre.results);
+    assert_eq!(un.pooled, autre.pooled);
+    assert_eq!(un.measurement_hash, autre.measurement_hash);
+    assert_eq!(
+        canonical_json(&un).unwrap(),
+        canonical_json(&autre).unwrap(),
+        "même JSON à l'octet"
+    );
 }
 
 #[test]

@@ -28,7 +28,7 @@ use tv4::strategy::{BarContext, IndicatorSpec, Signal, Strategy, StrategyFunnel,
 const FAST_PARAMS: &str = "tf = \"1m\"\nfast = 5\nslow = 20\nstop_atr_mult = 2.0";
 
 fn costs_file() -> CostsFile {
-    CostsFile::load(&common::repo_path("config/costs.toml")).expect("config/costs.toml")
+    CostsFile::load(&common::costs_c1_path()).expect("copie figée costs_c1.toml")
 }
 
 fn sma_cross(text: &str) -> Box<dyn Strategy> {

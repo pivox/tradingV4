@@ -124,7 +124,7 @@ fn measure(
             )),
         ),
     ];
-    let file = CostsFile::load(&common::repo_path("config/costs.toml")).expect("config/costs.toml");
+    let file = CostsFile::load(&common::costs_c1_path()).expect("copie figée costs_c1.toml");
     let set = || vec![strategy(params), strategy(params)];
     let mut probe = Probe::default();
     let result = run_portfolio_profiles(

@@ -520,11 +520,12 @@ fn run_cell(
 
 /// Calibre la composante de stress sur des séries 1m (§11.1).
 ///
-/// `series` : une paire (symbole, colonnes 1m) par série, dans l'ordre de sortie de `results`. Le
-/// symbole (`BTC-USD`) donne l'actif de base, donc la classe, d'après `costs`. Les colonnes
-/// doivent être des 1m alignées et strictement croissantes ([`Mtf::build`] le contrôle). Sortie :
-/// `results` par (série, TF de `params.tfs`, k de `params.k`), puis `pooled` par classe (`major`
-/// puis `alt`) et TF. `datasets` est vide : voir [`StressCalibration::with_datasets`].
+/// `series` : une paire (symbole, colonnes 1m) par série, dans un ordre quelconque. Le symbole
+/// (`BTC-USD`) donne l'actif de base, donc la classe, d'après `costs`. Les colonnes doivent être des 1m
+/// alignées et strictement croissantes ([`Mtf::build`] le contrôle). Sortie : `results` par symbole
+/// croissant, puis TF de `params.tfs`, puis k de `params.k` (l'ordre des séries reçues ne change donc
+/// ni `results` ni le `measurement_hash`), puis `pooled` par classe (`major` puis `alt`) et TF.
+/// `datasets` est vide : voir [`StressCalibration::with_datasets`].
 pub fn calibrate(
     series: &[(String, Columns)],
     costs: &CostsFile,
@@ -539,10 +540,16 @@ pub fn calibrate(
     // `[major, alt]` × TF.
     let mut pools: Vec<[PoolAcc; 2]> = params.tfs.iter().map(|_| Default::default()).collect();
 
-    for (position, (symbol, columns)) in series.iter().enumerate() {
-        if series
-            .get(..position)
-            .is_some_and(|before| before.iter().any(|(other, _)| other == symbol))
+    // Symboles croissants : `results` et le hash ne dépendent pas de l'ordre de l'appelant (ordre des
+    // `--dataset`). Les symboles sont uniques (contrôlé ci-dessous), l'ordre est donc total.
+    let mut ordered: Vec<&(String, Columns)> = series.iter().collect();
+    ordered.sort_by(|a, b| a.0.cmp(&b.0));
+
+    for (position, (symbol, columns)) in ordered.iter().copied().enumerate() {
+        if position > 0
+            && ordered
+                .get(position - 1)
+                .is_some_and(|(previous, _)| previous == symbol)
         {
             return Err(StressError::DuplicateSymbol {
                 symbol: symbol.clone(),

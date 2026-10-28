@@ -14,22 +14,31 @@ use tv4::model::hash::blake3_hex;
 use tv4::model::rng::leg_key;
 use tv4::model::{ModelError, Slippage, Timeframe};
 
-const COSTS_TOML: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/../config/costs.toml");
+/// Copie figée des défauts de §4.1 (`tests/fixtures/costs_c1.toml`) : tous les tests qui épinglent une
+/// valeur ou un hash la lisent. La calibration du stress (§11.3) réécrit `config/costs.toml` sans la
+/// toucher.
+const FROZEN_TOML: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/costs_c1.toml");
 
-fn repo_text() -> String {
-    std::fs::read_to_string(COSTS_TOML).unwrap()
+/// Le vrai fichier du dépôt : réservé aux tests de forme, sans valeur épinglée.
+const REPO_TOML: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/../config/costs.toml");
+
+fn frozen_text() -> String {
+    std::fs::read_to_string(FROZEN_TOML).unwrap()
 }
 
-fn repo_costs() -> CostsFile {
-    CostsFile::load(Path::new(COSTS_TOML)).unwrap()
+fn frozen_costs() -> CostsFile {
+    CostsFile::load(Path::new(FROZEN_TOML)).unwrap()
 }
 
-/// Fichier du dépôt dont chaque `ancien` (présent exactement une fois au moins) est remplacé, une
+/// Copie figée dont chaque `ancien` (présent exactement une fois au moins) est remplacé, une
 /// fois, par `nouveau`.
 fn text_with(replacements: &[(&str, &str)]) -> String {
-    let mut text = repo_text();
+    let mut text = frozen_text();
     for (old, new) in replacements {
-        assert!(text.contains(old), "gabarit absent du fichier : {old}");
+        assert!(
+            text.contains(old),
+            "gabarit absent de la copie figée : {old}"
+        );
         text = text.replacen(old, new, 1);
     }
     text
@@ -49,7 +58,7 @@ fn invalid_field(error: ModelError) -> String {
 fn measures_json(base_block: &str) -> String {
     format!(
         r#"{{"schema":"tv4-cost-measures-v1","venue":"okx","captured_from_ms":1000,
-        "captured_to_ms":2000,"bases":{{"BTC":{base_block}}}}}"#
+        "captured_to_ms":172801000,"bases":{{"BTC":{base_block}}}}}"#
     )
 }
 
@@ -69,24 +78,90 @@ fn resolve(
 // --- Fichier de coûts ---
 
 #[test]
-fn le_fichier_du_depot_se_lit_et_se_hache() {
-    let file = repo_costs();
+fn la_copie_figee_porte_les_defauts_de_la_spec() {
+    let file = frozen_costs();
     assert_eq!(file.schema, "tv4-costs-v1");
     assert_eq!(file.rules_version, "c1");
     assert!(!file.stress_calibrated);
     assert_eq!(file.calibration_ref(), None);
     assert_eq!(file.classes.major, ["BTC", "ETH"]);
     assert!(file.classes.top20.is_empty());
-    assert_eq!(file.file_hash(), blake3_hex(repo_text().as_bytes()));
+    assert_eq!(file.file_hash(), blake3_hex(frozen_text().as_bytes()));
     assert_eq!(file.file_hash().len(), 64);
+}
+
+/// Test de forme sur le vrai fichier du dépôt, sans valeur épinglée : il reste vrai avant comme après
+/// l'inscription du stress calibré (spec §11.3).
+#[test]
+fn le_fichier_du_depot_se_lit_valide_et_se_hache() {
+    let bytes = std::fs::read(REPO_TOML).unwrap();
+    let file = CostsFile::load(Path::new(REPO_TOML)).unwrap();
+    assert_eq!(file.schema, "tv4-costs-v1");
+    assert_eq!(file.rules_version, "c1");
+    assert_eq!(file.file_hash(), blake3_hex(&bytes));
+    assert_eq!(file.file_hash().len(), 64);
+    assert_eq!(
+        file.stress_calibrated,
+        file.calibration_ref().is_some(),
+        "stress_calibrated et la référence de calibration vont ensemble"
+    );
+}
+
+/// Anti-dérive : la copie figée et le fichier du dépôt ne diffèrent que par le stress calibré (spec
+/// §11.3). Toute autre valeur modifiée dans `config/costs.toml` doit l'être aussi dans la copie, ou la
+/// copie ne représente plus les défauts livrés. Comparaison des valeurs lues, pas des octets.
+#[test]
+fn la_copie_figee_ne_differe_du_depot_que_par_le_stress_calibre() {
+    let repo = CostsFile::load(Path::new(REPO_TOML)).unwrap();
+    let frozen = frozen_costs();
+    // Le hash du fichier (octets) et les trois champs du stress calibré sont les seuls écarts permis.
+    let sans_stress = |file: &CostsFile| {
+        let mut defaults = file.defaults;
+        for class in [
+            &mut defaults.major,
+            &mut defaults.top20,
+            &mut defaults.beyond,
+        ] {
+            class.stress_probability = 0.0;
+        }
+        defaults
+    };
+    assert_eq!(repo.schema, frozen.schema);
+    assert_eq!(repo.rules_version, frozen.rules_version);
+    assert_eq!(repo.classes, frozen.classes);
+    assert_eq!(
+        sans_stress(&repo),
+        sans_stress(&frozen),
+        "défauts de classe"
+    );
+    assert_eq!(repo.profiles, frozen.profiles);
 }
 
 #[test]
 fn le_hash_du_fichier_suit_ses_octets() {
-    let a = CostsFile::from_toml_str(&repo_text()).unwrap();
-    let b = CostsFile::from_toml_str(&format!("{}\n", repo_text())).unwrap();
+    let a = CostsFile::from_toml_str(&frozen_text()).unwrap();
+    let b = CostsFile::from_toml_str(&format!("{}\n", frozen_text())).unwrap();
     assert_ne!(a.file_hash(), b.file_hash(), "un octet change le hash");
-    assert_eq!(a, CostsFile::from_toml_str(&repo_text()).unwrap());
+    assert_eq!(a, CostsFile::from_toml_str(&frozen_text()).unwrap());
+}
+
+/// Un entier TOML (`p50 = 5`) est accepté et lu comme le même flottant : mêmes valeurs résolues que `5.0`
+/// (seul `costs_file_hash`, haché sur les octets, diffère). Non-régression : la spec ne promet aucun refus.
+#[test]
+fn un_entier_toml_dans_la_loi_du_stop_vaut_le_flottant() {
+    let flottant = frozen_costs();
+    let entier = costs_with(&[("p50 = 5.0", "p50 = 5")]);
+    assert_ne!(entier.file_hash(), flottant.file_hash());
+    for profile in [
+        CostProfileName::Baseline,
+        CostProfileName::Adverse,
+        CostProfileName::Maker,
+    ] {
+        let a = resolve(&flottant, None, profile, "BTC-USD", Timeframe::D1).unwrap();
+        let b = resolve(&entier, None, profile, "BTC-USD", Timeframe::D1).unwrap();
+        assert_eq!(a.0, b.0, "{profile:?}");
+        assert_eq!(a.1, b.1, "{profile:?}");
+    }
 }
 
 #[test]
@@ -108,7 +183,7 @@ fn un_fichier_de_couts_illisible_est_refuse() {
 
 #[test]
 fn une_cle_inconnue_est_refusee_partout() {
-    let racine = format!("bogus = 1\n{}", repo_text());
+    let racine = format!("bogus = 1\n{}", frozen_text());
     assert!(matches!(
         CostsFile::from_toml_str(&racine),
         Err(ModelError::ConfigToml(_))
@@ -302,7 +377,7 @@ fn la_base_est_le_texte_avant_le_premier_tiret() {
 
 #[test]
 fn les_classes_viennent_du_fichier() {
-    let file = repo_costs();
+    let file = frozen_costs();
     assert_eq!(file.class_of("BTC"), (PairClass::Major, ClassSource::List));
     assert_eq!(file.class_of("ETH"), (PairClass::Major, ClassSource::List));
     assert_eq!(
@@ -461,7 +536,7 @@ fn numeric_mean(l: &StopSlippage) -> f64 {
 
 #[test]
 fn la_moyenne_des_defauts_majors_est_20_625_bp() {
-    let file = repo_costs();
+    let file = frozen_costs();
     let q = file.defaults.major.stop_slippage_bps;
     let l = StopSlippage::from_quantiles(q);
     assert!((l.mean_bps() - 20.625).abs() < 1e-12, "{}", l.mean_bps());
@@ -474,7 +549,7 @@ fn la_moyenne_des_defauts_majors_est_20_625_bp() {
 
 #[test]
 fn la_moyenne_est_triplee_en_adverse() {
-    let file = repo_costs();
+    let file = frozen_costs();
     let (_, baseline) = resolve(
         &file,
         None,
@@ -513,7 +588,7 @@ fn la_moyenne_est_triplee_en_adverse() {
 
 #[test]
 fn le_profil_baseline_reprend_les_valeurs_de_la_classe() {
-    let file = repo_costs();
+    let file = frozen_costs();
     let (cost, record) = resolve(
         &file,
         None,
@@ -564,7 +639,7 @@ fn le_profil_baseline_reprend_les_valeurs_de_la_classe() {
 
 #[test]
 fn le_profil_adverse_applique_les_multiplicateurs() {
-    let file = repo_costs();
+    let file = frozen_costs();
     let m = file.profiles.adverse;
     let d = file.defaults.major;
     let (cost, record) = resolve(
@@ -603,7 +678,7 @@ fn le_profil_adverse_applique_les_multiplicateurs() {
 
 #[test]
 fn le_profil_maker_garde_les_couts_de_la_baseline_et_change_l_entree() {
-    let file = repo_costs();
+    let file = frozen_costs();
     let m = file.profiles.maker;
     let (_, baseline) = resolve(
         &file,
@@ -648,7 +723,7 @@ fn le_profil_maker_garde_les_couts_de_la_baseline_et_change_l_entree() {
 
 #[test]
 fn le_ttl_maker_vient_du_tf_de_decision() {
-    let file = repo_costs();
+    let file = frozen_costs();
     for (tf, minutes) in [
         (Timeframe::M1, 1),
         (Timeframe::M15, 15),
@@ -720,7 +795,7 @@ fn le_decalage_maker_est_resolu_dans_le_mode_d_entree() {
 
 #[test]
 fn la_cle_et_la_graine_viennent_du_symbole_et_de_l_appelant() {
-    let file = repo_costs();
+    let file = frozen_costs();
     let (cost, _) = resolve_leg(
         &file,
         None,
@@ -753,7 +828,7 @@ fn la_cle_et_la_graine_viennent_du_symbole_et_de_l_appelant() {
 
 #[test]
 fn la_graine_au_dela_de_2_puissance_53_est_refusee() {
-    let file = repo_costs();
+    let file = frozen_costs();
     let limite = 1_u64 << 53;
     assert!(
         resolve_leg(
@@ -781,7 +856,7 @@ fn la_graine_au_dela_de_2_puissance_53_est_refusee() {
 #[test]
 fn un_symbole_sans_tiret_est_refuse_a_la_resolution() {
     let error = resolve(
-        &repo_costs(),
+        &frozen_costs(),
         None,
         CostProfileName::Baseline,
         "BTCUSD",
@@ -891,7 +966,7 @@ fn un_cas_de_stop_qui_ne_franchit_la_borne_qu_apres_multiplication() {
 
 #[test]
 fn un_cas_qui_ne_franchit_la_borne_qu_avec_une_mesure() {
-    let file = repo_costs();
+    let file = frozen_costs();
     // Le défaut passe ; la mesure (valide en soi, sous 10 000 bp) pousse le taux total au-delà.
     let slippage = CostMeasures::from_json_str(&measures_json(
         r#"{"inst_id":"BTC-USDC","hours":24.0,"market_slippage_bps":{"median":9999.9}}"#,
@@ -970,9 +1045,37 @@ fn le_fichier_de_mesures_se_lit_et_se_hache() {
     let m = CostMeasures::from_json_str(&text).unwrap();
     assert_eq!(m.schema, "tv4-cost-measures-v1");
     assert_eq!(m.venue, "okx");
-    assert_eq!((m.captured_from_ms, m.captured_to_ms), (1000, 2000));
+    assert_eq!((m.captured_from_ms, m.captured_to_ms), (1000, 172_801_000));
     assert_eq!(m.bases["BTC"].inst_id, "BTC-USDC");
     assert_eq!(m.file_hash(), blake3_hex(text.as_bytes()));
+}
+
+#[test]
+fn des_heures_au_dela_de_la_fenetre_de_capture_sont_refusees() {
+    // Une seconde de fenêtre pour 30 h déclarées.
+    let court =
+        measures_json(FULL_BASE).replace("\"captured_to_ms\":172801000", "\"captured_to_ms\":2000");
+    let error = CostMeasures::from_json_str(&court).unwrap_err();
+    assert!(
+        error.to_string().contains("fenêtre de capture"),
+        "message en français attendu : {error}"
+    );
+    assert!(matches!(
+        error,
+        ModelError::MeasuresInvalid { ref field, .. } if field == "bases.BTC.hours"
+    ));
+    // 24 h déclarées sur 2 h de capture : le plancher de 04 §3.2 ne se contourne pas par `hours`.
+    let deux_heures = measures_json(
+        r#"{"inst_id":"BTC-USDC","hours":24.0,"half_spread_bps":{"median":0.8,"p95":4.0}}"#,
+    )
+    .replace("\"captured_to_ms\":172801000", "\"captured_to_ms\":7201000");
+    assert!(CostMeasures::from_json_str(&deux_heures).is_err());
+    // Des trous de capture sont permis : moins d'heures que la fenêtre passe, la fenêtre exacte aussi.
+    assert!(CostMeasures::from_json_str(&measures_json(FULL_BASE)).is_ok());
+    let exacte = measures_json(
+        r#"{"inst_id":"BTC-USDC","hours":48.0,"half_spread_bps":{"median":0.8,"p95":4.0}}"#,
+    );
+    assert!(CostMeasures::from_json_str(&exacte).is_ok());
 }
 
 #[test]
@@ -1030,7 +1133,8 @@ fn les_mesures_invalides_sont_refusees() {
     );
     assert_eq!(
         measures_error(
-            &measures_json(FULL_BASE).replace("\"captured_to_ms\":2000", "\"captured_to_ms\":1000")
+            &measures_json(FULL_BASE)
+                .replace("\"captured_to_ms\":172801000", "\"captured_to_ms\":1000")
         ),
         "captured_from_ms"
     );
@@ -1056,7 +1160,7 @@ fn les_zeros_de_forme_ne_passent_pas_la_validation() {
 
 #[test]
 fn une_base_mesuree_remplace_le_defaut_et_porte_la_source_measured() {
-    let file = repo_costs();
+    let file = frozen_costs();
     let m = CostMeasures::from_json_str(&measures_json(FULL_BASE)).unwrap();
     let (cost, record) = resolve(
         &file,
@@ -1085,7 +1189,7 @@ fn une_base_mesuree_remplace_le_defaut_et_porte_la_source_measured() {
 
 #[test]
 fn une_base_absente_garde_le_defaut() {
-    let file = repo_costs();
+    let file = frozen_costs();
     let m = CostMeasures::from_json_str(&measures_json(FULL_BASE)).unwrap();
     let (_, eth) = resolve(
         &file,
@@ -1105,7 +1209,7 @@ fn une_base_absente_garde_le_defaut() {
 
 #[test]
 fn un_bloc_manquant_garde_le_defaut_de_la_classe() {
-    let file = repo_costs();
+    let file = frozen_costs();
     let spread_seul = CostMeasures::from_json_str(&measures_json(
         r#"{"inst_id":"BTC-USDC","hours":30,"half_spread_bps":{"median":0.8,"p95":4.0}}"#,
     ))
@@ -1148,7 +1252,7 @@ fn un_bloc_manquant_garde_le_defaut_de_la_classe() {
 
 #[test]
 fn une_mesure_est_multipliee_en_adverse() {
-    let file = repo_costs();
+    let file = frozen_costs();
     let m = CostMeasures::from_json_str(&measures_json(FULL_BASE)).unwrap();
     let (_, adverse) = resolve(
         &file,
@@ -1196,7 +1300,7 @@ fn le_cout_herite_reprend_l_expression_de_s9() {
 
 #[test]
 fn les_blocs_haches_ont_la_forme_de_la_spec() {
-    let file = repo_costs();
+    let file = frozen_costs();
     let (_, baseline) = resolve(
         &file,
         None,
@@ -1260,7 +1364,7 @@ fn les_blocs_haches_ont_la_forme_de_la_spec() {
 
 #[test]
 fn le_bloc_hache_ignore_les_sources_et_le_p95() {
-    let file = repo_costs();
+    let file = frozen_costs();
     let m = CostMeasures::from_json_str(&measures_json(
         r#"{"inst_id":"BTC-USDC","hours":30,"half_spread_bps":{"median":0.5,"p95":9.0}}"#,
     ))
@@ -1288,7 +1392,7 @@ fn le_bloc_hache_ignore_les_sources_et_le_p95() {
 
 #[test]
 fn le_record_se_serialise_sans_le_tf_ni_le_decalage() {
-    let file = repo_costs();
+    let file = frozen_costs();
     let (_, record) = resolve(
         &file,
         None,

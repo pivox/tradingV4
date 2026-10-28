@@ -86,6 +86,13 @@ pub fn repo_path(relative: &str) -> PathBuf {
         .join(relative)
 }
 
+/// Copie figée des défauts de coûts (`tests/fixtures/costs_c1.toml`), octet pour octet celle de
+/// `config/costs.toml` à la livraison de S10. Les tests qui épinglent une valeur ou un hash la lisent
+/// à la place du vrai fichier, que la calibration du stress (docs/specs/s10.md §11.3) réécrit.
+pub fn costs_c1_path() -> PathBuf {
+    PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/costs_c1.toml")
+}
+
 /// Stratégie `id` construite par le registre depuis un fichier TOML du dépôt.
 pub fn strategy_from_file(id: &str, relative: &str) -> Box<dyn Strategy> {
     let text = std::fs::read_to_string(repo_path(relative)).expect("fichier de paramètres lisible");

@@ -123,7 +123,8 @@ impl RunInputArgs {
 pub struct BacktestArgs {
     #[command(flatten)]
     pub inputs: RunInputArgs,
-    /// Dossier de sortie (créé au besoin) ; défaut `<root>/runs/<run_id>`.
+    /// Dossier de sortie (créé au besoin) ; défaut `<root>/runs/<run_id>`, ou
+    /// `<root>/runs/<profiles_id>` avec `--costs`.
     #[arg(long, value_name = "DOSSIER")]
     pub out: Option<PathBuf>,
     /// Pas d'échantillonnage de `equity.csv` (1m, 5m, 15m, 30m, 1h, 4h, 12h, 1d).
@@ -296,8 +297,10 @@ pub(super) fn run(args: &BacktestArgs) -> Result<(), CliError> {
     // Un dossier de sortie existant (même `run_id` sous un autre commit) ne doit pas garder l'ancien
     // manifeste, qui marque un run complet, pendant que les autres fichiers sont réécrits : une
     // interruption laisserait des fichiers du nouveau run sous le manifeste de l'ancien. Le manifeste
-    // est réécrit en dernier ; le rapport HTML d'un rendu précédent est périmé lui aussi.
-    for stale in [MANIFEST_FILE, REPORT_FILE] {
+    // est réécrit en dernier ; le rapport HTML d'un rendu précédent est périmé lui aussi, et le
+    // `profiles.json` d'un run `--costs` précédent aussi : verify et le control plane classent un dossier
+    // sur sa seule présence, un run s8 ne doit pas y rester pris pour un dossier de profils.
+    for stale in [MANIFEST_FILE, REPORT_FILE, report::profiles::PROFILES_FILE] {
         remove_stale(&out, stale)?;
     }
     report::write_bytes_atomic(&out, "metrics.json", &metrics_bytes)?;

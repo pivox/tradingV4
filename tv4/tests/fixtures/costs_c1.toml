@@ -1,0 +1,80 @@
+# Profils de coûts de S10 (docs/specs/s10.md §4.1), schéma `tv4-costs-v1`. Versionné et haché : le BLAKE3 de ce
+# fichier va dans le manifeste et dans `metrics.costs` de chaque run s10 ; les valeurs résolues par jambe
+# entrent dans le `config_hash`. Aucune de ces valeurs n'est en constante dans le code. Les nombres sont ceux
+# de docs/04-protocole-recherche.md §3 et §3.1 ; les choix dans une fourchette sont les points n° 3 à 10 de
+# la spec §19, encore à valider par le propriétaire. Une valeur mesurée (S17, `tv4-cost-measures-v1`) remplace
+# le défaut de sa classe, paire par paire.
+schema = "tv4-costs-v1"
+
+# Version du modèle de coûts, distincte de celle des règles de fill (`s6.1`).
+rules_version = "c1"
+
+# Faux tant que la probabilité de stress n'est pas inscrite d'après `tv4 costs calibrate-stress` (04 §3.1
+# point 3 ; spec §11.3 et §19 n° 10a) : chaque rapport s10 signale alors `stop_stress_uncalibrated`.
+stress_calibrated = false
+
+# Référence de la calibration (chemin du fichier de calibration) ; vide tant qu'elle n'existe pas.
+stress_calibration_ref = ""
+
+# Actifs de base de chaque classe. `major` : BTC et ETH (04 §3). `top20` est livrée vide : sans liste datée et
+# sourcée, une alt tombe dans `beyond`, la classe la plus chère, et le rapport le dit (`class_source =
+# "fallback"`). La remplir est un acte du propriétaire (spec §19 n° 7).
+[classes]
+major = ["BTC", "ETH"]
+top20 = []
+
+# Majors. Demi-spread 0,5 bp (04 §3, colonne « Spread / jambe »), slippage market 1 bp (colonne « Slippage /
+# jambe »). Loi du slippage de stop : 5 / 50 / 200 bp aux quantiles 50 / 95 / 99 (04 §3.1 point 3) ; p100 = p99,
+# plateau : la queue au-delà est le stress (spec §19 n° 5). Stress : −3 % (04 §3.1 point 3) avec une
+# probabilité provisoire de 3 %, borne haute de la fourchette de 1 à 3 % attendue, jusqu'à la calibration
+# (spec §11 et §19 n° 10a).
+[defaults.major]
+half_spread_bps = 0.5
+market_slippage_bps = 1.0
+stop_slippage_bps = { p50 = 5.0, p95 = 50.0, p99 = 200.0, p100 = 200.0 }
+stress_probability = 0.03
+stress_drop = 0.03
+
+# Top 20. Demi-spread 5 bp : borne haute de 2 à 5 bp (04 §3 ; spec §19 n° 6). Slippage market 3 bp et loi du
+# stop × 3 : borne basse du × 3-5 des alts (04 §3.1 point 3 ; spec §19 n° 3 et n° 6). Stress −10 % (04 §3.1
+# point 3), même probabilité provisoire de 3 %.
+[defaults.top20]
+half_spread_bps = 5.0
+market_slippage_bps = 3.0
+stop_slippage_bps = { p50 = 15.0, p95 = 150.0, p99 = 600.0, p100 = 600.0 }
+stress_probability = 0.03
+stress_drop = 0.10
+
+# Au-delà du top 20. Demi-spread 30 bp : borne haute de 10 à 30 bp (04 §3 ; spec §19 n° 6). Slippage market
+# 5 bp et loi du stop × 5 : borne haute du × 3-5 des alts (04 §3.1 point 3 ; spec §19 n° 3 et n° 6). Stress
+# −10 % (04 §3.1 point 3), même probabilité provisoire de 3 %.
+[defaults.beyond]
+half_spread_bps = 30.0
+market_slippage_bps = 5.0
+stop_slippage_bps = { p50 = 25.0, p95 = 250.0, p99 = 1000.0, p100 = 1000.0 }
+stress_probability = 0.03
+stress_drop = 0.10
+
+# Profil adverse (04 §3, ligne « Adverse ») : demi-spread × 2, slippage × 3 (market et loi du stop), part de
+# stress × 2. La chute de stress ne change pas. La probabilité multipliée reste ≤ 1.
+[profiles.adverse]
+half_spread_mult = 2.0
+market_slippage_mult = 3.0
+stop_slippage_mult = 3.0
+stress_probability_mult = 2.0
+
+# Profil maker (04 §3, ligne « Maker », et §3.1 point 2). `fill_probability` : borne basse de la mesure V3 (45 à
+# 58 % en 45 s), un tirage par ordre (spec §19 n° 4). `adverse_selection_bps` : borne haute de 1 à 1,5 bp,
+# débitée à part sans déplacer le prix de fill (spec §19 n° 9). `ttl_minutes_1d` : une bougie 1d ;
+# `ttl_minutes_max_intraday` : 60 min au plus en 4h et moins (spec §19 n° 4).
+# `entry_offset_bps` (décalage de la limit sous le bid du signal) et `min_maker_entry_share` (part minimale des
+# entrées remplies en maker pour l'étiquette « dépend du fill ») sont des choix de S10, sans source dans 04
+# (spec §7.2, §12.4 et §19 n° 8). `entry_offset_bps` change les trades et entre dans le `config_hash` ;
+# `min_maker_entry_share` ne change que l'étiquette, et n'entre que dans le hash de ce fichier.
+[profiles.maker]
+fill_probability = 0.45
+adverse_selection_bps = 1.5
+entry_offset_bps = 0.0
+ttl_minutes_1d = 1440
+ttl_minutes_max_intraday = 60
+min_maker_entry_share = 0.5

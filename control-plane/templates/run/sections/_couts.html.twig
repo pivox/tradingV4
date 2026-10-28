@@ -71,8 +71,10 @@
         <tr><th scope="row">Coût aller-retour moyen</th><td class="num">{{ ar.roundTripCostMean|money }}</td></tr>
         <tr><th scope="row">Taux moyen (coût / notional)</th><td class="num">{{ ar.roundTripCostRateMean|pct }}</td></tr>
         <tr><th scope="row">Taux médian</th><td class="num">{{ ar.roundTripCostRateMedian|pct }}</td></tr>
+        {# cost_breakdown est la SOMME sur tous les trades (s10 §12.2), pas la décomposition du coût moyen ci-dessus. #}
+        <tr><th scope="row">Coût total des trades</th><td class="num">{{ ar.costBreakdown|reduce((sum, amount) => sum + amount, 0)|money }}</td></tr>
         {% for name, amount in ar.costBreakdown %}
-          <tr class="sub"><th scope="row">{{ name == 'fees' ? 'dont frais' : (name == 'slippage' ? 'dont slippage' : (name == 'spread' ? 'dont spread' : name)) }}</th><td class="num">{{ amount|money }}</td></tr>
+          <tr class="sub"><th scope="row">{{ name == 'fees' ? 'dont frais' : (name == 'slippage' ? 'dont slippage' : (name == 'spread' ? (co.profile == 'maker' ? 'dont spread et sélection adverse' : 'dont spread') : name)) }}</th><td class="num">{{ amount|money }}</td></tr>
         {% endfor %}
       </tbody>
     </table>

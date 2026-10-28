@@ -287,6 +287,11 @@ final class ProfilesDirectoryReaderTest extends TestCase
         yield 'fee_grid' => [['fee_grid'], 'bitvavo_usdc', 'profiles.json : fee_grid : différent de celui du run baseline'];
         yield 'seed' => [['seed'], 2, 'profiles.json : seed : différent de celui du run baseline'];
         yield 'stress_calibrated' => [['stress_calibrated'], true, 'profiles.json : stress_calibrated : différent de celui du run baseline'];
+        yield 'role de baseline' => [['profiles', '0', 'role'], 'informative', 'profiles[0].role : le profil baseline attend le rôle "gate"'];
+        yield 'role de adverse' => [['profiles', '1', 'role'], 'informative', 'profiles[1].role : le profil adverse attend le rôle "gate"'];
+        yield 'role de maker' => [['profiles', '2', 'role'], 'gate', 'profiles[2].role : le profil maker attend le rôle "informative"'];
+        yield 'initial_cash' => [['initial_cash'], 3000.0, 'profiles.json : initial_cash : différent de celui du run baseline'];
+        yield 'cost_measures_hash' => [['cost_measures_hash'], 'blake3:dead', 'profiles.json : cost_measures_hash : différent de celui du run baseline'];
         yield 'profiles_id' => [['profiles_id'], str_repeat('0', 64), 'profiles.json : profiles_id : différent de celui du manifeste de baseline'];
     }
 
@@ -301,6 +306,28 @@ final class ProfilesDirectoryReaderTest extends TestCase
 
         $this->expectException(InvalidRunException::class);
         $this->expectExceptionMessage($message);
+        $this->reader()->read($copy->directory);
+    }
+
+    public function testTheRoleMustMatchTheRunGatesProfile(): void
+    {
+        $copy = $this->copy();
+        $copy->setJson('maker/metrics.json', ['costs', 'gates_profile'], true);
+
+        $this->expectException(InvalidRunException::class);
+        $this->expectExceptionMessage('profiles.json : profiles[2].role : différent de costs.gates_profile du run maker');
+        $this->reader()->read($copy->directory);
+    }
+
+    public function testProfilesMustAppearInTheFixedOrder(): void
+    {
+        $copy = $this->copy();
+        $copy->replace('profiles.json', '"name": "baseline"', '"name": "TMP"');
+        $copy->replace('profiles.json', '"name": "adverse"', '"name": "baseline"');
+        $copy->replace('profiles.json', '"name": "TMP"', '"name": "adverse"');
+
+        $this->expectException(InvalidRunException::class);
+        $this->expectExceptionMessage('profiles.json : profiles : ordre baseline, adverse, maker attendu, trouvé : adverse, baseline, maker');
         $this->reader()->read($copy->directory);
     }
 

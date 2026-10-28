@@ -68,7 +68,9 @@ fn work() -> Work {
 }
 
 fn costs_file() -> String {
-    repo("config/costs.toml").display().to_string()
+    repo("tv4/tests/fixtures/costs_c1.toml")
+        .display()
+        .to_string()
 }
 
 /// Arguments de `tv4 backtest --dataset duo`, sortie dans `out` si elle est donnée, suivis de `extra`.
@@ -106,7 +108,7 @@ fn launch(args: &[String]) -> Outcome {
     }
 }
 
-/// `tv4 backtest --symbols BTC-USD,ETH-USD --costs config/costs.toml` suivi de `extra`.
+/// `tv4 backtest --symbols BTC-USD,ETH-USD --costs <copie figée de config/costs.toml>` suivi de `extra`.
 fn run_profiles(w: &Work, out: &Path, extra: &[&str]) -> Outcome {
     let costs = costs_file();
     let mut all = vec!["--symbols", "BTC-USD,ETH-USD", "--costs", &costs];
@@ -128,6 +130,16 @@ fn ok_profiles(w: &Work, out: &Path, extra: &[&str]) -> Outcome {
 
 fn json(path: &Path) -> Value {
     serde_json::from_slice(&fs::read(path).unwrap()).unwrap()
+}
+
+/// Écarts du simulateur (`sim_deviations`) d'un `metrics.json`.
+fn deviations(metrics: &Value) -> Vec<String> {
+    metrics["sim_deviations"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|d| d.as_str().unwrap().to_string())
+        .collect()
 }
 
 fn verify(a: &Path, b: &Path) -> Outcome {
@@ -252,7 +264,7 @@ fn un_run_s10_ecrit_trois_runs_puis_profiles_json() {
             "{name}"
         );
         // `metrics.json` ne porte pas de chemin propre à la machine ; le manifeste garde le chemin donné.
-        assert_eq!(metrics["costs"]["costs_file"], "costs.toml");
+        assert_eq!(metrics["costs"]["costs_file"], "costs_c1.toml");
         assert_eq!(manifest["costs_file"], costs_file());
         assert_eq!(metrics["costs"]["fee_grid"], "okx_regular");
         // Le nom de la grille est dans le bloc haché du `config_hash`.
@@ -455,6 +467,59 @@ fn les_mesures_de_carnet_sont_lues_hachees_et_remplacent_les_defauts() {
             legs.iter().all(|leg| leg["spread_source"] == "measured"),
             "{legs:?}"
         );
+        assert!(
+            legs.iter().all(|leg| leg["slippage_source"] == "measured"),
+            "{legs:?}"
+        );
+        assert!(
+            !deviations(&metrics).contains(&"cost_defaults_unmeasured".to_string()),
+            "mesures complètes : plus de défaut utilisé, {:?}",
+            deviations(&metrics)
+        );
+        // Le stress n'est pas calibré par des mesures de carnet : l'autre écart reste.
+        assert!(deviations(&metrics).contains(&"stop_stress_uncalibrated".to_string()));
+        // Sans mesures, les défauts sont signalés (symétrie).
+        let plain_metrics = json(&plain.join(name).join("metrics.json"));
+        assert!(deviations(&plain_metrics).contains(&"cost_defaults_unmeasured".to_string()));
+    }
+    // Mesures partielles : ETH sans `market_slippage_bps` garde son slippage par défaut, et le rapport
+    // continue de le dire.
+    let partial_measures = w.root.join("partielles.json");
+    fs::write(
+        &partial_measures,
+        fs::read_to_string(&measures).unwrap().replace(
+            r#""ETH": {"inst_id": "ETH-USDC", "hours": 48.0,
+            "half_spread_bps": {"median": 0.25, "p95": 0.75},
+            "market_slippage_bps": {"median": 0.5}}"#,
+            r#""ETH": {"inst_id": "ETH-USDC", "hours": 48.0,
+            "half_spread_bps": {"median": 0.25, "p95": 0.75}}"#,
+        ),
+    )
+    .unwrap();
+    assert_ne!(
+        fs::read_to_string(&partial_measures).unwrap(),
+        fs::read_to_string(&measures).unwrap(),
+        "le gabarit de mesures partielles doit s'appliquer"
+    );
+    let partial = w.root.join("partial");
+    ok_profiles(
+        &w,
+        &partial,
+        &["--cost-measures", &partial_measures.display().to_string()],
+    );
+    for name in PROFILES {
+        let metrics = json(&partial.join(name).join("metrics.json"));
+        let legs = metrics["costs"]["legs"].as_array().unwrap();
+        let eth = legs.iter().find(|l| l["symbol"] == "ETH-USD").unwrap();
+        assert_eq!(eth["spread_source"], "measured", "{name}");
+        assert_eq!(eth["slippage_source"], "default", "{name}");
+        let btc = legs.iter().find(|l| l["symbol"] == "BTC-USD").unwrap();
+        assert_eq!(btc["slippage_source"], "measured", "{name}");
+        assert!(
+            deviations(&metrics).contains(&"cost_defaults_unmeasured".to_string()),
+            "{name} : {:?}",
+            deviations(&metrics)
+        );
     }
     // Un fichier de mesures illisible : erreur applicative, rien d'écrit.
     let bad = w.root.join("bad");
@@ -467,4 +532,68 @@ fn les_mesures_de_carnet_sont_lues_hachees_et_remplacent_les_defauts() {
         outcome.stderr
     );
     assert!(!bad.exists());
+}
+
+/// Un run s9 écrit dans un ancien dossier de profils retire son `profiles.json` : verify et le control
+/// plane classent un dossier sur cette seule présence.
+#[test]
+fn un_run_s9_dans_un_ancien_dossier_de_profils_en_retire_le_profiles_json() {
+    let w = work();
+    let (x, y) = (w.root.join("x"), w.root.join("y"));
+    ok_profiles(&w, &x, &[]);
+    assert!(x.join("profiles.json").exists());
+    let args = ["--symbols", "BTC-USD,ETH-USD"];
+    for dir in [&x, &y] {
+        let outcome = launch(&backtest_args(&w, Some(dir), &args));
+        assert_eq!(
+            outcome.code,
+            Some(0),
+            "{}{}",
+            outcome.stdout,
+            outcome.stderr
+        );
+    }
+    assert!(
+        !x.join("profiles.json").exists(),
+        "profiles.json périmé retiré"
+    );
+    let same = verify(&x, &y);
+    assert_eq!(same.code, Some(0), "{}{}", same.stdout, same.stderr);
+}
+
+/// Même discipline pour un run s8 (dataset d'une seule série) écrit dans un ancien dossier de profils.
+#[test]
+fn un_run_s8_dans_un_ancien_dossier_de_profils_en_retire_le_profiles_json() {
+    let w = work();
+    build_dataset(
+        &w.root,
+        "solo",
+        &[(
+            "BTC-USD",
+            candles(MINUTES, 11, 0.0, 2000.0, common::synthetic_candles),
+        )],
+        MINUTES as i64 + 100,
+    );
+    let (x, y) = (w.root.join("x"), w.root.join("y"));
+    ok_profiles(&w, &x, &[]);
+    assert!(x.join("profiles.json").exists());
+    for dir in [&x, &y] {
+        let mut args = backtest_args(&w, Some(dir), &[]);
+        assert_eq!(args[2], "duo");
+        args[2] = "solo".to_string();
+        let outcome = launch(&args);
+        assert_eq!(
+            outcome.code,
+            Some(0),
+            "{}{}",
+            outcome.stdout,
+            outcome.stderr
+        );
+    }
+    assert!(
+        !x.join("profiles.json").exists(),
+        "profiles.json périmé retiré"
+    );
+    let same = verify(&x, &y);
+    assert_eq!(same.code, Some(0), "{}{}", same.stdout, same.stderr);
 }

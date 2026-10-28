@@ -41,7 +41,7 @@ Le control plane ne recalcule ni hash ni métrique : il affiche ce que `tv4` a �
 - `src/Command/Tv4ReportCommand.php` : la commande ; `src/Console/` : `Tv4Application` (code de sortie 2 pour l'usage) et `KernelFactory` (environnement et debug).
 - `templates/report/standalone.html.twig` (document complet, CSS) inclut `templates/run/fiche.html.twig` (fiche de run de `docs/05-ihm.md` §4, une section par partial dans `templates/run/sections/`), réutilisable telle quelle par la fiche du jalon 2a.
 - `tests/fixtures/run-exemple/` : run d'exemple **fabriqué** (voir son `README.md`) : ce n'est pas une sortie de `tv4`.
-- `tests/fixtures/run-profils/` : dossier de profils s10 **écrit à la main** (voir son `README.md`), de la forme d'un dossier de `tv4 backtest --costs` ; `tests/Run/GoldenProfilesRunTest.php` lira le golden `tv4/tests/golden_runs/portfolio_profiles/` du lot E de s10 et reste « skipped » tant qu'il n'existe pas.
+- `tests/fixtures/run-profils/` : dossier de profils s10 **écrit à la main** (voir son `README.md`), de la forme d'un dossier de `tv4 backtest --costs` ; `tests/Run/GoldenProfilesRunTest.php` lit le golden `tv4/tests/golden_runs/portfolio_profiles/` de s10 (sans manifeste : le test en écrit un par profil dans un dossier temporaire), et sa conformité aux clés réelles est aussi contrôlée par le job CI `rapport-bout-en-bout`.
 - `tests/fixtures/run-portefeuille/` : run s9 **écrit à la main**, de la forme exacte d'un run de `tv4` (voir son `README.md`) ; sa conformité aux clés réelles est contrôlée par `tests/Run/GoldenPortfolioRunTest.php` (golden `portfolio_2legs`) et par le job CI `rapport-bout-en-bout`.
 
 ### Qualité

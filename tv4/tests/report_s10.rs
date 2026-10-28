@@ -412,6 +412,44 @@ fn les_ecarts_du_simulateur_suivent_le_profil() {
     assert!(!deviations(2).contains(&"no_maker_fill_probability".to_string()));
 }
 
+/// Les deux écarts sont indépendants : `stop_stress_uncalibrated` suit `stress_calibrated`,
+/// `cost_defaults_unmeasured` suit les sources des jambes. La copie calibrée est écrite dans un dossier
+/// temporaire, à partir de la copie figée : `config/costs.toml` n'est jamais touché.
+#[test]
+fn le_stress_calibre_retire_son_ecart_sans_toucher_aux_defauts_non_mesures() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("costs.toml");
+    let texte = std::fs::read_to_string(common::costs_c1_path())
+        .unwrap()
+        .replace("stress_calibrated = false", "stress_calibrated = true")
+        .replace(
+            "stress_calibration_ref = \"\"",
+            "stress_calibration_ref = \"c.json\"",
+        );
+    assert!(texte.contains("stress_calibrated = true"));
+    assert!(texte.contains("stress_calibration_ref = \"c.json\""));
+    std::fs::write(&path, texte).unwrap();
+    let file = tv4::model::costs::CostsFile::load(&path).unwrap();
+    assert!(file.stress_calibrated);
+    let data = scenario(ROWS);
+    let result = run(&data, &file, 1, FAST_PARAMS);
+    let dataset = profiles_common::dataset_info(&data.series);
+    let profiles = render_all(&result, &data, &dataset, &file);
+    for (profile, name) in profiles.iter().zip(["baseline", "adverse", "maker"]) {
+        let m = json_of(&profile.metrics);
+        assert_eq!(m["costs"]["stress_calibrated"], true, "{name}");
+        assert_eq!(m["costs"]["stress_calibration_ref"], "c.json", "{name}");
+        let d: Vec<&str> = m["sim_deviations"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|v| v.as_str().unwrap())
+            .collect();
+        assert!(!d.contains(&"stop_stress_uncalibrated"), "{name} : {d:?}");
+        assert!(d.contains(&"cost_defaults_unmeasured"), "{name} : {d:?}");
+    }
+}
+
 #[test]
 fn un_run_hors_profils_n_a_aucun_champ_s10() {
     // `MetricsS9::new` laisse les trois blocs absents : le JSON s9 ne porte aucune clé s10.

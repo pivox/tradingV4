@@ -6,7 +6,7 @@
 
   <p class="badge label-{{ profiles.label }}">Étiquette : <strong>{{ profiles.labelFr }}</strong> (<code>{{ profiles.label }}</code>)</p>
   {% if profiles.label == 'fill_dependent' %}
-  <p class="callout fill-dependent"><strong>Dépend du fill.</strong> Ni baseline ni adverse ne sont positifs ; le profil maker, informatif, l'est (espérance nette {{ mk.expectancyNet|money }} par trade, {{ mk.nTrades|int }} trades) avec {{ mk.makerEntryMakerShare|pct }} des entrées converties remplies en maker (seuil {{ mk.minMakerEntryShare|pct }}). Ce résultat dépend du taux de fill réel, que seul le paper trading mesure.</p>
+  <p class="callout fill-dependent"><strong>Dépend du fill.</strong> Ni baseline ni adverse ne sont positifs ; le profil maker, informatif, l'est (espérance nette {{ mk.expectancyNet|money }} par trade, {{ mk.nTrades|int }} trades) {% if mk.makerEntryMakerShare is not null %}avec {{ mk.makerEntryMakerShare|pct }} des entrées converties remplies en maker (seuil {{ mk.minMakerEntryShare|pct }}){% else %}sans aucune entrée convertie : la stratégie n'émet que des limits{% endif %}. Ce résultat dépend du taux de fill réel, que seul le paper trading mesure.</p>
   {% elseif profiles.label == 'indeterminate' %}
   <p>Baseline ou adverse a moins de trades que le minimum du run : aucune conclusion sur les coûts.</p>
   {% elseif profiles.label == 'passes_costs' %}
@@ -14,7 +14,15 @@
   {% elseif profiles.label == 'cost_fragile' %}
   <p>Baseline positif, adverse non positif : le résultat ne survit pas au profil de coûts adverse.</p>
   {% else %}
+  {% set baselinePositive = profiles.profile('baseline').positive %}
+  {% set adversePositive = profiles.profile('adverse').positive %}
+  {% if not baselinePositive and not adversePositive %}
   <p>Baseline et adverse non positifs, sans profil maker positif et majoritairement rempli en maker.</p>
+  {% elseif not baselinePositive %}
+  <p>Baseline non positif, adverse positif : les deux profils ne jouent pas les mêmes trades (fills, tirages de stop, taille des lignes), aucune conclusion favorable sur les coûts.</p>
+  {% else %}
+  <p>Étiquette négative malgré un baseline positif : se référer au tableau des profils ci-dessous.</p>
+  {% endif %}
   {% endif %}
 
   <div class="scroll">

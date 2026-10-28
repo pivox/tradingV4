@@ -571,6 +571,18 @@ impl CostMeasures {
                     ),
                 ));
             }
+            // Des trous de capture sont permis (`hours` inférieur à la fenêtre), pas des heures en trop.
+            let window_hours = (self.captured_to_ms - self.captured_from_ms) as f64 / 3_600_000.0;
+            if measure.hours > window_hours {
+                return Err(invalid_measures(
+                    format!("{prefix}.hours"),
+                    format!(
+                        "{} h déclarées pour une fenêtre de capture de {window_hours} h \
+                         (captured_to_ms − captured_from_ms)",
+                        measure.hours
+                    ),
+                ));
+            }
             if let Some(spread) = &measure.half_spread_bps {
                 check_measure(&format!("{prefix}.half_spread_bps.median"), spread.median)?;
                 check_measure(&format!("{prefix}.half_spread_bps.p95"), spread.p95)?;

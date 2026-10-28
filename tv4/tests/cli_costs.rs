@@ -13,6 +13,7 @@ use report_s9_common::{repo, tv4};
 use serde_json::Value;
 
 const DATASET: &str = "fixture_2020_01";
+const DATASET_ETH: &str = "fixture_eth";
 const FENETRE_DEBUT: &str = "2020-01-01T00:00:00Z";
 const FENETRE_FIN: &str = "2020-01-09T00:00:00Z";
 
@@ -76,8 +77,54 @@ fn racine_prete() -> tempfile::TempDir {
     racine
 }
 
+/// Comme [`racine_prete`], plus un second dataset `fixture_eth` : la même fixture ingérée sous ETH-USD.
+fn racine_a_deux_datasets() -> tempfile::TempDir {
+    let racine = racine_prete();
+    let root = racine.path().display().to_string();
+    let csv = repo("fixtures/kraken_xbtusd_1m.csv").display().to_string();
+    let ingest = launch(&[
+        "ingest",
+        "csv",
+        "--csv",
+        &csv,
+        "--exchange",
+        "kraken",
+        "--symbol",
+        "ETH-USD",
+        "--tf",
+        "1m",
+        "--root",
+        &root,
+    ]);
+    assert_eq!(ingest.code, Some(0), "{}", ingest.stderr);
+    let build = launch(&[
+        "dataset",
+        "build",
+        "--root",
+        &root,
+        "--name",
+        DATASET_ETH,
+        "--exchange",
+        "kraken",
+        "--symbol",
+        "ETH-USD",
+        "--tf",
+        "1m",
+        "--from",
+        FENETRE_DEBUT,
+        "--to",
+        FENETRE_FIN,
+        "--gaps-policy",
+        "skip",
+    ]);
+    assert_eq!(build.code, Some(0), "{}", build.stderr);
+    racine
+}
+
 fn costs_file() -> String {
-    repo("config/costs.toml").display().to_string()
+    repo("tv4/tests/fixtures/costs_c1.toml")
+        .display()
+        .to_string()
 }
 
 /// `tv4 costs calibrate-stress` sur le dataset de la fixture, suivi de `extra`.
@@ -316,4 +363,56 @@ fn les_erreurs_d_usage_sortent_en_code_2() {
         "/n/existe/pas.toml",
     ]);
     assert_eq!(sans_costs.code, Some(1), "{}", sans_costs.stderr);
+}
+
+#[test]
+fn l_ordre_des_options_dataset_ne_change_ni_les_resultats_ni_le_measurement_hash() {
+    let racine = racine_a_deux_datasets();
+    let r = racine.path();
+    let root = r.display().to_string();
+    let costs = costs_file();
+    let lancer = |datasets: [&str; 2], nom: &str| -> Value {
+        let out = r.join(nom);
+        let outcome = launch(&[
+            "costs",
+            "calibrate-stress",
+            "--root",
+            &root,
+            "--dataset",
+            datasets[0],
+            "--dataset",
+            datasets[1],
+            "--costs",
+            &costs,
+            "--tf",
+            "1h",
+            "--k",
+            "2",
+            "--horizon-bars",
+            "3",
+            "--out",
+            &out.display().to_string(),
+        ]);
+        assert_eq!(
+            outcome.code,
+            Some(0),
+            "{}{}",
+            outcome.stdout,
+            outcome.stderr
+        );
+        json(&out)
+    };
+    let direct = lancer([DATASET, DATASET_ETH], "direct.json");
+    let inverse = lancer([DATASET_ETH, DATASET], "inverse.json");
+    let symboles: Vec<&str> = direct["results"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|row| row["symbol"].as_str().unwrap())
+        .collect();
+    assert_eq!(symboles, ["BTC-USD", "ETH-USD"], "symbole croissant");
+    assert_eq!(direct["results"], inverse["results"]);
+    assert_eq!(direct["pooled"], inverse["pooled"]);
+    assert_eq!(direct["datasets"], inverse["datasets"]);
+    assert_eq!(direct["measurement_hash"], inverse["measurement_hash"]);
 }
