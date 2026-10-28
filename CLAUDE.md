@@ -64,6 +64,7 @@ Plateforme de trading crypto **spot** sur OKX : moteur de backtest, de paper tra
 
 - Documentation, commits et échanges en français.
 - Jamais de secret dans le dépôt (clés API, fichiers `.env`) ; la clé OKX n'a jamais le droit de retrait, et le moteur passe `tdMode = cash` sans jamais activer l'emprunt (OKX Europe propose la marge spot jusqu'à 10×).
+- Fichiers de clés du propriétaire : `~/.kraken`, sur son Ubuntu, ne se lit jamais et son contenu ne s'affiche jamais (ni `cat`, ni `grep` qui imprime, ni ouverture par un outil ou un agent). Le code et les commandes qu'on lui donne en extraient seulement `KRAKEN_API_KEY` et `KRAKEN_SECRET_KEY`, chargées dans l'environnement du process sans être écrites ni journalisées (règle du propriétaire du 28/10, 21:31 UTC). Une clé ne passe jamais par un fil de discussion.
 - Toute hypothèse de recherche passe par une fiche pré-enregistrée et commitée avant tout run sur DEV (`docs/04-protocole-recherche.md` §4.3), puis par les portes G0 à G7.
 - Un résultat de backtest n'est valide qu'avec son `config_hash`, son `dataset_hash` et le commit du moteur ; en mode portefeuille (S9), le capital initial, sorti du `config_hash` comme le veut 04 §4.2, s'y ajoute (décision du 28/10 (13:52 UTC)).
 - Pas de score composite ni d'empilement multi-timeframe à score : abandonnés après tradingV3.
