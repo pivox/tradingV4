@@ -40,6 +40,7 @@ Plateforme de trading crypto **spot** sur OKX : moteur de backtest, de paper tra
   - `return_annualized` gardé (20 ULP) ;
   - rejets comptés dans l'entonnoir ;
   - régime à l'entrée de `trades.csv` reporté au jalon 1.5.
+- Mode portefeuille (S9) : capital initial hors du `config_hash`. Un même hash doit donner les mêmes trades à 300 € et à 3 000 € (04 §4.2). Le capital est écrit dans `metrics.json` et dans le manifeste, et `tv4 verify` refuse deux runs de capitaux différents (décision du 28/10 (13:52 UTC), carte « Hors du hash »).
 
 ## Code (moteur Rust `tv4`)
 
@@ -55,7 +56,7 @@ Plateforme de trading crypto **spot** sur OKX : moteur de backtest, de paper tra
 - Documentation, commits et échanges en français.
 - Jamais de secret dans le dépôt (clés API, fichiers `.env`) ; la clé OKX n'a jamais le droit de retrait, et le moteur passe `tdMode = cash` sans jamais activer l'emprunt (OKX Europe propose la marge spot jusqu'à 10×).
 - Toute hypothèse de recherche passe par une fiche pré-enregistrée et commitée avant tout run sur DEV (`docs/04-protocole-recherche.md` §4.3), puis par les portes G0 à G7.
-- Un résultat de backtest n'est valide qu'avec son `config_hash`, son `dataset_hash` et le commit du moteur.
+- Un résultat de backtest n'est valide qu'avec son `config_hash`, son `dataset_hash` et le commit du moteur ; en mode portefeuille (S9), le capital initial, sorti du `config_hash` comme le veut 04 §4.2, s'y ajoute (décision du 28/10 (13:52 UTC)).
 - Pas de score composite ni d'empilement multi-timeframe à score : abandonnés après tradingV3.
 
 ## Travail par agents (décision du 14/10)

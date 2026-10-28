@@ -291,4 +291,179 @@ final class Tv4ReportCommandTest extends KernelTestCase
         $this->expectException(\Symfony\Component\Console\Exception\RuntimeException::class);
         $tester->execute([]);
     }
+
+    /** Rend le run portefeuille d'exemple (ou une copie modifiée). */
+    private function renderPortfolio(?RunFixture $run = null): string
+    {
+        return $this->render($run ?? $this->copyPortfolio());
+    }
+
+    private function copyPortfolio(): RunFixture
+    {
+        return $this->copy = RunFixture::copyPortfolio();
+    }
+
+    public function testS8ReportIsUnchangedByteForByte(): void
+    {
+        $expected = file_get_contents(__DIR__ . '/../fixtures/rapport-s8-attendu.html');
+        self::assertIsString($expected);
+
+        $html = $this->render();
+
+        self::assertSame($expected, $html);
+        self::assertStringNotContainsString('id="univers"', $html);
+        self::assertStringNotContainsString('id="executabilite"', $html);
+        self::assertStringNotContainsString('Instruments</th>', $html);
+    }
+
+    /**
+     * @return iterable<string, array{string}>
+     */
+    public static function portfolioSectionTitles(): iterable
+    {
+        foreach (['Univers et entonnoir par paire', 'Exécutabilité (G0) et G1'] as $title) {
+            yield $title => [$title];
+        }
+    }
+
+    #[DataProvider('portfolioSectionTitles')]
+    public function testPortfolioReportHasTheS9Sections(string $title): void
+    {
+        self::assertMatchesRegularExpression('#<h2 id="[a-z-]+">' . preg_quote($title, '#') . '</h2>#u', $this->renderPortfolio());
+    }
+
+    #[DataProvider('sectionTitles')]
+    public function testPortfolioReportKeepsTheTenS8Sections(string $title): void
+    {
+        self::assertMatchesRegularExpression('#<h2 id="[a-z-]+">' . preg_quote($title, '#') . '</h2>#u', $this->renderPortfolio());
+    }
+
+    public function testPortfolioHeaderLineageAndFunnelByPair(): void
+    {
+        $html = $this->renderPortfolio();
+
+        self::assertStringContainsString('portefeuille <strong>BTC-USD, ETH-USD</strong>', $html);
+        self::assertStringContainsString('(kraken, BTC-USD, ETH-USD, 1m)', $html);
+        self::assertStringContainsString('<code>BTC-USD</code> : 12', $html);
+        self::assertStringContainsString('aucun : la stratégie ne lit pas le régime', $html);
+        self::assertStringContainsString('<code>instruments_hash</code> : <code class="hash">blake3:' . str_repeat('1257900c', 8) . '</code>', $html);
+        self::assertStringContainsString('relevé le 2026-10-28T12:45:00.123Z', $html);
+        self::assertStringContainsString('Hors état <code>live</code> : <code>ETH-USDC</code>', $html);
+        self::assertStringContainsString('<code>BTC-USDC</code> : <code>minSz</code> devient <code>0.001</code>, effectif 2026-11-02 06:13 UTC', $html);
+        self::assertMatchesRegularExpression('#<h3>Par paire</h3>#', $html);
+        self::assertStringContainsString('<th scope="col">Paire</th><th scope="col">Entrée</th>', $html);
+        self::assertStringContainsString('<td><code>ETH-USD</code></td>', $html);
+        self::assertStringContainsString('<code>gap_forced_exit</code>', $html);
+        self::assertStringContainsString('Instrument ETH-USD', $html);
+        self::assertStringContainsString('Portefeuille (haché hors capital initial)', $html);
+        self::assertStringNotContainsString('une seule paire est jouée', $html);
+    }
+
+    public function testPortfolioExecutabilityAndG1(): void
+    {
+        $html = $this->renderPortfolio();
+
+        self::assertMatchesRegularExpression('#<section id="univers" class="section"#', $html);
+        self::assertMatchesRegularExpression('#<section id="executabilite" class="section"#', $html);
+        self::assertStringContainsString('<code>rejected_volume</code>', $html);
+        self::assertStringContainsString('<code>executable</code>', $html);
+        self::assertStringContainsString('<li><code>BTC-USD</code></li>', $html);
+        self::assertStringContainsString('ne vaut pas pour l\'exécution réelle', $html);
+        self::assertStringContainsString('90,91', $html);
+        self::assertStringContainsString('(seuil 95,00', $html);
+        self::assertStringContainsString('<code>rejected_cash</code>', $html);
+        self::assertStringNotContainsString('ce run est à un autre capital', $html);
+    }
+
+    public function testRegimeLineWhenTheStrategyReadsTheRegime(): void
+    {
+        $run = $this->copyPortfolio();
+        $run->replace(
+            'metrics.json',
+            "\"regime\": null,\n    \"return_total\"",
+            "\"regime\": {\"days_bear\": 3, \"days_bull\": 5, \"first_ready_ms\": 1608249600000, \"sma_period\": 200, \"symbol\": \"BTC-USD\", \"tf\": \"1d\"},\n    \"return_total\"",
+        );
+
+        $html = $this->renderPortfolio($run);
+
+        self::assertStringContainsString('<code>BTC-USD</code> 1d, SMA 200', $html);
+        self::assertStringContainsString('premier jour prêt : 2020-12-18 00:00 UTC', $html);
+        self::assertStringContainsString('5 jours haussiers, 3 baissiers', $html);
+        self::assertStringNotContainsString('aucun : la stratégie ne lit pas le régime', $html);
+    }
+
+    public function testG1AtAnotherCapitalIsFlagged(): void
+    {
+        $run = $this->copyPortfolio();
+        $run->replace('metrics.json', '"at_reference_capital": true', '"at_reference_capital": false');
+
+        $html = $this->renderPortfolio($run);
+
+        self::assertStringContainsString('ce run est à un autre capital', $html);
+    }
+
+    public function testSectionsDegradeWhenS9BlocksAreAbsent(): void
+    {
+        $run = $this->copyPortfolio();
+        foreach (['executability', 'g1_executable', 'instruments'] as $key) {
+            $run->setJson('metrics.json', [$key], null);
+        }
+        foreach ([['funnel_by_pair'], ['portfolio'], ['priority'], ['distribution', 'by_pair']] as $path) {
+            $run->unsetJson('metrics.json', $path);
+        }
+
+        $html = $this->renderPortfolio($run);
+
+        self::assertStringContainsString('Ce run ne porte pas de bloc <code>funnel_by_pair</code>', $html);
+        self::assertStringContainsString('Ce run ne porte pas de bloc <code>executability</code>', $html);
+        self::assertStringContainsString('Ce run ne porte pas de bloc <code>g1_executable</code>', $html);
+        self::assertStringContainsString('<th scope="row">Instruments</th>', $html);
+        self::assertStringContainsString('non déclarés', $html);
+    }
+
+    public function testNotApplicableVerdictsAndNoUpcomingChanges(): void
+    {
+        $run = $this->copyPortfolio();
+        $run->replace('metrics.json', '"verdict": "fail"', '"verdict": "not_applicable"');
+        $run->setJson('metrics.json', ['instruments'], [
+            'fetched_at' => null,
+            'file' => null,
+            'instruments_hash' => null,
+            'not_live' => [],
+            'source' => 'toml',
+            'upcoming_changes' => [],
+        ]);
+        $run->setJson('manifest.json', ['instruments_hash'], null);
+        $run->setJson('manifest.json', ['instruments_file'], null);
+
+        $html = $this->renderPortfolio($run);
+
+        self::assertStringContainsString('source <code>toml</code>', $html);
+        self::assertStringContainsString('<code>not_applicable</code>', $html);
+        self::assertStringNotContainsString('<code>instruments_hash</code>', $html);
+        self::assertStringNotContainsString('Hors état', $html);
+        self::assertMatchesRegularExpression('#Changements à venir annoncés par OKX \(non appliqués au backtest\) :\s*aucun#', $html);
+    }
+
+    public function testPortfolioTextsAreEscaped(): void
+    {
+        $run = $this->copyPortfolio();
+        $run->replace('metrics.json', '"reason": "rejected_volume"', '"reason": "<script>alert(1)</script>"');
+
+        $html = $this->renderPortfolio($run);
+
+        self::assertStringContainsString('&lt;script&gt;alert(1)&lt;/script&gt;', $html);
+        self::assertStringNotContainsString('<script', $html);
+    }
+
+    public function testPortfolioReportIsSelfContainedAndDeterministic(): void
+    {
+        $first = $this->renderPortfolio();
+        $second = $this->renderPortfolio();
+
+        self::assertSame($first, $second);
+        self::assertStringNotContainsString('http://', $first);
+        self::assertStringNotContainsString('https://', $first);
+        self::assertStringNotContainsString(RunFixture::PORTFOLIO_SOURCE, $first);
+    }
 }

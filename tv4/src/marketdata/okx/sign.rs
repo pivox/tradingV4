@@ -119,7 +119,13 @@ fn civil_from_days(z: i64) -> (i64, i64, i64) {
 /// - `path_and_query` : le chemin avec sa chaîne de requête, tel qu'envoyé
 ///   (`/api/v5/account/instruments?instType=SPOT`) ;
 /// - `body` : vide pour un GET.
-pub fn sign(secret: &str, timestamp: &str, method: &str, path_and_query: &str, body: &str) -> String {
+pub fn sign(
+    secret: &str,
+    timestamp: &str,
+    method: &str,
+    path_and_query: &str,
+    body: &str,
+) -> String {
     let mut prehash =
         String::with_capacity(timestamp.len() + method.len() + path_and_query.len() + body.len());
     prehash.push_str(timestamp);

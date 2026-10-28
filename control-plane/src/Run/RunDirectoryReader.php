@@ -74,14 +74,20 @@ final class RunDirectoryReader
             }
         }
 
-        $manifestJson = $this->json($dir, self::MANIFEST_FILE, [self::MANIFEST_SCHEMA_S8, self::MANIFEST_SCHEMA_S9]);
-        $metricsJson = $this->json($dir, self::METRICS_FILE, [self::METRICS_SCHEMA_S8, self::METRICS_SCHEMA_S9]);
+        $manifestSchemas = [self::MANIFEST_SCHEMA_S8, self::MANIFEST_SCHEMA_S9];
+        $metricsSchemas = [self::METRICS_SCHEMA_S8, self::METRICS_SCHEMA_S9];
+        $manifestJson = $this->json($dir, self::MANIFEST_FILE, $manifestSchemas);
+        $metricsJson = $this->json($dir, self::METRICS_FILE, $metricsSchemas);
         $portfolio = self::MANIFEST_SCHEMA_S9 === $manifestJson->string('schema');
         if ($portfolio !== (self::METRICS_SCHEMA_S9 === $metricsJson->string('schema'))) {
             throw InvalidRunException::invalidValue(
                 self::METRICS_FILE,
                 'schema',
-                sprintf('"%s" ne correspond pas au schéma du manifeste "%s"', $metricsJson->string('schema'), $manifestJson->string('schema')),
+                sprintf(
+                    '"%s" ne correspond pas au schéma du manifeste "%s"',
+                    $metricsJson->string('schema'),
+                    $manifestJson->string('schema'),
+                ),
             );
         }
 
@@ -94,8 +100,8 @@ final class RunDirectoryReader
         if ($manifest->datasetHash !== $metrics->datasetHash) {
             throw InvalidRunException::invalidValue(self::METRICS_FILE, 'dataset_hash', 'différent de celui du manifeste');
         }
-        $metricsInstrumentsHash = $metrics->instruments?->instrumentsHash;
-        if (null !== $manifest->instrumentsHash && null !== $metricsInstrumentsHash && $manifest->instrumentsHash !== $metricsInstrumentsHash) {
+        $instrumentsHash = $metrics->instruments?->instrumentsHash;
+        if (null !== $manifest->instrumentsHash && null !== $instrumentsHash && $manifest->instrumentsHash !== $instrumentsHash) {
             throw InvalidRunException::invalidValue(self::METRICS_FILE, 'instruments.instruments_hash', 'différent de celui du manifeste');
         }
 
@@ -469,7 +475,8 @@ final class RunDirectoryReader
     private function g1(JsonObject $o): G1Executable
     {
         $counts = [];
-        foreach (['fills', 'rejected_volume', 'rejected_min_notional', 'rejected_lot_step', 'rejected_cash', 'rejected_max_positions'] as $key) {
+        $keys = ['fills', 'rejected_volume', 'rejected_min_notional', 'rejected_lot_step', 'rejected_cash', 'rejected_max_positions'];
+        foreach ($keys as $key) {
             if ($o->has($key)) {
                 $counts[$key] = $o->int($key);
             }

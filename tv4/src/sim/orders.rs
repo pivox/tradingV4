@@ -187,6 +187,9 @@ pub(super) struct Order {
     /// `Enter` seulement.
     pub stop: Option<f64>,
     pub take_profit: Option<f64>,
+    /// `MarketBuy` : plafond de notional (`qty × prix`) appliqué au fill (mode recherche du portefeuille,
+    /// docs S9 §7.1). `None` hors portefeuille.
+    pub max_notional: Option<f64>,
     /// Limits : situation par rapport au prix à l'arrivée. `Unresolved` pour un market.
     pub arrival: Arrival,
 }
@@ -218,6 +221,7 @@ impl Order {
             equity_at_signal: 0.0,
             stop: None,
             take_profit: None,
+            max_notional: None,
             arrival: Arrival::Unresolved,
         }
     }

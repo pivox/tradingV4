@@ -1,0 +1,78 @@
+{
+  "schema": "tv4-instruments-v1",
+  "exchange": "okx",
+  "site": "eea",
+  "endpoint": "/api/v5/account/instruments",
+  "inst_type": "SPOT",
+  "fetched_at": "2023-11-14T22:13:20.123Z",
+  "server_time_ms": 1700000000123,
+  "instruments_hash": "blake3:99e4c377d7c8bae9c2f26a867c209ad77a88856bff57d80a40de744e7b77c90b",
+  "instruments": [
+    {
+      "inst_id": "ADA-USDC",
+      "base_ccy": "ADA",
+      "quote_ccy": "USDC",
+      "tick_sz": "0.0001",
+      "lot_sz": "0.000001",
+      "min_sz": "1",
+      "state": "suspend",
+      "list_time": "1755763200000",
+      "rule_type": "normal",
+      "trade_quote_ccy_list": [
+        "USDC"
+      ],
+      "upc_chg": []
+    },
+    {
+      "inst_id": "BTC-USDC",
+      "base_ccy": "BTC",
+      "quote_ccy": "USDC",
+      "tick_sz": "0.1",
+      "lot_sz": "0.00000001",
+      "min_sz": "0.00001",
+      "state": "live",
+      "list_time": "1755763200000",
+      "rule_type": "normal",
+      "trade_quote_ccy_list": [
+        "USDC"
+      ],
+      "upc_chg": []
+    },
+    {
+      "inst_id": "ETH-USDC",
+      "base_ccy": "ETH",
+      "quote_ccy": "USDC",
+      "tick_sz": "0.01",
+      "lot_sz": "0.000001",
+      "min_sz": "0.001",
+      "state": "live",
+      "list_time": "1755763200000",
+      "rule_type": "normal",
+      "trade_quote_ccy_list": [
+        "USDC"
+      ],
+      "upc_chg": []
+    },
+    {
+      "inst_id": "SOL-USDC",
+      "base_ccy": "SOL",
+      "quote_ccy": "USDC",
+      "tick_sz": "0.001",
+      "lot_sz": "0.000001",
+      "min_sz": "0.01",
+      "state": "live",
+      "list_time": "1755763200000",
+      "rule_type": "normal",
+      "trade_quote_ccy_list": [
+        "USDC"
+      ],
+      "upc_chg": [
+        {
+          "effTime": "1798761600000",
+          "newValue": "0.02",
+          "param": "minSz"
+        }
+      ]
+    }
+  ]
+}

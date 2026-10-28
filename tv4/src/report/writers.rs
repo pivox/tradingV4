@@ -12,9 +12,10 @@
 //! colonnes.
 //!
 //! Vocabulaire de `exit_type` : `time_stop`, `strategy_exit`, `limit_sell`, `stop_loss`,
-//! `trailing_stop`, `take_profit`, `end_of_window`. Les valeurs `roll` (F3 rejetée par G0) et
-//! `gap_forced_exit` (un trou signifie « le temps avance, pas le prix », docs/03 §5.1) ne sont jamais
-//! écrites au jalon 1. Les colonnes `regime_at_entry` (étiquette de régime, jalon 1.5) et
+//! `trailing_stop`, `take_profit`, `end_of_window`. La valeur `roll` (F3 rejetée par G0) n'est jamais
+//! écrite. `gap_forced_exit` (sortie forcée d'une jambe sans cotation au-delà du seuil, docs S9 §4.3)
+//! n'est produite que par le portefeuille de S9 (`exit_reason = quote_gap`) : le chemin de S8 ne
+//! l'écrit pas. Les colonnes `regime_at_entry` (étiquette de régime, jalon 1.5) et
 //! `spread_cost` (spread non modélisé, S10) sont toujours vides au jalon 1.
 
 use std::path::{Path, PathBuf};
@@ -111,6 +112,18 @@ pub const EXIT_TYPES: [&str; 7] = [
     "trailing_stop",
 ];
 
+/// Les huit `exit_type` du portefeuille de S9 : ceux du jalon 1 plus `gap_forced_exit`, triés.
+pub const EXIT_TYPES_S9: [&str; 8] = [
+    "end_of_window",
+    "gap_forced_exit",
+    "limit_sell",
+    "stop_loss",
+    "strategy_exit",
+    "take_profit",
+    "time_stop",
+    "trailing_stop",
+];
+
 /// Ce que le writer de 36 colonnes sait en dehors des trades.
 #[derive(Clone, Copy, Debug)]
 pub struct TradesContext<'a> {
@@ -134,6 +147,7 @@ fn reason(value: ExitReason) -> &'static str {
         ExitReason::Stop => "stop",
         ExitReason::TakeProfit => "take_profit",
         ExitReason::ForcedClose => "forced_close",
+        ExitReason::QuoteGap => "quote_gap",
     }
 }
 
@@ -147,6 +161,7 @@ pub fn exit_type(trade: &Trade) -> &'static str {
         ExitReason::Stop => "stop_loss",
         ExitReason::TakeProfit => "take_profit",
         ExitReason::ForcedClose => "end_of_window",
+        ExitReason::QuoteGap => "gap_forced_exit",
     }
 }
 
@@ -238,21 +253,59 @@ pub fn trades_csv_s6(trades: &[Trade]) -> Result<Vec<u8>, ReportError> {
 
 /// Contenu de `trades.csv` (36 colonnes) en mémoire.
 pub fn trades_csv(trades: &[Trade], context: &TradesContext<'_>) -> Result<Vec<u8>, ReportError> {
+    trades_csv_rows(trades, context.span_ms, |_| Ok(context.symbol))
+}
+
+/// Contenu de `trades.csv` (36 colonnes) d'un portefeuille : la colonne `symbol` porte le symbole de la
+/// jambe du trade (`trade_legs[i]` indexe `symbols`). Les lignes suivent l'ordre du journal partagé. Avec
+/// une seule jambe, le résultat est celui de [`trades_csv`], à l'octet.
+pub fn trades_csv_legs(
+    trades: &[Trade],
+    trade_legs: &[u16],
+    symbols: &[&str],
+    span_ms: i64,
+) -> Result<Vec<u8>, ReportError> {
+    if trade_legs.len() != trades.len() {
+        return Err(ReportError::Series {
+            detail: format!(
+                "{} trades pour {} jambes de trade",
+                trades.len(),
+                trade_legs.len()
+            ),
+        });
+    }
+    trades_csv_rows(trades, span_ms, |i| {
+        trade_legs
+            .get(i)
+            .and_then(|&leg| symbols.get(usize::from(leg)))
+            .copied()
+            .ok_or_else(|| ReportError::Series {
+                detail: format!("le trade {i} porte une jambe absente de l'univers"),
+            })
+    })
+}
+
+/// Corps commun de [`trades_csv`] et de [`trades_csv_legs`] : `symbol_of(i)` rend le symbole du trade `i`.
+fn trades_csv_rows<'a>(
+    trades: &[Trade],
+    span_ms: i64,
+    symbol_of: impl Fn(usize) -> Result<&'a str, ReportError>,
+) -> Result<Vec<u8>, ReportError> {
     let csv_error = |e: csv::Error| ReportError::Csv(e.to_string());
     let mut writer = csv_writer();
     writer.write_record(TRADES_COLUMNS).map_err(csv_error)?;
-    for t in trades {
+    for (i, t) in trades.iter().enumerate() {
         let holding = holding_ms(t)?;
         let risk = risk_quote(t);
         let r = r_multiple(t);
         let mut row: Vec<String> = Vec::with_capacity(TRADES_COLUMNS.len());
         row.extend(row_s6(t));
-        row.push(context.symbol.to_string());
+        row.push(symbol_of(i)?.to_string());
         row.push(t.entry_order_ms.to_string());
         row.push(t.exit_order_ms.to_string());
         row.push(exit_type(t).to_string());
         row.push(holding.to_string());
-        row.push((holding as f64 / context.span_ms as f64).to_string());
+        row.push((holding as f64 / span_ms as f64).to_string());
         row.push(optional(t.stop_at_entry));
         row.push(optional(risk));
         row.push(optional(r));
@@ -297,6 +350,19 @@ pub fn write_trades_csv(
     context: &TradesContext<'_>,
 ) -> Result<PathBuf, ReportError> {
     let bytes = trades_csv(trades, context)?;
+    write_bytes_atomic(dir, TRADES_FILE, &bytes)
+}
+
+/// Écrit `trades.csv` d'un portefeuille (voir [`trades_csv_legs`]) dans `dir` de façon atomique. Rend le
+/// chemin final.
+pub fn write_trades_csv_legs(
+    dir: &Path,
+    trades: &[Trade],
+    trade_legs: &[u16],
+    symbols: &[&str],
+    span_ms: i64,
+) -> Result<PathBuf, ReportError> {
+    let bytes = trades_csv_legs(trades, trade_legs, symbols, span_ms)?;
     write_bytes_atomic(dir, TRADES_FILE, &bytes)
 }
 
@@ -451,6 +517,72 @@ mod tests {
         for type_ in EXIT_TYPES {
             assert!(!type_.is_empty());
         }
+    }
+
+    #[test]
+    fn sortie_pour_trou_de_cotation() {
+        let mut t = trade(Some(95.0), false);
+        t.exit_reason = ExitReason::QuoteGap;
+        t.exit_tag = "quote_gap";
+        assert_eq!(exit_type(&t), "gap_forced_exit");
+        let context = TradesContext {
+            symbol: "BTC-USD",
+            span_ms: 1_000_000,
+        };
+        let texte = String::from_utf8(trades_csv(&[t], &context).unwrap()).unwrap();
+        let champs: Vec<&str> = texte.lines().nth(1).unwrap().split(',').collect();
+        assert_eq!(champs[10], "quote_gap");
+        assert_eq!(champs[28], "gap_forced_exit");
+        assert_eq!(champs[22], "false", "forced_close reste faux");
+        assert!(EXIT_TYPES_S9.contains(&"gap_forced_exit"));
+        assert!(EXIT_TYPES_S9.windows(2).all(|w| w[0] < w[1]), "triés");
+        for type_ in EXIT_TYPES {
+            assert!(EXIT_TYPES_S9.contains(&type_));
+        }
+    }
+
+    #[test]
+    fn trades_csv_legs_porte_le_symbole_de_la_jambe() {
+        let trades = [trade(Some(95.5), false), trade(None, true), trade(None, false)];
+        let jambes = [1u16, 0, 1];
+        let symboles = ["ZZZ-USD", "AAA-USD"];
+        let texte =
+            String::from_utf8(trades_csv_legs(&trades, &jambes, &symboles, 1_000_000).unwrap())
+                .unwrap();
+        let lignes: Vec<&str> = texte.lines().collect();
+        assert_eq!(lignes.len(), 4);
+        let symbole = |i: usize| lignes[i].split(',').nth(25).unwrap().to_string();
+        assert_eq!(symbole(1), "AAA-USD");
+        assert_eq!(symbole(2), "ZZZ-USD");
+        assert_eq!(symbole(3), "AAA-USD");
+        // Une jambe, tous les trades sur elle : octets de `trades_csv`.
+        let context = TradesContext {
+            symbol: "BTC-USD",
+            span_ms: 1_000_000,
+        };
+        assert_eq!(
+            trades_csv_legs(&trades, &[0, 0, 0], &["BTC-USD"], 1_000_000).unwrap(),
+            trades_csv(&trades, &context).unwrap()
+        );
+        // Désalignement et jambe absente de l'univers.
+        assert!(trades_csv_legs(&trades, &[0], &["BTC-USD"], 1_000_000).is_err());
+        assert!(trades_csv_legs(&trades, &[0, 0, 2], &["BTC-USD"], 1_000_000).is_err());
+        assert!(trades_csv_legs(&[], &[], &[], 1_000_000).is_ok());
+    }
+
+    #[test]
+    fn ecriture_atomique_de_trades_csv_legs() {
+        let dir = std::env::temp_dir().join(format!("tv4-trades-legs-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let trades = [trade(None, false)];
+        let chemin = write_trades_csv_legs(&dir, &trades, &[0], &["ETH-USD"], 1_000_000).unwrap();
+        assert_eq!(chemin, dir.join("trades.csv"));
+        assert!(!dir.join("trades.csv.tmp").exists());
+        assert_eq!(
+            std::fs::read(&chemin).unwrap(),
+            trades_csv_legs(&trades, &[0], &["ETH-USD"], 1_000_000).unwrap()
+        );
+        std::fs::remove_dir_all(&dir).unwrap();
     }
 
     #[test]

@@ -70,6 +70,7 @@
 
 #![forbid(unsafe_code)]
 
+mod book;
 mod fills;
 mod orders;
 mod portfolio;
@@ -88,6 +89,7 @@ use crate::model::{
     BPS_PER_UNIT, Candle, FeeSchedule, InstrumentRules, ModelError, Side, Slippage, Ts,
 };
 
+pub use book::{Book, BookConfig, BookOutcome, BookRejection, SizingMode};
 pub use orders::{Instruction, OrderPrice, PendingView, Rejection, SizeSpec, SubmitContext};
 pub use portfolio::{ExitReason, Liquidity, PositionView, Trade};
 pub use rules::{IntrabarRule, MIN_CASH_MARGIN, SIM_RULES_VERSION, SimRules};
@@ -125,6 +127,9 @@ pub enum SimError {
     )]
     InvariantViolated { open_time_ms: Ts },
 
+    #[error("jambe {leg} inconnue : le portefeuille en compte {legs}")]
+    UnknownLeg { leg: usize, legs: usize },
+
     #[error(transparent)]
     Model(#[from] ModelError),
 }
@@ -160,6 +165,28 @@ pub struct SimCounters {
     pub move_stops_dropped_flat: u64,
     pub bars_zero_volume_blocked: u64,
     pub orders_unfilled_at_end: u64,
+}
+
+/// Compteurs de détail du simulateur, ajoutés en S9 (docs S9 §9.1). Ils ne sont pas dans
+/// [`SimCounters`], dont les 23 champs sont sérialisés par le rapport de S8 : cette struct n'est écrite que
+/// par le rapport du portefeuille.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize)]
+pub struct SimDetail {
+    /// Achat refusé parce que la quantité arrondie au lot est nulle (`lots == 0`, motif `lot_step`).
+    pub below_min_zero_lot: u64,
+    /// Achat refusé parce que la quantité arrondie est d'au moins un lot mais sous `min_lots`
+    /// (minSz, motif `min_notional`).
+    pub below_min_min_qty: u64,
+    /// Achat refusé parce que le notional est sous `min_notional` (0 chez OKX).
+    pub below_min_notional: u64,
+    /// Ventes limit refusées sous les minimums (sorties : hors entonnoir d'entrée).
+    pub below_min_exits: u64,
+    /// Entrées dont la quantité a été plafonnée par le notional maximal (mode recherche, `capital / N`).
+    pub entries_capped_by_notional: u64,
+    /// Entrées portées au minimum d'ordre par la règle `min_order_bump` (docs S9 §7.3).
+    pub entries_bumped_to_min: u64,
+    /// Sorties forcées pour trou de cotation (docs S9 §4.3).
+    pub quote_gap_exits: u64,
 }
 
 /// Résultat final du simulateur.
@@ -219,6 +246,13 @@ pub struct Simulator {
     kt: f64,
     cash: f64,
     quote_reserved: f64,
+    /// Quote réservé par les autres jambes d'un [`Book`] (0.0 hors portefeuille). Il est soustrait en
+    /// dernier de chaque cash libre : `(cash − réservé) − 0.0` rend les mêmes bits pour tout flottant,
+    /// donc le chemin mono-paire de S8 est inchangé au bit.
+    foreign_reserved: f64,
+    /// Règle `min_order_bump` : part maximale de la base de sizing que le risque d'une entrée portée au
+    /// minimum d'ordre peut atteindre (docs S9 §7.3). `None` : règle absente.
+    bump_max_risk_pct: Option<f64>,
     reserved_lots: u64,
     /// Vrai quand la file a changé depuis le dernier calcul des réservations (S6, passe C : le recalcul
     /// est une fonction pure de la file, il est inutile tant qu'elle n'a pas bougé).
@@ -254,6 +288,7 @@ pub struct Simulator {
     next_lot_id: u64,
     trades: Vec<Trade>,
     counters: SimCounters,
+    detail: SimDetail,
 }
 
 /// Seuil de franchissement d'une limit, en ticks : `limit_cross_ticks − STEP_SNAP`, pour qu'un
@@ -333,6 +368,8 @@ impl Simulator {
             kt: cross_threshold(rules.limit_cross_ticks),
             cash: initial_cash,
             quote_reserved: 0.0,
+            foreign_reserved: 0.0,
+            bump_max_risk_pct: None,
             reserved_lots: 0,
             reservations_dirty: false,
             qty_lots: 0,
@@ -354,6 +391,7 @@ impl Simulator {
             next_lot_id: 0,
             trades: Vec::with_capacity(trades_capacity),
             counters: SimCounters::default(),
+            detail: SimDetail::default(),
         })
     }
 
@@ -375,9 +413,10 @@ impl Simulator {
         self.cash
     }
 
-    /// Cash moins le quote réservé par les limits d'achat en attente.
+    /// Cash moins le quote réservé par les limits d'achat en attente (et, dans un [`Book`], par celles des
+    /// autres jambes, soustrait en dernier).
     pub fn quote_free(&self) -> f64 {
-        self.cash - self.quote_reserved
+        self.cash - self.quote_reserved - self.foreign_reserved
     }
 
     /// Quantité détenue (monnaie de base), 0 à plat.
@@ -426,6 +465,11 @@ impl Simulator {
         &self.counters
     }
 
+    /// Compteurs de détail de S9 (voir [`SimDetail`]).
+    pub fn detail(&self) -> &SimDetail {
+        &self.detail
+    }
+
     // -----------------------------------------------------------------------------------------
     // Soumission
     // -----------------------------------------------------------------------------------------
@@ -435,6 +479,55 @@ impl Simulator {
         lots == 0
             || lots < self.min_lots
             || self.qty_of(lots) * price < self.instrument.min_notional
+    }
+
+    /// Range un refus `BelowMinimum` dans le compteur de [`SimDetail`] selon la condition de
+    /// [`Simulator::below_min`] qui a mordu, dans l'ordre `lots == 0`, `lots < min_lots`, notional. Les
+    /// refus de ventes vont dans `below_min_exits`. Appelé seulement sur un refus.
+    fn note_below_min(&mut self, lots: u64, price: f64, buy: bool) {
+        if !buy {
+            self.detail.below_min_exits += 1;
+        } else if lots == 0 {
+            self.detail.below_min_zero_lot += 1;
+        } else if lots < self.min_lots {
+            self.detail.below_min_min_qty += 1;
+        } else {
+            debug_assert!(self.qty_of(lots) * price < self.instrument.min_notional);
+            self.detail.below_min_notional += 1;
+        }
+    }
+
+    /// Règle `min_order_bump` (docs S9 §7.3) : rend vrai si une entrée de `lots` lots, sous le minimum
+    /// d'ordre, peut être portée à `min_lots`. Il faut que la règle soit présente, que l'entrée ait un stop
+    /// sous le prix, que le risque effectif `min_lots × lot × (prix − stop)` reste sous
+    /// `max_risk_pct × base`, que le cash libre couvre `min_lots` et que le plafond de notional (s'il y en a
+    /// un) le laisse passer. `cash_qty` est la quantité maximale que le cash libre permet d'acheter.
+    #[allow(clippy::too_many_arguments)]
+    fn can_bump(
+        &self,
+        lots: u64,
+        price: f64,
+        stop: Option<f64>,
+        base: f64,
+        cash_capped: bool,
+        cash_qty: f64,
+        max_notional: Option<f64>,
+    ) -> bool {
+        let Some(max_risk) = self.bump_max_risk_pct else {
+            return false;
+        };
+        if self.min_lots == 0 || lots >= self.min_lots || cash_capped {
+            return false;
+        }
+        let Some(stop) = stop else {
+            return false;
+        };
+        let min_qty = self.qty_of(self.min_lots);
+        if max_notional.is_some_and(|m| min_qty * price > m) {
+            return false;
+        }
+        matches!(floor_steps(cash_qty, self.inv_lot), Some(k) if k >= self.min_lots)
+            && sizing::bump_risk_ok(min_qty, price, stop, base, max_risk)
     }
 
     /// Réservation d'un achat limit : notional plus frais maker estimés.
@@ -489,6 +582,19 @@ impl Simulator {
         instruction: Instruction,
         ctx: SubmitContext,
     ) -> Result<(), Rejection> {
+        self.submit_capped(instruction, ctx, None)
+    }
+
+    /// Comme [`Simulator::submit`], avec un plafond de notional (`qty × prix`) sur les entrées : mode
+    /// recherche du portefeuille, `capital / N` (docs S9 §7.1). Le plafond s'applique à la soumission pour
+    /// une limit d'achat (avant la réservation) et au fill pour un market ; un plafond qui mord n'est pas
+    /// un refus (compteur `entries_capped_by_notional`). `None` rend exactement `submit`.
+    pub fn submit_capped(
+        &mut self,
+        instruction: Instruction,
+        ctx: SubmitContext,
+        max_notional: Option<f64>,
+    ) -> Result<(), Rejection> {
         match instruction {
             Instruction::Enter {
                 size,
@@ -496,7 +602,7 @@ impl Simulator {
                 stop,
                 take_profit,
                 tag,
-            } => self.submit_enter(size, price, stop, take_profit, tag, ctx),
+            } => self.submit_enter(size, price, stop, take_profit, tag, ctx, max_notional),
             Instruction::Exit { price, tag } => self.submit_exit(price, tag, ctx),
             Instruction::Place {
                 side,
@@ -505,7 +611,7 @@ impl Simulator {
                 ttl_bars,
                 slot,
                 tag,
-            } => self.submit_place(side, price, size, ttl_bars, slot, tag, ctx),
+            } => self.submit_place(side, price, size, ttl_bars, slot, tag, ctx, max_notional),
             Instruction::MoveStop { stop } => {
                 if !valid_price(stop) {
                     return Err(Rejection::InvalidPrice);
@@ -541,6 +647,7 @@ impl Simulator {
         }
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn submit_enter(
         &mut self,
         size: SizeSpec,
@@ -549,6 +656,7 @@ impl Simulator {
         take_profit: Option<f64>,
         tag: &'static str,
         ctx: SubmitContext,
+        max_notional: Option<f64>,
     ) -> Result<(), Rejection> {
         if let OrderPrice::Limit { price, .. } = price
             && !valid_price(price)
@@ -585,7 +693,7 @@ impl Simulator {
                 // par des limits d'achat) : le market serait abandonné au fill, autant le refuser au signal
                 // pour que l'entonnoir soit juste. Un quote libre qui couvre au moins un lot plafonne l'achat
                 // au fill (écart 3).
-                let cap = (self.cash - self.quote_reserved)
+                let cap = (self.cash - self.quote_reserved - self.foreign_reserved)
                     * (1.0 - self.rules.market_buy_cash_margin)
                     / (ctx.ref_price * (1.0 + self.taker));
                 if !matches!(floor_steps(cap, self.inv_lot), Some(k) if k > 0) {
@@ -597,6 +705,7 @@ impl Simulator {
                 order.equity_at_signal = ctx.equity;
                 order.stop = stop;
                 order.take_profit = take_profit;
+                order.max_notional = max_notional;
                 self.accept(order)
             }
             OrderPrice::Limit { price, ttl_bars } => {
@@ -604,10 +713,18 @@ impl Simulator {
                     Some(k) if k > 0 => k as f64 / self.inv_tick,
                     _ => return Err(Rejection::InvalidPrice),
                 };
-                let Some(q) = sizing::size_qty(size, ctx.equity, limit, stop) else {
+                let Some(mut q) = sizing::size_qty(size, ctx.equity, limit, stop) else {
                     return Err(Rejection::InvalidRiskSizing);
                 };
-                let free = self.cash - self.quote_reserved;
+                let mut notional_capped = false;
+                if let Some(max_notional) = max_notional {
+                    let cap_q = max_notional / limit;
+                    if cap_q < q {
+                        q = cap_q;
+                        notional_capped = true;
+                    }
+                }
+                let free = self.cash - self.quote_reserved - self.foreign_reserved;
                 let cap =
                     free * (1.0 - self.rules.market_buy_cash_margin) / (limit * (1.0 + self.maker));
                 let capped = cap < q;
@@ -615,16 +732,28 @@ impl Simulator {
                 if !(qf.is_finite() && qf > 0.0) {
                     return Err(Rejection::InsufficientQuote);
                 }
-                let Some(lots) = floor_steps(qf, self.inv_lot) else {
+                let Some(mut lots) = floor_steps(qf, self.inv_lot) else {
                     return Err(Rejection::InsufficientQuote);
                 };
+                let mut bumped = false;
+                if self.bump_max_risk_pct.is_some()
+                    && self.can_bump(lots, limit, stop, ctx.equity, capped, cap, max_notional)
+                {
+                    lots = self.min_lots;
+                    bumped = true;
+                }
                 if self.below_min(lots, limit) {
+                    self.note_below_min(lots, limit, true);
                     return Err(Rejection::BelowMinimum);
                 }
                 let reserved = self.reservation(lots, limit);
-                if self.quote_reserved + reserved > self.cash * (1.0 - RESERVE_SLACK) {
+                if self.quote_reserved + reserved + self.foreign_reserved
+                    > self.cash * (1.0 - RESERVE_SLACK)
+                {
                     return Err(Rejection::InsufficientQuote);
                 }
+                self.detail.entries_capped_by_notional += u64::from(notional_capped);
+                self.detail.entries_bumped_to_min += u64::from(bumped);
                 let mut order =
                     Order::base(Origin::Enter, OrderType::LimitBuy, tag, ctx.signal_ms, act);
                 order.expires_at_ms = Some(act.saturating_add(i64::from(ttl_bars) * MINUTE_MS));
@@ -680,6 +809,7 @@ impl Simulator {
                     _ => return Err(Rejection::InvalidPrice),
                 };
                 if self.below_min(free, limit) {
+                    self.note_below_min(free, limit, false);
                     return Err(Rejection::BelowMinimum);
                 }
                 let mut order =
@@ -703,6 +833,7 @@ impl Simulator {
         slot: u16,
         tag: &'static str,
         ctx: SubmitContext,
+        max_notional: Option<f64>,
     ) -> Result<(), Rejection> {
         if !valid_price(price) {
             return Err(Rejection::InvalidPrice);
@@ -733,19 +864,31 @@ impl Simulator {
                     Some(k) if k > 0 => k as f64 / self.inv_tick,
                     _ => return Err(Rejection::InvalidPrice),
                 };
-                let Some(q) = sizing::size_qty(size, ctx.equity, limit, None) else {
+                let Some(mut q) = sizing::size_qty(size, ctx.equity, limit, None) else {
                     return Err(Rejection::InvalidSize);
                 };
+                let mut notional_capped = false;
+                if let Some(max_notional) = max_notional {
+                    let cap_q = max_notional / limit;
+                    if cap_q < q {
+                        q = cap_q;
+                        notional_capped = true;
+                    }
+                }
                 let Some(lots) = floor_steps(q, self.inv_lot) else {
                     return Err(Rejection::InsufficientQuote);
                 };
                 if self.below_min(lots, limit) {
+                    self.note_below_min(lots, limit, true);
                     return Err(Rejection::BelowMinimum);
                 }
                 let reserved = self.reservation(lots, limit);
-                if self.quote_reserved + reserved > self.cash * (1.0 - RESERVE_SLACK) {
+                if self.quote_reserved + reserved + self.foreign_reserved
+                    > self.cash * (1.0 - RESERVE_SLACK)
+                {
                     return Err(Rejection::InsufficientQuote);
                 }
+                self.detail.entries_capped_by_notional += u64::from(notional_capped);
                 let mut order =
                     Order::base(Origin::Place, OrderType::LimitBuy, tag, ctx.signal_ms, act);
                 order.slot = slot;
@@ -770,6 +913,7 @@ impl Simulator {
                 };
                 let lots = floor_steps(q, self.inv_lot).unwrap_or(free).min(free);
                 if self.below_min(lots, limit) {
+                    self.note_below_min(lots, limit, false);
                     return Err(Rejection::BelowMinimum);
                 }
                 let mut order =
@@ -919,12 +1063,20 @@ impl Simulator {
             return Ok(false);
         }
         let price = fills::market_buy_price(candle.open, self.slippage);
-        let Some(q) = sizing::size_qty(order.size, order.equity_at_signal, price, order.stop)
+        let Some(mut q) = sizing::size_qty(order.size, order.equity_at_signal, price, order.stop)
         else {
             self.counters.entries_invalid_risk_at_fill += 1;
             return Ok(false);
         };
-        let free = self.cash - self.quote_reserved;
+        let mut notional_capped = false;
+        if let Some(max_notional) = order.max_notional {
+            let cap_q = max_notional / price;
+            if cap_q < q {
+                q = cap_q;
+                notional_capped = true;
+            }
+        }
+        let free = self.cash - self.quote_reserved - self.foreign_reserved;
         let cap = free * (1.0 - self.rules.market_buy_cash_margin) / (price * (1.0 + self.taker));
         let capped = cap < q;
         let qf = if capped { cap } else { q };
@@ -932,12 +1084,28 @@ impl Simulator {
             self.counters.buys_rejected_insufficient_cash += 1;
             return Ok(false);
         }
-        let Some(lots) = floor_steps(qf, self.inv_lot) else {
+        let Some(mut lots) = floor_steps(qf, self.inv_lot) else {
             self.counters.buys_rejected_insufficient_cash += 1;
             return Ok(false);
         };
+        let mut bumped = false;
+        if self.bump_max_risk_pct.is_some()
+            && self.can_bump(
+                lots,
+                price,
+                order.stop,
+                order.equity_at_signal,
+                capped,
+                cap,
+                order.max_notional,
+            )
+        {
+            lots = self.min_lots;
+            bumped = true;
+        }
         if self.below_min(lots, price) {
             self.counters.buys_rejected_below_minimum += 1;
+            self.note_below_min(lots, price, true);
             return Ok(false);
         }
         let qty = self.qty_of(lots);
@@ -945,6 +1113,8 @@ impl Simulator {
             self.counters.buys_rejected_volume_share += 1;
             return Ok(false);
         }
+        self.detail.entries_capped_by_notional += u64::from(notional_capped);
+        self.detail.entries_bumped_to_min += u64::from(bumped);
         let cost = qty * price;
         let fee = cost * self.taker;
         let slippage = qty * (price - candle.open);
@@ -1079,7 +1249,7 @@ impl Simulator {
             };
             // La réservation couvre les frais maker : en taker, le cash libre (hors réservations des
             // autres ordres) peut ne pas couvrir le fill, qui est alors abandonné comme un achat market.
-            if taker && self.cash - (cost + fee) < self.quote_reserved {
+            if taker && self.cash - (cost + fee) - self.foreign_reserved < self.quote_reserved {
                 self.counters.buys_rejected_insufficient_cash += 1;
                 continue;
             }
@@ -1491,11 +1661,22 @@ impl Simulator {
     /// est soldée au close de la dernière 1m (clôture forcée, avec slippage et frais taker, règle de
     /// volume ignorée). Un `MoveStop` pas encore effectif est abandonné sans compteur.
     pub fn finish(mut self, last: &Candle) -> Result<SimOutcome, SimError> {
-        self.counters.orders_unfilled_at_end += self.pending.len() as u64;
-        self.pending.clear();
-        self.reservations_dirty = true;
-        self.recompute_reservations();
-        self.stop_update = None;
+        let forced_close = self.close_at_end(last)?;
+        Ok(SimOutcome {
+            cash: self.cash,
+            qty: self.qty_of(self.qty_lots),
+            forced_close,
+            counters: self.counters,
+            trades: self.trades,
+        })
+    }
+
+    /// Fin de run sans consommer le simulateur (utilisée par [`Book`] et par [`Simulator::finish`]) :
+    /// les ordres en attente sont abandonnés et comptés, un `MoveStop` pas encore effectif aussi, puis la
+    /// position restante est soldée au close de `last` (clôture forcée, slippage et frais taker, règle de
+    /// volume ignorée). Rend vrai si une position a été soldée.
+    pub fn close_at_end(&mut self, last: &Candle) -> Result<bool, SimError> {
+        self.drop_pending_at_end();
         let mut forced_close = false;
         if self.qty_lots > 0 {
             let end_ms = last.open_time_ms.saturating_add(MINUTE_MS);
@@ -1515,13 +1696,70 @@ impl Simulator {
             )?;
             forced_close = true;
         }
-        Ok(SimOutcome {
-            cash: self.cash,
-            qty: self.qty_of(self.qty_lots),
-            forced_close,
-            counters: self.counters,
-            trades: self.trades,
-        })
+        Ok(forced_close)
+    }
+
+    /// Abandonne les ordres en attente (comptés `orders_unfilled_at_end`) et le `MoveStop` pas encore
+    /// effectif.
+    fn drop_pending_at_end(&mut self) {
+        self.counters.orders_unfilled_at_end += self.pending.len() as u64;
+        self.pending.clear();
+        self.reservations_dirty = true;
+        self.recompute_reservations();
+        self.stop_update = None;
+    }
+
+    /// Sortie forcée pour trou de cotation (docs S9 §4.3), à l'instant `exit_ms`. Sans position, ne fait
+    /// rien et rend faux : les entrées en attente d'une jambe à plat ne sont pas touchées. Avec une
+    /// position :
+    /// - tous les ordres en attente sont annulés (les ventes limit comptent dans
+    ///   `sells_cancelled_by_exit`, les autres dans `orders_cancelled`), ainsi que le `MoveStop` en
+    ///   attente ;
+    /// - la position entière est vendue à `last_close × (1 − slippage)`, frais taker, sans règle de
+    ///   volume ni arrondi supplémentaire ;
+    /// - le trade porte [`ExitReason::QuoteGap`], `exit_ref_price = last_close` et
+    ///   `exit_signal_ms = exit_order_ms = exit_ms`.
+    ///
+    /// `last_close` est le close de la dernière bougie passée à `on_bar`, active ou non.
+    pub fn force_exit_quote_gap(&mut self, exit_ms: Ts) -> Result<bool, SimError> {
+        if self.qty_lots == 0 {
+            return Ok(false);
+        }
+        let Some(last_close) = self.last_close else {
+            return Err(SimError::InvariantViolated {
+                open_time_ms: exit_ms,
+            });
+        };
+        for order in &self.pending {
+            if order.kind == OrderType::LimitSell {
+                self.counters.sells_cancelled_by_exit += 1;
+            } else {
+                self.counters.orders_cancelled += 1;
+            }
+        }
+        self.pending.clear();
+        self.reservations_dirty = true;
+        self.recompute_reservations();
+        self.stop_update = None;
+        self.sell_lots(
+            Sale {
+                lots: self.qty_lots,
+                price: fills::market_sell_price(last_close, self.slippage),
+                rate: self.taker,
+                ref_price: last_close,
+                reason: ExitReason::QuoteGap,
+                signal_ms: exit_ms,
+                order_ms: exit_ms,
+                exit_ms,
+                tag: "quote_gap",
+            },
+            true,
+        )?;
+        self.detail.quote_gap_exits += 1;
+        if cfg!(debug_assertions) {
+            self.check_invariants();
+        }
+        Ok(true)
     }
 
     // -----------------------------------------------------------------------------------------
@@ -1544,6 +1782,15 @@ impl Simulator {
             self.quote_reserved <= self.cash,
             "quote_reserved dépasse le cash : {} > {}",
             self.quote_reserved,
+            self.cash
+        );
+        debug_assert!(
+            self.foreign_reserved.is_finite()
+                && self.foreign_reserved >= 0.0
+                && self.quote_reserved + self.foreign_reserved <= self.cash * (1.0 + 1e-12),
+            "les réservations de toutes les jambes dépassent le cash : {} + {} > {}",
+            self.quote_reserved,
+            self.foreign_reserved,
             self.cash
         );
         debug_assert!(
