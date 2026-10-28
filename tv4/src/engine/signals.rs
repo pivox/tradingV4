@@ -160,7 +160,7 @@ impl SignalRejections {
 /// [`SubmitContext`](crate::sim::SubmitContext)).
 pub type SignalContext = SubmitContext;
 
-fn size_spec(size: Size) -> SizeSpec {
+pub(crate) fn size_spec(size: Size) -> SizeSpec {
     match size {
         Size::PctEquity(pct) => SizeSpec::PctEquity(pct),
         Size::RiskPct(pct) => SizeSpec::RiskPct(pct),
@@ -175,8 +175,9 @@ fn order_price(kind: OrderKind) -> OrderPrice {
     }
 }
 
-/// Convertit un signal en instruction, sans aucune logique de refus.
-fn instruction(signal: &Signal) -> Instruction {
+/// Convertit un signal en instruction, sans aucune logique de refus. Partagée avec le moteur
+/// portefeuille, qui soumet l'instruction au `Book` et non à un `Simulator`.
+pub(crate) fn instruction(signal: &Signal) -> Instruction {
     match *signal {
         Signal::EnterLong {
             size,

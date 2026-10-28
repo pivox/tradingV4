@@ -1,0 +1,91 @@
+{% set ex = metrics.executability %}
+{% set g1 = metrics.g1Executable %}
+<section id="executabilite" class="section" aria-labelledby="executabilite-titre">
+  <h2 id="executabilite-titre">Exécutabilité (G0) et G1</h2>
+  <p class="note">Mesure publiée par <code>tv4</code> sur ce run : elle n'est pas le franchissement des portes G0 ou G1, qui restent absentes au jalon 1.</p>
+
+  <h3>Liste live (règle G0)</h3>
+  {% if ex is null %}
+    <p class="absent-note"><strong>Absent.</strong> Ce run ne porte pas de bloc <code>executability</code>.</p>
+  {% else %}
+    <p>Capital de référence : <strong>{{ ex.referenceCapital|money }}</strong> · règle <code>{{ ex.rule }}</code>.</p>
+    {% if not ex.venueMatchesExecution %}
+      <p class="note"><strong>Attention.</strong> Les données ne sont pas les carnets d'exécution OKX en USDC : cette liste ne vaut pas pour l'exécution réelle, elle montre seulement que la règle tourne.</p>
+    {% endif %}
+    <div class="scroll">
+    <table class="data">
+      <thead>
+        <tr>
+          <th scope="col">Paire</th><th scope="col">Instrument OKX</th><th scope="col" class="num">Ordres d'entrée</th>
+          <th scope="col" class="num">Notional de référence</th><th scope="col" class="num">Volume quote 1m médian</th>
+          <th scope="col" class="num">Plafond de volume</th><th scope="col" class="num"><code>minSz</code></th>
+          <th scope="col" class="num">Close médian</th><th scope="col" class="num">Ordre minimum</th>
+          <th scope="col">État</th><th scope="col">Verdict</th>
+        </tr>
+      </thead>
+      <tbody>
+      {% for p in ex.pairs %}
+        <tr>
+          <th scope="row"><code>{{ p.symbol }}</code></th>
+          <td>{% if p.okxInstId is null %}—{% else %}<code>{{ p.okxInstId }}</code>{% endif %}</td>
+          <td class="num">{{ p.entryOrders|int }}</td>
+          <td class="num">{{ p.notionalRef|money }}</td>
+          <td class="num">{{ p.medianQuoteVolume1m|money }}</td>
+          <td class="num">{{ p.volumeCap|money }}</td>
+          <td class="num">{{ p.minSz|qty }}</td>
+          <td class="num">{{ p.medianClose|money }}</td>
+          <td class="num">{{ p.minOrderNotional|money }}</td>
+          <td>{% if p.state is null %}—{% else %}<code>{{ p.state }}</code>{% endif %}</td>
+          <td><code>{{ p.verdict }}</code></td>
+        </tr>
+      {% else %}
+        <tr><td colspan="11" class="absent-note">Aucune paire.</td></tr>
+      {% endfor %}
+      </tbody>
+    </table>
+    </div>
+    <p class="note">Tests dans l'ordre : volume (0,5 % du volume quote 1m médian, minutes absentes comptées pour 0, au moins égal au notional de référence), puis minimum d'ordre (notional de référence au moins égal à <code>minSz</code> × close médian), puis état <code>live</code>. Une paire sans entrée est <code>indeterminate</code> ; sans fichier d'instruments OKX, le verdict est <code>not_applicable</code>.</p>
+    <div class="cols">
+      <div>
+        <h3>Paires retenues</h3>
+        {% if ex.liveList is empty %}
+          <p class="absent-note">Aucune paire n'est déclarée exécutable.</p>
+        {% else %}
+          <ul>{% for symbol in ex.liveList %}<li><code>{{ symbol }}</code></li>{% endfor %}</ul>
+        {% endif %}
+      </div>
+      <div>
+        <h3>Paires écartées</h3>
+        {% if ex.rejected is empty %}
+          <p class="absent-note">Aucune paire écartée.</p>
+        {% else %}
+          <table class="kv">
+            <thead><tr><th scope="col">Paire</th><th scope="col">Motif</th></tr></thead>
+            <tbody>
+            {% for r in ex.rejected %}
+              <tr><th scope="row"><code>{{ r.symbol }}</code></th><td><code>{{ r.reason }}</code></td></tr>
+            {% endfor %}
+            </tbody>
+          </table>
+        {% endif %}
+      </div>
+    </div>
+  {% endif %}
+
+  <h3>G1 : entrées exécutables au capital réel</h3>
+  {% if g1 is null %}
+    <p class="absent-note"><strong>Absent.</strong> Ce run ne porte pas de bloc <code>g1_executable</code>.</p>
+  {% else %}
+    <table class="kv">
+      <tbody>
+        <tr><th scope="row">Verdict</th><td><strong><code>{{ g1.verdict }}</code></strong></td></tr>
+        <tr><th scope="row">Part des entrées exécutables</th><td class="num">{{ g1.ratio|pct }}{% if g1.threshold is not null %} (seuil {{ g1.threshold|pct }}){% endif %}</td></tr>
+        <tr><th scope="row">Mesuré au capital de référence</th><td>{{ g1.atReferenceCapital ? 'oui' : 'non' }}</td></tr>
+        {% for name, count in g1.counts %}
+          <tr class="sub"><th scope="row"><code>{{ name }}</code></th><td class="num">{{ count|int }}</td></tr>
+        {% endfor %}
+      </tbody>
+    </table>
+    <p class="note">Part = lots ouverts / (lots ouverts + rejets <code>volume</code>, <code>min_notional</code> et <code>lot_step</code>). Les rejets <code>cash</code> et <code>max_positions</code> sont publiés à côté et ne comptent pas. {% if not g1.atReferenceCapital %}G1 ne se lit que sur un run au capital de référence ({{ ex is null ? '300,00' : ex.referenceCapital|money }}) : ce run est à un autre capital.{% endif %}</p>
+  {% endif %}
+</section>

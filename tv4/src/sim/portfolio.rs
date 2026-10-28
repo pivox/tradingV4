@@ -24,6 +24,10 @@ pub enum ExitReason {
     TakeProfit,
     /// Position soldée à la fin des données, au dernier close.
     ForcedClose,
+    /// Sortie forcée d'une jambe dont la cotation est absente depuis plus de `quote_gap_ms` (paire
+    /// suspendue ou délistée, docs/04 §2.2), au dernier close moins le slippage, frais taker. Jamais
+    /// produite hors de [`Book`](super::Book) (docs/specs S9 §4.3).
+    QuoteGap,
 }
 
 /// Position agrégée, telle que la stratégie la voit.

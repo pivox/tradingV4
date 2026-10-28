@@ -17,12 +17,12 @@ use super::{EngineError, LoopObserver, NoopObserver};
 
 /// Capacité initiale du vecteur de trades. Un aller-retour occupe au moins deux bougies ; au-delà de
 /// cette borne, la croissance est amortie (docs/03 §7.2 ligne 6).
-const TRADES_INITIAL_CAPACITY: usize = 4096;
+pub(crate) const TRADES_INITIAL_CAPACITY: usize = 4096;
 /// Plancher de la capacité du tampon de signaux, réutilisé à chaque bougie. La capacité réelle est
 /// `2 × max(plancher, max_pending)` (une stratégie de grille peut émettre un signal par niveau).
-const SIGNALS_FLOOR: usize = 16;
+pub(crate) const SIGNALS_FLOOR: usize = 16;
 /// Durée d'une 1m en millisecondes.
-const MINUTE_MS: i64 = 60_000;
+pub(crate) const MINUTE_MS: i64 = 60_000;
 
 /// Résultat d'une cellule.
 #[derive(Clone, Debug)]
@@ -93,6 +93,7 @@ pub fn run_cell_observed(
     config: &CellConfig<'_>,
     observer: &mut dyn LoopObserver,
 ) -> Result<CellResult, EngineError> {
+    refuse_regime(strategy.as_ref())?;
     config.sim_rules.validate()?;
     config.instrument.validate()?;
     validate_declaration(strategy.as_ref())?;
@@ -111,11 +112,21 @@ pub fn run_cell_mtf(
     config: &CellConfig<'_>,
     observer: &mut dyn LoopObserver,
 ) -> Result<CellResult, EngineError> {
+    refuse_regime(strategy.as_ref())?;
     config.sim_rules.validate()?;
     config.instrument.validate()?;
     validate_declaration(strategy.as_ref())?;
     check_candles(mtf.m1())?;
     run_prepared(mtf, strategy, config, observer)
+}
+
+/// Garde de S9 : `run_cell` ne charge aucune série de régime. Une stratégie qui lit
+/// `BarContext::regime` doit passer par `run_portfolio` (docs S9 §6.3). Hors de la boucle.
+fn refuse_regime(strategy: &dyn Strategy) -> Result<(), EngineError> {
+    if strategy.uses_regime() {
+        return Err(EngineError::RegimeNeedsPortfolio);
+    }
+    Ok(())
 }
 
 /// Un indicateur calculé hors boucle : sa position dans les tableaux par timeframe déclaré.
@@ -128,7 +139,10 @@ struct IndicatorSlot {
 }
 
 /// Colonne d'un indicateur sur la série `candles` de son timeframe, par `batch` (docs/03 §1).
-fn indicator_column(kind: IndicatorKind, candles: &[Candle]) -> Result<Vec<f64>, EngineError> {
+pub(crate) fn indicator_column(
+    kind: IndicatorKind,
+    candles: &[Candle],
+) -> Result<Vec<f64>, EngineError> {
     Ok(match kind {
         IndicatorKind::Sma { period } => batch(Sma::new(period)?, candles.iter().map(|c| c.close)),
         IndicatorKind::Ema { period } => batch(Ema::new(period)?, candles.iter().map(|c| c.close)),
@@ -364,7 +378,7 @@ fn run_prepared(
 
 /// Contrôle des données : valides, alignées sur la minute, strictement croissantes. Les trous sont
 /// admis (politique `skip`, docs/03 §5.1) : la bougie suivante est la suivante dans la série.
-fn check_candles(candles: &[Candle]) -> Result<(), EngineError> {
+pub(crate) fn check_candles(candles: &[Candle]) -> Result<(), EngineError> {
     if candles.is_empty() {
         return Err(EngineError::EmptyData);
     }
@@ -418,7 +432,7 @@ struct LoopViews<'a> {
 
 /// Vue d'un ordre en attente pour la stratégie. `ttl_left` compte les 1m restantes avant l'expiration,
 /// à partir de `now_ms` ; un market n'en a pas (0).
-fn to_pending_order(view: PendingView, now_ms: Ts) -> PendingOrder {
+pub(crate) fn to_pending_order(view: PendingView, now_ms: Ts) -> PendingOrder {
     let (kind, ttl_left) = match (view.limit, view.expires_at_ms) {
         (Some((price, ttl_bars)), Some(expires)) => {
             let left = (expires - now_ms).max(0) / MINUTE_MS;
@@ -440,7 +454,7 @@ fn to_pending_order(view: PendingView, now_ms: Ts) -> PendingOrder {
     }
 }
 
-fn to_position(view: PositionView) -> Position {
+pub(crate) fn to_position(view: PositionView) -> Position {
     Position {
         qty: view.qty,
         avg_price: view.avg_price,

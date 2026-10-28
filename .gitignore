@@ -14,6 +14,9 @@ datasets/snapshots/
 .env.*
 *.pem
 *.key
+# Fichiers de clé API OKX (S9) : ils vivent hors dépôt (~/.config/tv4/), ceci n'est qu'une ceinture.
+*.credentials.toml
+okx-*.toml
 
 # Éditeurs et système
 .idea/

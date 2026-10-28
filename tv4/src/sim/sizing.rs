@@ -36,6 +36,24 @@ pub fn size_qty(size: SizeSpec, equity: f64, price: f64, stop: Option<f64>) -> O
     }
 }
 
+/// Vrai si porter la quantité au minimum d'ordre `min_qty` garde le risque effectif
+/// `min_qty × (price − stop)` sous `max_risk_pct × base` (règle `min_order_bump`, docs S9 §7.3).
+///
+/// Exige des valeurs finies, `min_qty > 0`, `0 < stop < price`, `base > 0` et `max_risk_pct > 0` ; sinon
+/// rend faux (pas de montée au minimum).
+pub fn bump_risk_ok(min_qty: f64, price: f64, stop: f64, base: f64, max_risk_pct: f64) -> bool {
+    if !(min_qty.is_finite() && min_qty > 0.0) {
+        return false;
+    }
+    if !(price.is_finite() && stop.is_finite() && stop > 0.0 && stop < price) {
+        return false;
+    }
+    if !(base.is_finite() && base > 0.0 && max_risk_pct.is_finite() && max_risk_pct > 0.0) {
+        return false;
+    }
+    min_qty * (price - stop) <= max_risk_pct * base
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -92,6 +110,31 @@ mod tests {
             size_qty(SizeSpec::Quote(250.0), 1000.0, 100.0, Some(1.0)),
             Some(2.5)
         );
+    }
+
+    #[test]
+    fn montee_au_minimum_selon_le_risque() {
+        // 0,001 BTC entre 100 et 98 risque 0,002 ; la borne vaut 1,5 % de 300 = 4,5 : accepté.
+        assert!(bump_risk_ok(0.001, 100.0, 98.0, 300.0, 0.015));
+        // 3 unités risquent 6 > 4,5 : refusé. Égalité exacte (1,5 × 2 = 3 = 1 % de 300) : accepté.
+        assert!(!bump_risk_ok(3.0, 100.0, 98.0, 300.0, 0.015));
+        assert!(bump_risk_ok(1.5, 100.0, 98.0, 300.0, 0.01));
+        for (label, ok) in [
+            ("minimum nul", bump_risk_ok(0.0, 100.0, 98.0, 300.0, 0.015)),
+            (
+                "stop au-dessus",
+                bump_risk_ok(1.0, 100.0, 101.0, 300.0, 0.015),
+            ),
+            ("stop nul", bump_risk_ok(1.0, 100.0, 0.0, 300.0, 0.015)),
+            ("base nulle", bump_risk_ok(1.0, 100.0, 98.0, 0.0, 0.015)),
+            (
+                "pourcentage nul",
+                bump_risk_ok(1.0, 100.0, 98.0, 300.0, 0.0),
+            ),
+            ("NaN", bump_risk_ok(1.0, f64::NAN, 98.0, 300.0, 0.015)),
+        ] {
+            assert!(!ok, "{label}");
+        }
     }
 
     #[test]

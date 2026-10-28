@@ -17,6 +17,26 @@
 //! 4. informations du manifeste (configuration, données, moteur), qui n'influent pas sur le verdict.
 //!
 //! `timings`, `started_at`, `run_id` et `outputs.equity_step` du manifeste sont ignorés.
+//!
+//! # Mode portefeuille (S9, docs S9 §14.2)
+//!
+//! Le schéma du manifeste (`tv4-manifest-s8` ou `tv4-manifest-s9`) décide de la famille du run, et
+//! `metrics.json` doit être de la même famille. Deux runs de familles différentes donnent
+//! [`VerifyError::SchemaMismatch`] (code 1, « schémas différents »). Pour deux runs S9, `verify` fait en
+//! plus :
+//!
+//! * par run, avant toute comparaison : capital identique dans `metrics.json` et le manifeste,
+//!   `instruments_hash` identique dans les deux, Σ de `funnel_by_pair` égale à `funnel` (compteurs et
+//!   refus), identités de l'entonnoir de docs S9 §9.1, et chaque `symbol` de `trades.csv` dans
+//!   `data.symbols` avec autant de lignes que `funnel_by_pair[].trades` ([`VerifyError::Portfolio`]).
+//!   Les refus au fill d'une paire sont lus dans `sim_by_pair[].counters`, ce qui donne, pour chaque
+//!   paire, l'identité 1 exacte (`entry_signals = entry_orders + refus à la soumission`, la soumission
+//!   étant `rejected` moins les refus au fill) et l'identité 2 en inégalité (`entry_orders ≥
+//!   entry_fills + refus au fill`) ; le reste des ordres, sommé sur les paires, égale exactement
+//!   `funnel.entry_not_filled_by_reason.other` (expirations et annulations, non publiées par paire) ;
+//! * entre les deux runs : `initial_cash` égal. Le capital n'est pas dans le `config_hash` du
+//!   portefeuille : deux runs de capitaux différents ont le même hash et ne sont jamais déclarés
+//!   identiques ([`VerifyError::CapitalMismatch`], code 1).
 
 use std::fs;
 use std::path::Path;
@@ -28,7 +48,7 @@ use crate::model::hash;
 
 use super::equity::EQUITY_FILE;
 use super::writers::TRADES_FILE;
-use super::{manifest, metrics};
+use super::{manifest, metrics, metrics_s9};
 
 /// Nom du fichier de métriques d'un run.
 const METRICS_FILE: &str = "metrics.json";
@@ -74,13 +94,35 @@ pub enum VerifyError {
     },
 
     /// Le champ `schema` d'un fichier JSON n'est pas celui que ce binaire sait lire.
-    #[error("run {label} (`{dir}`) : `{file}` : schéma inconnu {found} (attendu `{expected}`)")]
+    #[error("run {label} (`{dir}`) : `{file}` : schéma inconnu {found} (attendu {expected})")]
     Schema {
         label: &'static str,
         dir: String,
         file: &'static str,
         found: String,
         expected: &'static str,
+    },
+
+    /// Un run S8 et un run S9 : ils ne se comparent pas.
+    #[error(
+        "schémas différents : run A `{a}`, run B `{b}` ; comparer deux runs de la même famille"
+    )]
+    SchemaMismatch { a: String, b: String },
+
+    /// Deux runs S9 de capitaux initiaux différents : le capital n'est pas dans le `config_hash`, ils
+    /// ne sont jamais déclarés identiques.
+    #[error(
+        "capitaux initiaux différents : run A {a}, run B {b} ; ces runs ne sont pas comparables"
+    )]
+    CapitalMismatch { a: f64, b: f64 },
+
+    /// Un run S9 est incohérent avec lui-même (entonnoir, symboles de `trades.csv`, capital,
+    /// `instruments_hash`).
+    #[error("run {label} (`{dir}`) incohérent : {detail}")]
+    Portfolio {
+        label: &'static str,
+        dir: String,
+        detail: String,
     },
 
     /// Un champ obligatoire du manifeste manque ou n'a pas le bon type.
@@ -120,8 +162,36 @@ impl VerifyReport {
     }
 }
 
+/// Famille d'un run : le schéma de son manifeste.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Family {
+    S8,
+    S9,
+}
+
+impl Family {
+    fn of(schema: Option<&str>) -> Option<Family> {
+        match schema {
+            Some(manifest::SCHEMA) => Some(Family::S8),
+            Some(manifest::SCHEMA_S9) => Some(Family::S9),
+            _ => None,
+        }
+    }
+
+    fn metrics_schema(self) -> &'static str {
+        match self {
+            Family::S8 => metrics::SCHEMA,
+            Family::S9 => metrics_s9::SCHEMA,
+        }
+    }
+}
+
+/// Schémas de manifeste acceptés, pour les messages d'erreur.
+const MANIFEST_SCHEMAS: &str = "`tv4-manifest-s8` ou `tv4-manifest-s9`";
+
 /// Un run lu et vérifié en interne.
 struct LoadedRun {
+    family: Family,
     manifest: Value,
     metrics_bytes: Vec<u8>,
     metrics: Value,
@@ -147,6 +217,24 @@ impl LoadedRun {
 pub fn verify(dir_a: &Path, dir_b: &Path) -> Result<VerifyReport, VerifyError> {
     let a = load_run("A", dir_a)?;
     let b = load_run("B", dir_b)?;
+    if a.family != b.family {
+        return Err(VerifyError::SchemaMismatch {
+            a: string_at(&a.manifest, &["schema"]).unwrap_or_default(),
+            b: string_at(&b.manifest, &["schema"]).unwrap_or_default(),
+        });
+    }
+    if a.family == Family::S9 {
+        let (cash_a, cash_b) = (
+            number_at(&a.manifest, &["initial_cash"]).unwrap_or(f64::NAN),
+            number_at(&b.manifest, &["initial_cash"]).unwrap_or(f64::NAN),
+        );
+        if cash_a.to_bits() != cash_b.to_bits() {
+            return Err(VerifyError::CapitalMismatch {
+                a: cash_a,
+                b: cash_b,
+            });
+        }
+    }
 
     let mut lines = vec![
         format!("run A : {}", dir_a.display()),
@@ -222,9 +310,25 @@ fn load_run(label: &'static str, dir: &Path) -> Result<LoadedRun, VerifyError> {
         };
 
     let manifest_bytes = read(MANIFEST_FILE)?;
-    let manifest = parse(MANIFEST_FILE, &manifest_bytes, manifest::SCHEMA)?;
+    // Le schéma du manifeste décide de la famille ; un schéma inconnu est cité tel quel.
+    let manifest_value: Value =
+        serde_json::from_slice(&manifest_bytes).map_err(|source| VerifyError::Json {
+            label,
+            dir: shown.clone(),
+            file: MANIFEST_FILE,
+            source,
+        })?;
+    let found_schema = manifest_value.get("schema").and_then(Value::as_str);
+    let family = Family::of(found_schema).ok_or_else(|| VerifyError::Schema {
+        label,
+        dir: shown.clone(),
+        file: MANIFEST_FILE,
+        found: found_schema.map_or_else(|| "absent".to_string(), |s| format!("`{s}`")),
+        expected: MANIFEST_SCHEMAS,
+    })?;
+    let manifest = manifest_value;
     let metrics_bytes = read(METRICS_FILE)?;
-    let metrics = parse(METRICS_FILE, &metrics_bytes, metrics::SCHEMA)?;
+    let metrics = parse(METRICS_FILE, &metrics_bytes, family.metrics_schema())?;
     let trades_bytes = read(TRADES_FILE)?;
     let equity_bytes = read(EQUITY_FILE)?;
 
@@ -259,13 +363,266 @@ fn load_run(label: &'static str, dir: &Path) -> Result<LoadedRun, VerifyError> {
     if result_hash != trades_hash {
         return Err(inconsistent("result_hash", &result_hash, &trades_hash));
     }
+    if family == Family::S9 {
+        check_portfolio(&metrics, &manifest, &trades_bytes).map_err(|detail| {
+            VerifyError::Portfolio {
+                label,
+                dir: shown.clone(),
+                detail,
+            }
+        })?;
+    }
     Ok(LoadedRun {
+        family,
         manifest,
         metrics_bytes,
         metrics,
         trades_bytes,
         equity_bytes,
     })
+}
+
+/// Nombre situé au chemin `path` d'un objet JSON, si c'est un nombre.
+fn number_at(value: &Value, path: &[&str]) -> Option<f64> {
+    let mut current = value;
+    for key in path {
+        current = current.get(*key)?;
+    }
+    current.as_f64()
+}
+
+/// Entier non signé situé au chemin `path`.
+fn uint_at(value: &Value, path: &[&str]) -> Option<u64> {
+    let mut current = value;
+    for key in path {
+        current = current.get(*key)?;
+    }
+    current.as_u64()
+}
+
+/// Somme des entiers d'un objet JSON (les motifs de refus), `None` si une valeur n'en est pas un.
+fn sum_object(value: Option<&Value>) -> Option<u64> {
+    let mut total = 0u64;
+    for entry in value?.as_object()?.values() {
+        total = total.checked_add(entry.as_u64()?)?;
+    }
+    Some(total)
+}
+
+/// Compteurs de `sim_by_pair[].counters` qui sont des refus au fill d'une entrée (mêmes champs que
+/// `entry_not_filled_by_reason`, hors `other`).
+const AT_FILL_COUNTERS: [&str; 5] = [
+    "buys_rejected_insufficient_cash",
+    "buys_rejected_below_minimum",
+    "buys_rejected_volume_share",
+    "entries_invalid_risk_at_fill",
+    "entries_dropped_while_long",
+];
+
+/// Contrôles de cohérence d'un run S9 (docs S9 §14.2), sans rien recalculer du moteur : seulement des
+/// identités entre les blocs de `metrics.json`, le manifeste et `trades.csv`.
+fn check_portfolio(metrics: &Value, manifest: &Value, trades_bytes: &[u8]) -> Result<(), String> {
+    let missing = |path: &str| format!("champ `{path}` absent ou mal typé");
+
+    // Capital et fichier d'instruments : identiques dans metrics.json et dans le manifeste.
+    let cash_metrics = number_at(metrics, &["config", "initial_cash"])
+        .ok_or_else(|| missing("config.initial_cash"))?;
+    let cash_manifest =
+        number_at(manifest, &["initial_cash"]).ok_or_else(|| missing("initial_cash"))?;
+    if cash_metrics.to_bits() != cash_manifest.to_bits() {
+        return Err(format!(
+            "capital {cash_metrics} dans metrics.json et {cash_manifest} dans le manifeste"
+        ));
+    }
+    let hash_metrics = metrics.pointer("/instruments/instruments_hash");
+    let hash_manifest = manifest.get("instruments_hash");
+    if hash_metrics.is_none() || hash_manifest.is_none() || hash_metrics != hash_manifest {
+        return Err(format!(
+            "instruments_hash {} dans metrics.json et {} dans le manifeste",
+            hash_metrics.map_or_else(|| "(absent)".to_string(), Value::to_string),
+            hash_manifest.map_or_else(|| "(absent)".to_string(), Value::to_string)
+        ));
+    }
+
+    // Σ funnel_by_pair = funnel.
+    let pairs = metrics
+        .get("funnel_by_pair")
+        .and_then(Value::as_array)
+        .ok_or_else(|| missing("funnel_by_pair"))?;
+    let symbols: Vec<&str> = metrics
+        .pointer("/data/symbols")
+        .and_then(Value::as_array)
+        .ok_or_else(|| missing("data.symbols"))?
+        .iter()
+        .filter_map(Value::as_str)
+        .collect();
+    let pair_symbols: Vec<&str> = pairs
+        .iter()
+        .filter_map(|pair| pair.get("symbol").and_then(Value::as_str))
+        .collect();
+    if pair_symbols != symbols {
+        return Err(format!(
+            "funnel_by_pair couvre {pair_symbols:?} pour l'univers {symbols:?}"
+        ));
+    }
+    let mut totals = [0u64; 5];
+    let keys = [
+        "evaluations",
+        "entry_signals",
+        "entry_orders",
+        "entry_fills",
+        "trades",
+    ];
+    // Compteurs du simulateur par paire : seuls les refus au fill d'une entrée en sortent (les
+    // compteurs `buys_rejected_*` et `entries_*` ne comptent que des entrées ; les refus de ventes
+    // vont dans `below_min_exits`, hors de cette liste).
+    let sim_by_pair = metrics
+        .get("sim_by_pair")
+        .and_then(Value::as_array)
+        .ok_or_else(|| missing("sim_by_pair"))?;
+    let sim_symbols: Vec<&str> = sim_by_pair
+        .iter()
+        .filter_map(|pair| pair.get("symbol").and_then(Value::as_str))
+        .collect();
+    if sim_symbols != symbols {
+        return Err(format!(
+            "sim_by_pair couvre {sim_symbols:?} pour l'univers {symbols:?}"
+        ));
+    }
+    let mut rejected_sum = 0u64;
+    // Σ des refus au fill par paire, et Σ de `orders - fills - refus au fill` (expirations et
+    // annulations d'entrées, qui ne sont publiées qu'en agrégat).
+    let mut at_fill_by_pair_sum = 0u64;
+    let mut unfilled_rest_sum = 0u64;
+    for (pair, sim) in pairs.iter().zip(sim_by_pair) {
+        let name = pair.get("symbol").and_then(Value::as_str).unwrap_or("?");
+        for (total, key) in totals.iter_mut().zip(keys) {
+            *total += uint_at(pair, &[key])
+                .ok_or_else(|| missing(&format!("funnel_by_pair[{name}].{key}")))?;
+        }
+        let rejected = sum_object(pair.get("rejected"))
+            .ok_or_else(|| missing(&format!("funnel_by_pair[{name}].rejected")))?;
+        let (signals, orders, fills) = (
+            uint_at(pair, &["entry_signals"]).unwrap_or(0),
+            uint_at(pair, &["entry_orders"]).unwrap_or(0),
+            uint_at(pair, &["entry_fills"]).unwrap_or(0),
+        );
+        let mut at_fill = 0u64;
+        for key in AT_FILL_COUNTERS {
+            at_fill += uint_at(sim, &["counters", key])
+                .ok_or_else(|| missing(&format!("sim_by_pair[{name}].counters.{key}")))?;
+        }
+        // `rejected` = refus à la soumission + refus au fill.
+        let submit = rejected.checked_sub(at_fill).ok_or_else(|| {
+            format!("{name} : {at_fill} refus au fill pour {rejected} refus d'entrée au total")
+        })?;
+        // Identité 1 (docs S9 §9.1), exacte par paire.
+        if signals != orders + submit {
+            return Err(format!(
+                "{name} : {signals} signaux d'entrée pour {orders} ordres et {submit} refus à la soumission"
+            ));
+        }
+        // Identité 2, en inégalité par paire : expirations et annulations ne sont pas publiées par
+        // paire, la différence est vérifiée en agrégat plus bas.
+        let unfilled = orders.checked_sub(fills + at_fill).ok_or_else(|| {
+            format!(
+                "{name} : {orders} ordres d'entrée pour {fills} lots ouverts et {at_fill} refus au fill"
+            )
+        })?;
+        rejected_sum += rejected;
+        at_fill_by_pair_sum += at_fill;
+        unfilled_rest_sum += unfilled;
+    }
+    for (total, key) in totals.iter().zip(keys) {
+        let found =
+            uint_at(metrics, &["funnel", key]).ok_or_else(|| missing(&format!("funnel.{key}")))?;
+        if *total != found {
+            return Err(format!(
+                "Σ funnel_by_pair.{key} = {total} pour funnel.{key} = {found}"
+            ));
+        }
+    }
+    let funnel = metrics.get("funnel").ok_or_else(|| missing("funnel"))?;
+    let by_reason = sum_object(funnel.get("entry_rejected_by_reason"))
+        .ok_or_else(|| missing("funnel.entry_rejected_by_reason"))?;
+    let max_positions = uint_at(funnel, &["entry_rejected_max_positions"])
+        .ok_or_else(|| missing("funnel.entry_rejected_max_positions"))?;
+    let entry_signals = totals[1];
+    let entry_orders = totals[2];
+    if entry_signals != entry_orders + by_reason + max_positions {
+        return Err(format!(
+            "funnel : {entry_signals} signaux d'entrée pour {entry_orders} ordres, {by_reason} refus et {max_positions} refus max_positions"
+        ));
+    }
+    let mut at_fill = 0u64;
+    for key in [
+        "insufficient_cash",
+        "below_minimum",
+        "volume_share",
+        "invalid_risk_at_fill",
+        "dropped_while_long",
+    ] {
+        at_fill += uint_at(funnel, &["entry_not_filled_by_reason", key])
+            .ok_or_else(|| missing(&format!("funnel.entry_not_filled_by_reason.{key}")))?;
+    }
+    if at_fill_by_pair_sum != at_fill {
+        return Err(format!(
+            "Σ sim_by_pair des refus au fill = {at_fill_by_pair_sum} pour {at_fill} dans funnel.entry_not_filled_by_reason"
+        ));
+    }
+    // Identité 2 (docs S9 §9.1), exacte en agrégat : le reste des ordres d'entrée est l'ensemble des
+    // expirations et annulations, publié sous `other`.
+    let other = uint_at(funnel, &["entry_not_filled_by_reason", "other"])
+        .ok_or_else(|| missing("funnel.entry_not_filled_by_reason.other"))?;
+    if unfilled_rest_sum != other {
+        return Err(format!(
+            "Σ par paire de (ordres - lots - refus au fill) = {unfilled_rest_sum} pour funnel.entry_not_filled_by_reason.other = {other}"
+        ));
+    }
+    if rejected_sum != by_reason + max_positions + at_fill {
+        return Err(format!(
+            "Σ funnel_by_pair.rejected = {rejected_sum} pour {} refus au total du funnel",
+            by_reason + max_positions + at_fill
+        ));
+    }
+
+    // trades.csv : chaque symbole appartient à l'univers, et les comptes sont ceux de funnel_by_pair.
+    let mut reader = csv::ReaderBuilder::new()
+        .delimiter(b',')
+        .from_reader(trades_bytes);
+    let column = reader
+        .headers()
+        .map_err(|e| format!("trades.csv illisible : {e}"))?
+        .iter()
+        .position(|name| name == "symbol")
+        .ok_or_else(|| "trades.csv n'a pas de colonne `symbol`".to_string())?;
+    let mut counts = vec![0u64; symbols.len()];
+    for record in reader.records() {
+        let record = record.map_err(|e| format!("trades.csv illisible : {e}"))?;
+        let symbol = record.get(column).unwrap_or_default();
+        match symbols.iter().position(|s| *s == symbol) {
+            Some(index) => {
+                if let Some(count) = counts.get_mut(index) {
+                    *count += 1;
+                }
+            }
+            None => {
+                return Err(format!(
+                    "trades.csv : le symbole `{symbol}` n'est pas dans data.symbols {symbols:?}"
+                ));
+            }
+        }
+    }
+    for (pair, count) in pairs.iter().zip(&counts) {
+        let name = pair.get("symbol").and_then(Value::as_str).unwrap_or("?");
+        let expected = uint_at(pair, &["trades"]).unwrap_or(0);
+        if expected != *count {
+            return Err(format!(
+                "trades.csv a {count} lignes pour `{name}`, funnel_by_pair en annonce {expected}"
+            ));
+        }
+    }
+    Ok(())
 }
 
 /// Chaîne située au chemin `path` d'un objet JSON, si elle existe.
@@ -432,6 +789,133 @@ mod tests {
         let mut out = Vec::new();
         diff_paths(a, b, &mut String::new(), &mut out);
         out
+    }
+
+    /// Un run S9 minimal et cohérent à deux paires : BTC a 10 signaux d'entrée, 3 refus
+    /// `max_positions` à la soumission, 7 ordres dont 2 lots, 1 refus de volume au fill et 4
+    /// expirations ; ETH a 5 signaux, 5 ordres et 5 lots.
+    fn coherent_run() -> (Value, Value, Vec<u8>) {
+        let zero_counters = json!({
+            "buys_rejected_insufficient_cash": 0, "buys_rejected_below_minimum": 0,
+            "buys_rejected_volume_share": 0, "entries_invalid_risk_at_fill": 0,
+            "entries_dropped_while_long": 0
+        });
+        let mut btc_counters = zero_counters.clone();
+        btc_counters["buys_rejected_volume_share"] = json!(1);
+        let no_rejection = json!({
+            "min_notional": 0, "lot_step": 0, "cash": 0, "max_positions": 0, "volume": 0, "other": 0
+        });
+        let mut btc_rejected = no_rejection.clone();
+        btc_rejected["max_positions"] = json!(3);
+        btc_rejected["volume"] = json!(1);
+        let metrics = json!({
+            "config": {"initial_cash": 300.0},
+            "instruments": {"instruments_hash": "blake3:aa"},
+            "data": {"symbols": ["BTC-USDC", "ETH-USDC"]},
+            "funnel_by_pair": [
+                {"symbol": "BTC-USDC", "evaluations": 100, "entry_signals": 10, "entry_orders": 7,
+                 "entry_fills": 2, "trades": 2, "rejected": btc_rejected},
+                {"symbol": "ETH-USDC", "evaluations": 50, "entry_signals": 5, "entry_orders": 5,
+                 "entry_fills": 5, "trades": 5, "rejected": no_rejection}
+            ],
+            "sim_by_pair": [
+                {"symbol": "BTC-USDC", "counters": btc_counters},
+                {"symbol": "ETH-USDC", "counters": zero_counters}
+            ],
+            "funnel": {
+                "evaluations": 150, "entry_signals": 15, "entry_orders": 12, "entry_fills": 7,
+                "trades": 7,
+                "entry_rejected_by_reason": {"insufficient_quote": 0},
+                "entry_rejected_max_positions": 3,
+                "entry_not_filled_by_reason": {
+                    "insufficient_cash": 0, "below_minimum": 0, "volume_share": 1,
+                    "invalid_risk_at_fill": 0, "dropped_while_long": 0, "other": 4
+                }
+            }
+        });
+        let manifest = json!({"initial_cash": 300.0, "instruments_hash": "blake3:aa"});
+        let mut csv = String::from("symbol\n");
+        csv.push_str(&"BTC-USDC\n".repeat(2));
+        csv.push_str(&"ETH-USDC\n".repeat(5));
+        (metrics, manifest, csv.into_bytes())
+    }
+
+    fn check(metrics: &Value, manifest: &Value, csv: &[u8]) -> Result<(), String> {
+        check_portfolio(metrics, manifest, csv)
+    }
+
+    #[test]
+    fn un_run_portefeuille_coherent_passe_le_controle_des_identites() {
+        let (metrics, manifest, csv) = coherent_run();
+        assert_eq!(check(&metrics, &manifest, &csv), Ok(()));
+    }
+
+    #[test]
+    fn un_ordre_deplace_entre_paires_casse_l_identite_1_par_paire() {
+        let (mut metrics, manifest, csv) = coherent_run();
+        // Les sommes de `funnel_by_pair` restent celles de `funnel`, les inégalités restent vraies.
+        metrics["funnel_by_pair"][0]["entry_orders"] = json!(6);
+        metrics["funnel_by_pair"][1]["entry_orders"] = json!(6);
+        let erreur = check(&metrics, &manifest, &csv).unwrap_err();
+        assert!(erreur.contains("BTC-USDC"), "{erreur}");
+        assert!(erreur.contains("signaux d'entrée"), "{erreur}");
+    }
+
+    #[test]
+    fn des_refus_a_la_soumission_deplaces_entre_paires_cassent_l_identite_1() {
+        let (mut metrics, manifest, csv) = coherent_run();
+        // 2 refus `max_positions` de BTC passent à ETH : Σ rejected et toutes les sommes de
+        // `funnel` restent vraies, seule l'identité 1 de chaque paire est fausse.
+        metrics["funnel_by_pair"][0]["rejected"]["max_positions"] = json!(1);
+        metrics["funnel_by_pair"][1]["rejected"]["max_positions"] = json!(2);
+        let erreur = check(&metrics, &manifest, &csv).unwrap_err();
+        assert!(erreur.contains("BTC-USDC"), "{erreur}");
+        assert!(erreur.contains("signaux d'entrée"), "{erreur}");
+    }
+
+    #[test]
+    fn des_refus_au_fill_deplaces_entre_paires_sont_refuses() {
+        let (mut metrics, manifest, csv) = coherent_run();
+        // Le refus de volume de BTC est attribué à ETH dans `sim_by_pair` seulement : la somme au
+        // fill reste 1, mais `rejected` de BTC n'a plus de refus à la soumission qui boucle.
+        metrics["sim_by_pair"][0]["counters"]["buys_rejected_volume_share"] = json!(0);
+        metrics["sim_by_pair"][1]["counters"]["buys_rejected_volume_share"] = json!(1);
+        let erreur = check(&metrics, &manifest, &csv).unwrap_err();
+        assert!(erreur.contains("signaux d'entrée"), "{erreur}");
+    }
+
+    #[test]
+    fn plus_de_refus_au_fill_que_de_refus_d_entree_est_refuse() {
+        let (mut metrics, manifest, csv) = coherent_run();
+        metrics["sim_by_pair"][1]["counters"]["buys_rejected_below_minimum"] = json!(1);
+        let erreur = check(&metrics, &manifest, &csv).unwrap_err();
+        assert!(erreur.contains("ETH-USDC"), "{erreur}");
+        assert!(erreur.contains("refus au fill"), "{erreur}");
+    }
+
+    #[test]
+    fn des_expirations_en_trop_ou_en_moins_cassent_l_identite_2_en_agregat() {
+        // Identité 2 en inégalité par paire : trop de lots et de refus au fill pour les ordres.
+        let (mut metrics, manifest, csv) = coherent_run();
+        metrics["funnel_by_pair"][0]["entry_fills"] = json!(7);
+        metrics["funnel_by_pair"][1]["entry_fills"] = json!(0);
+        let erreur = check(&metrics, &manifest, &csv).unwrap_err();
+        assert!(erreur.contains("BTC-USDC"), "{erreur}");
+        assert!(erreur.contains("lots ouverts"), "{erreur}");
+        // Identité 2 exacte en agrégat : `other` ne vaut pas le reste des ordres.
+        let (mut metrics, manifest, csv) = coherent_run();
+        metrics["funnel"]["entry_not_filled_by_reason"]["other"] = json!(3);
+        let erreur = check(&metrics, &manifest, &csv).unwrap_err();
+        assert!(erreur.contains("other"), "{erreur}");
+    }
+
+    #[test]
+    fn sim_by_pair_doit_couvrir_l_univers_dans_l_ordre() {
+        let (mut metrics, manifest, csv) = coherent_run();
+        metrics["sim_by_pair"][0]["symbol"] = json!("ETH-USDC");
+        metrics["sim_by_pair"][1]["symbol"] = json!("BTC-USDC");
+        let erreur = check(&metrics, &manifest, &csv).unwrap_err();
+        assert!(erreur.contains("sim_by_pair"), "{erreur}");
     }
 
     #[test]

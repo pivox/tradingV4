@@ -123,6 +123,42 @@ final readonly class JsonObject
         return (float) $value;
     }
 
+    /**
+     * Nombre, chaîne numérique (`"0.0001"`, comme OKX les écrit) ou null.
+     */
+    public function nullableNumber(string $path): ?float
+    {
+        $value = $this->required($path);
+        if (null === $value) {
+            return null;
+        }
+        if (is_int($value) || is_float($value)) {
+            return (float) $value;
+        }
+        if (is_string($value) && is_numeric($value)) {
+            return (float) $value;
+        }
+
+        throw $this->wrongType($path, 'un nombre, une chaîne numérique ou null', $value);
+    }
+
+    /**
+     * Valeur scalaire non nulle (chaîne ou nombre) rendue en chaîne : OKX écrit des chaînes là où `tv4`
+     * peut écrire des nombres.
+     */
+    public function scalarString(string $path): string
+    {
+        $value = $this->required($path);
+        if (is_string($value)) {
+            return $value;
+        }
+        if (is_int($value) || is_float($value)) {
+            return (string) $value;
+        }
+
+        throw $this->wrongType($path, 'une chaîne ou un nombre', $value);
+    }
+
     public function bool(string $path): bool
     {
         $value = $this->required($path);
@@ -160,6 +196,16 @@ final readonly class JsonObject
         }
 
         return $objects;
+    }
+
+    /**
+     * Clés d'un objet, dans l'ordre du fichier.
+     *
+     * @return list<string>
+     */
+    public function keys(string $path): array
+    {
+        return array_map(strval(...), array_keys($this->object($path)->data));
     }
 
     /**

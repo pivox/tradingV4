@@ -2,9 +2,13 @@
 //! point 6, docs/03-architecture.md §7.2).
 //!
 //! Les arrondis ne multiplient jamais par le pas : on divise par son inverse, qui doit être un entier
-//! exact (`1.0 / 0.1 == 10.0`, `1.0 / 1e-8 == 1e8`), car `k / 10.0` vaut exactement le décimal le plus
-//! proche alors que `k * 0.1` en diffère dans un cas sur trois. Un petit accrochage ([`STEP_SNAP`])
-//! absorbe les erreurs de représentation (`0.29 * 1e8 = 28 999 999,999999996`).
+//! (`1.0 / 0.1 == 10.0`, `1.0 / 1e-8 == 1e8`), car `k / 10.0` vaut exactement le décimal le plus
+//! proche alors que `k * 0.1` en diffère dans un cas sur trois. L'inverse flottant d'un pas décimal
+//! n'est pas toujours un entier exact (`1.0 / 0.00001 == 99999.99999999999`) : le modèle accepte un
+//! inverse à une tolérance relative près d'un entier ([`INVERSE_TOLERANCE`]) et utilise partout
+//! l'entier arrondi ([`InstrumentRules::inv_tick`], [`InstrumentRules::inv_lot`]). Pour un inverse
+//! déjà entier exact, l'arrondi ne change aucun bit. Un petit accrochage ([`STEP_SNAP`]) absorbe les
+//! erreurs de représentation (`0.29 * 1e8 = 28 999 999,999999996`).
 
 use std::collections::BTreeMap;
 use std::path::Path;
@@ -22,6 +26,32 @@ pub const MAX_STEPS: f64 = 9_007_199_254_740_992.0;
 
 /// Borne haute de l'inverse d'un pas : 1e12 pas par unité, très au-delà de 1e-8.
 const MAX_INVERSE: f64 = 1e12;
+
+/// Écart relatif toléré entre l'inverse d'un pas et l'entier le plus proche. L'erreur de
+/// représentation de `1 / pas` est de l'ordre de 1e-16 en relatif : 1e-9 la couvre largement et reste
+/// très loin de tout pas qui ne serait pas l'inverse d'un entier (0,3 donne un écart relatif de 0,1).
+const INVERSE_TOLERANCE: f64 = 1e-9;
+
+/// Écart absolu maximal toléré, en pas : sans lui, la tolérance relative laisserait passer des
+/// écarts de plusieurs centaines vers 1e12.
+const INVERSE_TOLERANCE_ABS: f64 = 1e-3;
+
+/// Inverse entier d'un pas : `1 / pas` arrondi à l'entier le plus proche, si l'écart est dans la
+/// tolérance et que le résultat est dans `[1, 1e12]`. `None` sinon (pas non fini, nul, ou dont
+/// l'inverse n'est pas un entier). Un inverse déjà entier exact est rendu à l'identique.
+fn integer_inverse(step: f64) -> Option<f64> {
+    let inv = 1.0 / step;
+    if !inv.is_finite() {
+        return None;
+    }
+    let rounded = inv.round();
+    let tolerance = (INVERSE_TOLERANCE * inv).min(INVERSE_TOLERANCE_ABS);
+    if (1.0..=MAX_INVERSE).contains(&rounded) && (inv - rounded).abs() <= tolerance {
+        Some(rounded)
+    } else {
+        None
+    }
+}
 
 /// Contraintes d'exchange d'un instrument, dans le `config_hash`.
 ///
@@ -57,8 +87,8 @@ impl InstrumentRules {
         Ok(rules)
     }
 
-    /// Contrôle dans l'ordre : pas finis et positifs, inverses entiers exacts, minimums finis et
-    /// positifs ou nuls. La première erreur est rendue.
+    /// Contrôle dans l'ordre : pas finis et positifs, inverses entiers (à [`INVERSE_TOLERANCE`] près),
+    /// minimums finis et positifs ou nuls. La première erreur est rendue.
     pub fn validate(&self) -> Result<(), ModelError> {
         for (field, value) in [("tick_size", self.tick_size), ("lot_size", self.lot_size)] {
             if !(value.is_finite() && value > 0.0) {
@@ -70,12 +100,11 @@ impl InstrumentRules {
             }
         }
         for (field, value) in [("tick_size", self.tick_size), ("lot_size", self.lot_size)] {
-            let inv = 1.0 / value;
-            if !(inv.is_finite() && inv >= 1.0 && inv.fract() == 0.0 && inv <= MAX_INVERSE) {
+            if integer_inverse(value).is_none() {
                 return Err(ModelError::InvalidInstrument {
                     field,
                     value,
-                    reason: "l'inverse du pas doit être un entier exact entre 1 et 1e12 (0.1, 0.01, 1e-8 conviennent)",
+                    reason: "l'inverse du pas doit être un entier entre 1 et 1e12 (0.1, 0.00001, 1e-8 conviennent)",
                 });
             }
         }
@@ -94,14 +123,15 @@ impl InstrumentRules {
         Ok(())
     }
 
-    /// Inverse du tick (10.0 pour un tick de 0,1).
+    /// Inverse du tick, arrondi à l'entier (10.0 pour un tick de 0,1, 100000.0 pour 0,00001). Les
+    /// règles non validées (pas non entier) rendent l'inverse brut.
     pub fn inv_tick(&self) -> f64 {
-        1.0 / self.tick_size
+        integer_inverse(self.tick_size).unwrap_or(1.0 / self.tick_size)
     }
 
-    /// Inverse du lot (1e8 pour un lot de 1e-8).
+    /// Inverse du lot, arrondi à l'entier (1e8 pour un lot de 1e-8).
     pub fn inv_lot(&self) -> f64 {
-        1.0 / self.lot_size
+        integer_inverse(self.lot_size).unwrap_or(1.0 / self.lot_size)
     }
 
     /// Lots minimums : 0 si `min_qty == 0`, sinon `min_qty` arrondi au lot supérieur.
@@ -255,6 +285,74 @@ mod tests {
         );
         assert!(InstrumentRules::new(0.01, 1e-8, 0.0001, 5.0).is_ok());
         assert!(InstrumentRules::new(1e-4, 1e-8, 0.0, 0.0).is_ok());
+        // Hors bornes : inverse < 1 (pas de 2), inverse > 1e12 (pas de 1e-13).
+        assert_eq!(
+            champ(InstrumentRules::new(0.1, 1e-13, 0.0, 0.0)),
+            "lot_size"
+        );
+        // Un inverse non entier reste refusé, même proche d'un entier (écart relatif de 1e-6).
+        assert_eq!(
+            champ(InstrumentRules::new(1.0 / 99_999.9, 1e-8, 0.0, 0.0)),
+            "tick_size"
+        );
+    }
+
+    #[test]
+    fn pas_decimaux_a_inverse_flottant_inexact_acceptes_et_arrondis_au_bon_multiple() {
+        // 1 / 0,00001 = 99999,99999999999 en flottant : l'inverse est arrondi à l'entier.
+        assert!(std::hint::black_box(1.0_f64) / 0.00001 != 100_000.0);
+        for (pas, inverse) in [
+            (0.00001, 100_000.0),
+            (0.00002, 50_000.0),
+            (0.000005, 200_000.0),
+            (1e-9, 1e9),
+        ] {
+            let rules = InstrumentRules::new(pas, pas, 0.0, 0.0)
+                .unwrap_or_else(|e| panic!("pas {pas} refusé : {e}"));
+            assert_eq!(rules.inv_tick(), inverse, "pas {pas}");
+            assert_eq!(rules.inv_lot(), inverse, "pas {pas}");
+            // Un prix ou une quantité de 37 pas et demi : le bas donne 37, le haut 38, et le retour
+            // au prix (k / inv) est le décimal le plus proche de 37 × pas.
+            let x = 37.5 / inverse;
+            assert_eq!(floor_steps(x, rules.inv_tick()), Some(37), "pas {pas}");
+            assert_eq!(ceil_steps(x, rules.inv_tick()), Some(38), "pas {pas}");
+            // Un multiple exact du pas reste inchangé dans les deux sens, sans perdre un pas.
+            for k in [1_u64, 3, 7, 12_345, 99_999, 100_001] {
+                let exact = k as f64 / inverse;
+                assert_eq!(
+                    floor_steps(exact, rules.inv_lot()),
+                    Some(k),
+                    "pas {pas} k {k}"
+                );
+                assert_eq!(
+                    ceil_steps(exact, rules.inv_lot()),
+                    Some(k),
+                    "pas {pas} k {k}"
+                );
+            }
+        }
+        // Quantités accrochées : 0,00003 avec un lot de 0,00001 vaut 3 lots, pas 2.
+        let rules = InstrumentRules::new(0.01, 0.00001, 0.0, 0.0).unwrap();
+        assert_eq!(floor_steps(0.00003, rules.inv_lot()), Some(3));
+        assert_eq!(floor_steps(0.1 + 0.2, rules.inv_lot()), Some(30_000));
+        assert_eq!(floor_steps(0.000029, rules.inv_lot()), Some(2));
+        // Le minimum est relevé au lot supérieur.
+        let rules = InstrumentRules::new(0.01, 0.00001, 0.000025, 0.0).unwrap();
+        assert_eq!(rules.min_lots(), 3);
+    }
+
+    #[test]
+    fn un_inverse_deja_entier_exact_ne_change_aucun_bit() {
+        for pas in [
+            1.0, 0.5, 0.1, 0.01, 0.001, 1e-4, 1e-6, 1e-8, 1e-10, 0.25, 0.125,
+        ] {
+            let brut: f64 = 1.0 / pas;
+            if brut.fract() == 0.0 {
+                let rules = InstrumentRules::new(pas, pas, 0.0, 0.0).unwrap();
+                assert_eq!(rules.inv_tick().to_bits(), brut.to_bits(), "pas {pas}");
+                assert_eq!(rules.inv_lot().to_bits(), brut.to_bits(), "pas {pas}");
+            }
+        }
     }
 
     #[test]

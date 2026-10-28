@@ -2,11 +2,12 @@
 //! une fonction qui appelle les autres modules (docs/03-architecture.md §2).
 //!
 //! `backtest` existe depuis S3 (fixture CSV 1m), `ingest csv` et `dataset build` depuis S4, `ingest
-//! kraken` depuis S5, `ingest okx` et `compare-sources` depuis S7, `verify` et `bench` depuis S8. `grid`
-//! arrive au jalon 1.5.
+//! kraken` depuis S5, `ingest okx` et `compare-sources` depuis S7, `verify` et `bench` depuis S8,
+//! `instruments fetch` depuis S9. `grid` arrive au jalon 1.5.
 //!
-//! Codes de sortie ([`CliError::exit_code`]) : 0 succès, 1 erreur applicative, 2 erreur d'usage (clap),
-//! 3 `tv4 verify` a trouvé deux runs différents.
+//! Codes de sortie ([`CliError::exit_code`]) : 0 succès, 1 erreur applicative, 2 erreur d'usage (clap)
+//! ou clé OKX refusée par `tv4 instruments fetch` (permission autre que lecture, fichier de clé non
+//! sûr), 3 `tv4 verify` a trouvé deux runs différents.
 //!
 //! La CLI est le seul module qui lit l'horloge système ([`now_ms`]) : le store reçoit l'instant en
 //! paramètre (docs/03 §5.3, écart 5 de S4).
@@ -31,6 +32,7 @@ pub use ingest_okx::{
     DEFAULT_BATCH_PAGES, DEFAULT_LOCK_TIMEOUT, DEFAULT_WORKERS, IngestOkxArgs, MonthReport,
     MonthStatus, OkxIngestOptions, OkxIngestReport, UtcDate, ingest_okx,
 };
+pub use instruments::{FetchArgs, InstrumentsAction};
 pub use verify::VerifyArgs;
 
 mod backtest;
@@ -39,6 +41,7 @@ mod compare_sources;
 mod dataset;
 mod ingest;
 mod ingest_okx;
+mod instruments;
 mod verify;
 
 /// Erreurs de la couche CLI.
@@ -156,14 +159,54 @@ pub enum CliError {
     /// Ni `--fixture` ni `--dataset` (ou les deux) : clap l'interdit, cette erreur évite une panique.
     #[error("indiquer --fixture ou --dataset (un seul des deux)")]
     DataSource,
+
+    /// Clé OKX absente, incomplète ou fichier de clé non sûr (code 2 pour un fichier non sûr).
+    #[error(transparent)]
+    Credentials(#[from] crate::marketdata::okx::private::CredentialsError),
+
+    /// Requête privée OKX en échec, ou clé refusée pour sa permission (code 2 dans ce cas).
+    #[error(transparent)]
+    PrivateApi(#[from] crate::marketdata::okx::private::PrivateApiError),
+
+    /// Fichier d'instruments OKX illisible, modifié ou incohérent.
+    #[error(transparent)]
+    Instruments(#[from] crate::marketdata::okx::instruments::InstrumentsError),
+
+    /// `instruments fetch` : le fichier de sortie existe déjà, il n'est jamais écrasé.
+    #[error("le fichier `{path}` existe déjà : il n'est jamais écrasé")]
+    OutputExists { path: String },
+
+    /// Une option du mode portefeuille est donnée sans `--symbols` : le chemin S8 ne l'applique pas, et
+    /// ne doit pas laisser croire qu'il l'applique (docs/specs/s9.md §2.2).
+    #[error("l'option {option} n'a de sens qu'avec --symbols (mode portefeuille)")]
+    PortfolioOptionWithoutSymbols { option: String },
+
+    /// `--symbols` (mode portefeuille) avec `--fixture` : le portefeuille lit un dataset multi-séries.
+    #[error("le mode portefeuille (--symbols) lit un dataset : utiliser --dataset, pas --fixture")]
+    PortfolioNeedsDataset,
+
+    /// Une option du mode portefeuille a une valeur inutilisable ou incompatible avec une autre.
+    #[error("option {option} : {detail}")]
+    PortfolioOption { option: String, detail: String },
+
+    /// Une jambe du portefeuille n'a pas d'instrument dans le fichier d'instruments OKX.
+    #[error("instrument OKX `{inst_id}` absent du fichier d'instruments")]
+    InstrumentNotListed { inst_id: String },
+
+    /// Le hash du fichier d'instruments ne correspond pas à son contenu (fichier modifié).
+    #[error("hash du fichier d'instruments `{path}` faux : fichier modifié")]
+    InstrumentsHashMismatch { path: String },
 }
 
 impl CliError {
-    /// Code de sortie du processus : 3 pour deux runs différents (`tv4 verify`), 1 pour toute autre
-    /// erreur applicative ; clap garde 2 pour une erreur d'usage.
+    /// Code de sortie du processus : 3 pour deux runs différents (`tv4 verify`), 2 pour une clé OKX
+    /// refusée (fichier de clé non sûr, permission autre que lecture), 1 pour toute autre erreur
+    /// applicative ; clap utilise aussi 2 pour une erreur d'usage.
     pub fn exit_code(&self) -> u8 {
         match self {
             CliError::VerifyMismatch { .. } => 3,
+            CliError::Credentials(error) if error.is_unsafe_file() => 2,
+            CliError::PrivateApi(error) if error.is_key_refused() => 2,
             _ => 1,
         }
     }
@@ -214,6 +257,12 @@ pub enum Command {
     Verify(VerifyArgs),
     /// Mesure le coût de la boucle par 1m et le coût moyen par appel de `on_bar` (S8).
     Bench(BenchArgs),
+    /// Instruments de l'exchange : lecture des minimums du compte OKX (S9).
+    Instruments {
+        /// Opération demandée.
+        #[command(subcommand)]
+        action: InstrumentsAction,
+    },
 }
 
 /// Sources d'ingestion.
@@ -249,6 +298,9 @@ pub fn run(command: &Command) -> Result<(), CliError> {
         Command::CompareSources(args) => compare_sources::run(args),
         Command::Verify(args) => verify::run(args),
         Command::Bench(args) => bench::run(args),
+        Command::Instruments { action } => match action {
+            InstrumentsAction::Fetch(args) => instruments::fetch(args),
+        },
     }
 }
 
@@ -731,6 +783,73 @@ mod tests {
         ] {
             assert!(Cli::try_parse_from(&incomplet).is_err(), "{incomplet:?}");
         }
+    }
+
+    #[test]
+    fn instruments_fetch_se_parse_avec_ses_defauts() {
+        let Command::Instruments {
+            action: InstrumentsAction::Fetch(args),
+        } = Cli::try_parse_from(["tv4", "instruments", "fetch"])
+            .expect("fetch valide sans option")
+            .command
+        else {
+            panic!("sous-commande attendue : instruments fetch");
+        };
+        assert_eq!(args.root, std::path::PathBuf::from("."));
+        assert!(args.credentials.is_none() && args.base_url.is_none() && args.out.is_none());
+        assert_eq!(args.inst_type, "SPOT");
+        let Command::Instruments {
+            action: InstrumentsAction::Fetch(args),
+        } = Cli::try_parse_from([
+            "tv4",
+            "instruments",
+            "fetch",
+            "--root",
+            "R",
+            "--credentials",
+            "c.toml",
+            "--base-url",
+            "http://127.0.0.1:1",
+            "--out",
+            "o.json",
+        ])
+        .expect("fetch valide")
+        .command
+        else {
+            panic!("sous-commande attendue : instruments fetch");
+        };
+        assert_eq!(args.credentials, Some(std::path::PathBuf::from("c.toml")));
+        assert_eq!(args.out, Some(std::path::PathBuf::from("o.json")));
+        // Seul SPOT est accepté en S9.
+        assert!(
+            Cli::try_parse_from(["tv4", "instruments", "fetch", "--inst-type", "SWAP"]).is_err()
+        );
+        assert!(Cli::try_parse_from(["tv4", "instruments"]).is_err());
+    }
+
+    #[test]
+    fn code_de_sortie_2_pour_une_cle_refusee() {
+        use crate::marketdata::okx::private::{CredentialsError, PrivateApiError};
+        let refusee = CliError::PrivateApi(PrivateApiError::KeyNotReadOnly {
+            perm: "trade".to_string(),
+        });
+        assert_eq!(refusee.exit_code(), 2);
+        let non_sure = CliError::Credentials(CredentialsError::UnsafeMode {
+            path: "k".to_string(),
+            mode: 0o644,
+        });
+        assert_eq!(non_sure.exit_code(), 2);
+        // Clé absente ou erreur réseau : code 1.
+        assert_eq!(
+            CliError::Credentials(CredentialsError::Missing).exit_code(),
+            1
+        );
+        let reseau = CliError::PrivateApi(PrivateApiError::Transport {
+            method: "GET",
+            path: "/p".to_string(),
+            reason: "délai dépassé".to_string(),
+        });
+        assert_eq!(reseau.exit_code(), 1);
     }
 
     #[test]

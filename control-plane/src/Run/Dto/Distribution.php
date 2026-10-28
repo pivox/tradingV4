@@ -11,6 +11,7 @@ final readonly class Distribution
      * @param list<PnlWithoutBest> $pnlWithoutBest
      * @param list<YearStat>       $byYear
      * @param list<ExitTypeStat>   $byExitType
+     * @param list<PairStat>|null  $byPair        présent en s9 seulement
      */
     public function __construct(
         public ?float $pnlNetMean,
@@ -21,6 +22,7 @@ final readonly class Distribution
         public array $pnlWithoutBest,
         public array $byYear,
         public array $byExitType,
+        public ?array $byPair = null,
     ) {
     }
 }

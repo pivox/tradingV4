@@ -16,9 +16,12 @@ use crate::store::time::format_rfc3339_utc;
 
 use super::ReportError;
 use super::metrics::{DataInfo, Metrics};
+use super::metrics_s9::{ConfigS9, DataS9, MetricsS9};
 
 /// Identifiant du schéma.
 pub const SCHEMA: &str = "tv4-manifest-s8";
+/// Identifiant du schéma du mode portefeuille (docs S9 §14.1).
+pub const SCHEMA_S9: &str = "tv4-manifest-s9";
 /// Durée d'une 1m en millisecondes.
 const MINUTE_MS: Ts = 60_000;
 
@@ -145,6 +148,23 @@ pub fn run_id(config_hash: &str, dataset_hash: &str, start_ms: Ts, end_ms: Ts) -
     hash::blake3_hex(format!("{config_hash}|{dataset_hash}|{start_ms},{end_ms}").as_bytes())
 }
 
+/// `run_id` du mode portefeuille : BLAKE3 hexadécimal de
+/// `"{config_hash}|{dataset_hash}|{start_ms},{end_ms}|{initial_cash:?}"`.
+///
+/// Le capital initial n'est pas dans le `config_hash` du portefeuille (décision du 28/10) : il entre ici,
+/// pour que deux runs de capitaux différents n'écrivent pas dans le même dossier par défaut.
+pub fn run_id_s9(
+    config_hash: &str,
+    dataset_hash: &str,
+    start_ms: Ts,
+    end_ms: Ts,
+    initial_cash: f64,
+) -> String {
+    hash::blake3_hex(
+        format!("{config_hash}|{dataset_hash}|{start_ms},{end_ms}|{initial_cash:?}").as_bytes(),
+    )
+}
+
 fn data_of(data: &DataInfo, fixture_blake3: Option<String>) -> ManifestData {
     ManifestData {
         source: data.source,
@@ -201,9 +221,100 @@ impl Manifest {
     }
 }
 
+/// Contenu de `manifest.json` du mode portefeuille (`tv4-manifest-s9`).
+///
+/// Mêmes champs d'identité et de provenance que S8, plus le capital initial (hors du `config_hash`) et
+/// le fichier d'instruments utilisé. Le bloc `data` est celui de `metrics.json`.
+#[derive(Clone, Debug, PartialEq, Serialize)]
+pub struct ManifestS9 {
+    pub schema: &'static str,
+    pub run_id: String,
+    pub config_hash: String,
+    pub dataset_hash: String,
+    pub hash_format: String,
+    /// `blake3:` + BLAKE3 des octets de `trades.csv`.
+    pub result_hash: String,
+    pub verdict: &'static str,
+    /// Capital initial : hors du `config_hash`, mais comparé par `tv4 verify`.
+    pub initial_cash: f64,
+    /// `instruments_hash` du fichier OKX ; `null` pour les règles TOML.
+    pub instruments_hash: Option<String>,
+    /// Chemin du fichier d'instruments tel que donné à la CLI ; `null` pour les règles TOML.
+    pub instruments_file: Option<String>,
+    pub config: ConfigS9,
+    pub data: DataS9,
+    pub window: ManifestWindow,
+    pub engine: EngineInfo,
+    pub outputs: Outputs,
+    pub started_at: String,
+    pub timings: Timings,
+}
+
+/// Ce que la CLI fournit en plus des métriques pour écrire le manifeste du portefeuille.
+#[derive(Clone, Debug)]
+pub struct ManifestS9Inputs {
+    pub instruments_file: Option<String>,
+    pub engine: EngineInfo,
+    pub equity_step: Timeframe,
+    /// `blake3:<hex>` des octets de `metrics.json`, `trades.csv` et `equity.csv`.
+    pub files: OutputFiles,
+    pub started_at_ms: Ts,
+    pub timings: Timings,
+}
+
+impl ManifestS9 {
+    /// Construit le manifeste d'un run portefeuille à partir de ses métriques.
+    pub fn new(metrics: &MetricsS9, inputs: ManifestS9Inputs) -> Result<ManifestS9, ReportError> {
+        let timestamp =
+            |ts_ms: Ts| format_rfc3339_utc(ts_ms).map_err(|_| ReportError::Timestamp { ts_ms });
+        let window = &metrics.data.window;
+        let result_hash = inputs.files.trades_csv.clone();
+        Ok(ManifestS9 {
+            schema: SCHEMA_S9,
+            run_id: metrics.run_id(),
+            config_hash: metrics.config_hash.clone(),
+            dataset_hash: metrics.dataset_hash.clone(),
+            hash_format: metrics.data.hash_format.clone(),
+            result_hash,
+            verdict: metrics.verdict,
+            initial_cash: metrics.config.initial_cash,
+            instruments_hash: metrics.instruments.instruments_hash.clone(),
+            instruments_file: inputs.instruments_file,
+            config: metrics.config.clone(),
+            data: metrics.data.clone(),
+            window: ManifestWindow {
+                start: window.start.clone(),
+                end: window.end.clone(),
+                start_ms: window.start_ms,
+                end_ms: window.end_ms,
+            },
+            engine: inputs.engine,
+            outputs: Outputs {
+                equity_step: inputs.equity_step,
+                files: inputs.files,
+            },
+            started_at: timestamp(inputs.started_at_ms)?,
+            timings: inputs.timings,
+        })
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn run_id_s9_depend_du_capital() {
+        let a = run_id_s9("aa", "blake3:bb", 60_000, 120_000, 300.0);
+        assert_eq!(a.len(), 64);
+        assert_eq!(
+            a,
+            hash::blake3_hex(b"aa|blake3:bb|60000,120000|300.0"),
+            "format documente"
+        );
+        assert_ne!(a, run_id_s9("aa", "blake3:bb", 60_000, 120_000, 3_000.0));
+        assert_ne!(a, run_id("aa", "blake3:bb", 60_000, 120_000));
+    }
 
     #[test]
     fn run_id_est_le_blake3_de_la_chaine_documentee() {

@@ -32,9 +32,12 @@ final class InvalidRunException extends RuntimeException
         return new self(sprintf('%s : JSON invalide (%s)', $file, $reason));
     }
 
-    public static function unknownSchema(string $file, string $found, string $expected): self
+    /**
+     * @param list<string> $expected schémas acceptés
+     */
+    public static function unknownSchema(string $file, string $found, array $expected): self
     {
-        return new self(sprintf('%s : schéma inconnu : "%s" (attendu "%s")', $file, $found, $expected));
+        return new self(sprintf('%s : schéma inconnu : "%s" (attendu "%s")', $file, $found, implode('" ou "', $expected)));
     }
 
     public static function missingKey(string $file, string $path): self

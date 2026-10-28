@@ -8,6 +8,10 @@
 //! des boucles `for` dans l'ordre des trades (docs/03 §7.4) ; la libm n'est appelée que dans
 //! [`approx`].
 //!
+//! Le mode portefeuille de S9 ajoute [`metrics_s9`] (`tv4-metrics-s9`), [`executability`] (G0 et G1) et
+//! la variante `tv4-manifest-s9` de [`manifest`] ; `trades.csv` et `equity.csv` gardent le format de S8
+//! (la colonne `symbol` porte la paire de chaque trade). Le chemin de S8 n'est pas touché.
+//!
 //! Écarts d'implémentation (S8) à docs/03 :
 //!
 //! 1. `manifest.json` est défini ici et non dans `engine/manifest.rs` (§4) : `engine` n'écrit rien et
@@ -23,8 +27,10 @@ pub mod approx;
 pub mod distribution;
 pub mod drawdown;
 pub mod equity;
+pub mod executability;
 pub mod manifest;
 pub mod metrics;
+pub mod metrics_s9;
 pub mod verify;
 pub mod writers;
 
@@ -38,8 +44,9 @@ use thiserror::Error;
 use crate::model::{ModelError, hash};
 
 pub use equity::write_equity_csv;
-pub use manifest::{EngineInfo, Manifest, run_id};
+pub use manifest::{EngineInfo, Manifest, ManifestS9, run_id, run_id_s9};
 pub use metrics::{DataInfo, DatasetRef, Metrics, RunVerdict};
+pub use metrics_s9::MetricsS9;
 pub use writers::{TradesContext, write_trades_csv};
 
 /// Erreurs d'écriture d'un rapport.

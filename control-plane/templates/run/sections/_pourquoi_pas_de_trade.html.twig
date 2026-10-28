@@ -20,6 +20,9 @@
         <tr class="sub"><th scope="row">dont rejetés : <code>{{ reason }}</code></th><td class="num">{{ count|int }}</td></tr>
         {% endif %}
       {% endfor %}
+      {%- if f.entryRejectedMaxPositions is not null and f.entryRejectedMaxPositions != 0 %}
+        <tr class="sub"><th scope="row">dont rejetés : <code>max_positions</code></th><td class="num">{{ f.entryRejectedMaxPositions|int }}</td></tr>
+      {%- endif %}
       <tr><th scope="row">Ordres d'entrée acceptés</th><td class="num">{{ f.entryOrders|int }}</td></tr>
       {% for reason, count in f.entryNotFilledByReason %}
         {% if count != 0 %}
@@ -44,6 +47,9 @@
           <tr class="sub"><th scope="row">rejet : <code>{{ reason }}</code></th><td class="num">{{ count|int }}</td></tr>
           {% endif %}
         {% endfor %}
+        {%- if metrics.signalsRejectedMaxPositions is not null and metrics.signalsRejectedMaxPositions != 0 %}
+          <tr class="sub"><th scope="row">rejet : <code>max_positions</code></th><td class="num">{{ metrics.signalsRejectedMaxPositions|int }}</td></tr>
+        {%- endif %}
       </tbody>
     </table>
     <table class="kv">

@@ -31,6 +31,18 @@
 //!    non nulle après `Simulator::on_bar`. La somme des rejets des classes redonne `rejections` (S6).
 //! 3. `Strategy::funnel()` est lu une fois après la boucle.
 //!
+//! Ajouts de S9 (portefeuille multi-paires, docs S9) :
+//!
+//! 1. [`run_portfolio`] rejoue plusieurs paires sur un cash commun ([`Book`](crate::sim::Book)), une
+//!    stratégie par paire, sur la grille union des minutes des paires. Le chemin de [`run_cell`] est
+//!    inchangé : le golden de S8 reste identique à l'octet. Sans `--symbols`, la CLI suit toujours
+//!    `run_cell`.
+//! 2. [`PortfolioRunConfig`] est l'objet haché du mode portefeuille : **sans capital initial** (un même
+//!    `config_hash` donne les mêmes trades à 300 € et à 3 000 €, décision du 28/10).
+//! 3. [`RankTable`] (priorité : horodatage, puis rang de liquidité 90 j, jamais l'alphabet) et la série
+//!    de régime BTC 1d / SMA200 exposée aux stratégies par `BarContext::regime`.
+//! 4. `run_cell` refuse une stratégie qui lit le régime ([`EngineError::RegimeNeedsPortfolio`]).
+//!
 //! Écarts d'implémentation (S6) à S3 :
 //!
 //! 1. Le `CellConfig` porte l'`InstrumentRules` (tick, lot, minimums), qui entre dans le `config_hash`
@@ -61,10 +73,24 @@
 #![forbid(unsafe_code)]
 
 pub mod config;
+mod portfolio;
+pub mod portfolio_config;
+pub mod priority;
+mod regime;
 mod run;
 pub mod signals;
 
 pub use config::{CellConfig, DEFAULT_MIN_TRADES, RunConfig, StrategyRecord};
+pub use portfolio::{
+    LegResult, PortfolioInputs, PortfolioResult, PriorityStats, RegimeStats, run_portfolio,
+    run_portfolio_observed,
+};
+pub use portfolio_config::{
+    DEFAULT_MAX_POSITIONS, DEFAULT_QUOTE_GAP_MS, LIQUIDITY_WINDOW_DAYS, MAX_POSITIONS_LIMIT,
+    MinOrderBump, PORTFOLIO_SCHEMA, PRIORITY_RULE, PortfolioBlock, PortfolioConfig,
+    PortfolioRunConfig, RegimeRecord,
+};
+pub use priority::RankTable;
 pub use run::{CellResult, run_cell, run_cell_mtf, run_cell_observed};
 pub use signals::{EngineFunnel, SignalClass, SignalRejections, StrategyFunnelCounts};
 
@@ -127,6 +153,63 @@ pub enum EngineError {
         "l'indicateur `{name}` n'est pas encore valide à l'index {index} : le warmup déclaré est trop court"
     )]
     WarmupTooShort { name: &'static str, index: usize },
+
+    // --- Mode portefeuille (S9) ---
+    #[error(
+        "une stratégie lit le régime : `run_cell` ne charge aucune série de régime, utiliser le mode portefeuille (`--symbols`)"
+    )]
+    RegimeNeedsPortfolio,
+
+    #[error(
+        "la série de régime `{symbol}` est absente du dataset : la reconstruire avec `--symbol {symbol}`"
+    )]
+    RegimeSeriesMissing { symbol: String },
+
+    #[error(
+        "la série de régime `{symbol}` n'a jamais 200 bougies 1d closes : la SMA200 n'existe pas, la fenêtre doit commencer au moins 200 jours avant la période jouée"
+    )]
+    RegimeNotReady { symbol: String },
+
+    #[error("l'univers du portefeuille est vide")]
+    EmptyUniverse,
+
+    #[error("{legs} paires : un portefeuille en compte au plus 65 535")]
+    TooManyLegs { legs: usize },
+
+    #[error("le symbole `{symbol}` figure deux fois dans l'univers")]
+    DuplicateSymbol { symbol: String },
+
+    #[error("le symbole `{symbol}` de l'univers est absent du dataset")]
+    SymbolNotInDataset { symbol: String },
+
+    #[error("la série de `{symbol}` ne contient aucune bougie")]
+    LegWithoutBars { symbol: String },
+
+    #[error("{instruments} règles d'instrument pour {legs} paires : une par paire est attendue")]
+    InstrumentCountMismatch { instruments: usize, legs: usize },
+
+    #[error("{strategies} stratégies pour {legs} paires : une par paire est attendue")]
+    StrategyCountMismatch { strategies: usize, legs: usize },
+
+    #[error(
+        "les stratégies de l'univers diffèrent (identifiant, version ou paramètres) : le config_hash n'en décrit qu'une"
+    )]
+    StrategiesDiffer,
+
+    #[error("`max_positions` vaut {max_positions} : un entier de 1 à 64 est attendu")]
+    InvalidMaxPositions { max_positions: u16 },
+
+    #[error("trou de cotation de {quote_gap_ms} ms : une durée strictement positive est attendue")]
+    InvalidQuoteGap { quote_gap_ms: Ts },
+
+    #[error(
+        "`{symbol}` : {bars} bougies pour un warmup de {warmup_bars} : il n'en reste aucune à rejouer à la minute de départ commune"
+    )]
+    LegNotEnoughBars {
+        symbol: String,
+        warmup_bars: usize,
+        bars: usize,
+    },
 }
 
 /// Crochet appelé exactement deux fois par run, juste avant et juste après la boucle 1m. Il permet

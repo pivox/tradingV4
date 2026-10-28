@@ -1,4 +1,4 @@
-//! Sous-commandes `tv4 dataset ...` : `build` depuis S4.
+//! Sous-commandes `tv4 dataset ...` : `build` depuis S4 (multi-séries avec `--symbol` répété depuis S9).
 
 use std::path::PathBuf;
 
@@ -6,7 +6,10 @@ use clap::Args;
 
 use super::{CliError, now_ms};
 use crate::model::{ExchangeId, Timeframe};
-use crate::store::{self, BuildRequest, BuildStatus, GapsPolicy, Partition, Symbol, UtcMs, Window};
+use crate::store::{
+    self, BuildRequest, BuildStatus, GapsPolicy, MultiBuildRequest, Partition, Symbol, UtcMs,
+    Window,
+};
 
 /// Arguments de `tv4 dataset build`.
 #[derive(Debug, Args)]
@@ -20,9 +23,10 @@ pub struct DatasetBuildArgs {
     /// Exchange canonique des données (kraken, okx, bitvavo_usdc).
     #[arg(long, value_name = "EXCHANGE")]
     pub exchange: ExchangeId,
-    /// Symbole canonique BASE-QUOTE.
-    #[arg(long, value_name = "SYMBOLE")]
-    pub symbol: Symbol,
+    /// Symbole canonique BASE-QUOTE ; l'option se répète pour un dataset multi-séries (S9), par
+    /// exemple `--symbol ETH-USD --symbol BTC-USD`. L'ordre est sans effet sur le manifeste.
+    #[arg(long = "symbol", value_name = "SYMBOLE", required = true)]
+    pub symbols: Vec<Symbol>,
     /// Timeframe des bougies (1m, 5m, ..., 1d).
     #[arg(long, value_name = "TF")]
     pub tf: Timeframe,
@@ -40,13 +44,29 @@ pub struct DatasetBuildArgs {
 /// `tv4 dataset build` : manifeste et `dataset_hash` d'un dataset figé.
 pub(super) fn build(args: &DatasetBuildArgs) -> Result<(), CliError> {
     let window = Window::new(args.from.0, args.to.0)?;
-    let request = BuildRequest {
-        name: &args.name,
-        partition: Partition::new(args.exchange, args.symbol.clone(), args.tf),
-        window,
-        gaps_policy: args.gaps_policy,
+    // Un seul symbole : chemin mono-série inchangé du jalon 1. Plusieurs : dataset multi-séries.
+    let outcome = match args.symbols.as_slice() {
+        [symbol] => {
+            let request = BuildRequest {
+                name: &args.name,
+                partition: Partition::new(args.exchange, symbol.clone(), args.tf),
+                window,
+                gaps_policy: args.gaps_policy,
+            };
+            store::build_dataset(&args.root, &request, now_ms()?)?
+        }
+        symbols => {
+            let request = MultiBuildRequest {
+                name: &args.name,
+                exchange: args.exchange,
+                symbols,
+                tf: args.tf,
+                window,
+                gaps_policy: args.gaps_policy,
+            };
+            store::build_dataset_multi(&args.root, &request, now_ms()?)?
+        }
     };
-    let outcome = store::build_dataset(&args.root, &request, now_ms()?)?;
     let statut = match outcome.status {
         BuildStatus::Created => "créé",
         BuildStatus::Unchanged => "inchangé",

@@ -1,8 +1,9 @@
 # CI tradingV4 (docs/03-architecture.md §3 ligne Qualité, §4 et §11 S1).
 # Sans filtrage par chemin : chaque push et chaque pull request passe tout le contrôle.
-# Jobs : `qualite` (format, clippy, tests, double run de fumée avec `tv4 verify`, couverture), `bench`
-# (criterion `engine_2y_1m` et sa porte), `control-plane` (PHP : composer, phpcs, phpstan, phpunit) et
-# `rapport-bout-en-bout` (rend avec le control plane le run écrit par `tv4`).
+# Jobs : `qualite` (format, clippy, tests, doubles runs de fumée avec `tv4 verify` pour le chemin mono-paire
+# et pour le portefeuille, couverture), `bench` (criterion `engine_2y_1m` et sa porte ; le groupe informatif
+# `engine_portfolio_2y_1m_2legs` n'est pas lancé ici), `control-plane` (PHP : composer, phpcs, phpstan,
+# phpunit) et `rapport-bout-en-bout` (rend avec le control plane les runs écrits par `tv4`).
 name: CI
 
 on:
@@ -71,6 +72,29 @@ jobs:
           ./target/debug/tv4 backtest --fixture fixtures/kraken_xbtusd_1m.csv --strategy sma_cross \
             --params config/strategies/sma_cross.toml --fees bitvavo_usdc --out runs/fumee-bitvavo
 
+      # Portefeuille (docs/specs/s9.md §18, lot H) : même principe, deux process, sur un dataset à deux
+      # séries. La fixture Kraken réelle est ingérée sous deux symboles (BTC-USD et ETH-USD) : les deux
+      # jambes ont donc les mêmes bougies, ce qui suffit pour un test de déterminisme et de chaîne, pas
+      # pour un résultat (le verdict attendu est `rejected_too_few_trades`). Les minimums viennent du
+      # fichier d'instruments de test `tv4/tests/fixtures/okx_instruments_spot.json` (valeurs inventées,
+      # aucun secret). `tv4 verify` compare aussi le capital et les identités de l'entonnoir par paire.
+      - name: Backtest de fumée du portefeuille, deux process, et tv4 verify
+        run: |
+          set -euo pipefail
+          for s in BTC-USD ETH-USD; do
+            ./target/debug/tv4 ingest csv --root smoke-s9 --csv fixtures/kraken_xbtusd_1m.csv \
+              --exchange kraken --symbol "$s" --tf 1m
+          done
+          ./target/debug/tv4 dataset build --root smoke-s9 --name fumee_duo --exchange kraken \
+            --symbol BTC-USD --symbol ETH-USD --tf 1m --from 2020-01-01T00:00:00Z --to 2020-01-09T00:00:00Z
+          for r in a b; do
+            ./target/debug/tv4 backtest --root smoke-s9 --dataset fumee_duo --strategy sma_cross \
+              --params config/strategies/sma_cross.toml --fees okx --symbols BTC-USD,ETH-USD \
+              --max-positions 8 --sizing research --capital 300 \
+              --instruments-okx tv4/tests/fixtures/okx_instruments_spot.json --out runs/portefeuille-$r
+          done
+          ./target/debug/tv4 verify runs/portefeuille-a runs/portefeuille-b
+
       - name: Publier les runs de fumée
         uses: actions/upload-artifact@v4
         with:
@@ -79,7 +103,7 @@ jobs:
           if-no-files-found: error
 
       # Seuil de lignes (S8) : couverture mesurée à la fin de S8 (96,53 %), arrondie à l'entier inférieur,
-      # moins 2 points. À valider par le propriétaire (docs/03 ne chiffre pas de seuil).
+      # moins 2 points. Seuil validé par le propriétaire le 28/10 (docs/specs/s8.md §17).
       - name: Couverture
         run: cargo llvm-cov --locked --all-features --workspace --fail-under-lines 94 --lcov --output-path lcov.info
 
@@ -175,7 +199,9 @@ jobs:
         continue-on-error: true
 
   # Conformité entre la vraie sortie de `tv4` et les DTO PHP (la fixture du control plane est écrite à la
-  # main) : le run de fumée A est rendu en HTML.
+  # main) : les runs de fumée A (mono-paire s8) et du portefeuille (s9) sont rendus en HTML, et le rendu du
+  # portefeuille échoue si un bloc obligatoire de s9 y est déclaré absent. Le test PHPUnit
+  # `GoldenPortfolioRunTest` fait le même contrôle sur le golden `portfolio_2legs`.
   rapport-bout-en-bout:
     name: Rapport HTML d'un vrai run
     needs: [qualite, control-plane]
@@ -204,9 +230,30 @@ jobs:
         working-directory: control-plane
         run: php bin/console tv4:report ../runs/fumee-a --output ../rapport-fumee.html
 
-      - name: Publier le rapport
+      - name: Rendre le rapport du run de fumée du portefeuille
+        working-directory: control-plane
+        run: php bin/console tv4:report ../runs/portefeuille-a --output ../rapport-portefeuille.html
+
+      # Le lecteur tolère l'absence d'un bloc s9 (le rendu écrit alors « Ce run ne porte pas de bloc … » et
+      # sort en 0) : sans cette étape, un bloc renommé côté Rust ou une clé mal orthographiée côté PHP
+      # ferait disparaître une section sans bruit. Un motif par bloc obligatoire ; le régime, facultatif
+      # (la stratégie de fumée ne le lit pas), n'en a pas.
+      - name: Contrôler les blocs s9 du rapport du portefeuille
+        run: |
+          statut=0
+          for bloc in executability g1_executable funnel_by_pair portfolio priority instruments distribution.by_pair; do
+            if grep -qF "Ce run ne porte pas de bloc <code>${bloc}</code>" rapport-portefeuille.html; then
+              echo "::error::le rapport du run de fumée du portefeuille ne porte pas le bloc ${bloc}"
+              statut=1
+            fi
+          done
+          exit "$statut"
+
+      - name: Publier les rapports
         uses: actions/upload-artifact@v4
         with:
           name: rapport-fumee
-          path: rapport-fumee.html
+          path: |
+            rapport-fumee.html
+            rapport-portefeuille.html
           if-no-files-found: error
