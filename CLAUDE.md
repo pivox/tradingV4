@@ -32,6 +32,14 @@ Plateforme de trading crypto **spot** sur OKX : moteur de backtest, de paper tra
 - Pilote : au palier 20 %, ligne BTC = max(risque / stop, minimum d'ordre BTC-USDC) avec un risque effectif plafonné à 1,5 % du capital alloué ; univers live du cycle 1 : BTC et ETH en 1d, BTC seul en 4h maker (décision du 14/10 (05:21)).
 - Qualité des données : un trimestre est exclu pour une (paire, TF de décision) au-delà de 1 % de bougies absentes ; le 1m qui sert aux fills n'exclut rien, une minute absente y vaut « pas de fill » (décision du 15/10 (12:34), `docs/04-protocole-recherche.md` §2.5 et §10 décision 8).
 - Simulation : fills de limit pessimistes, règles `s6.1` (une limit marketable à son arrivée part en taker à l'open, une limit au repos est remplie à son prix exact en maker, même à travers un gap ; décision du 23/10, `docs/04-protocole-recherche.md` §3.1 et §10 décision 9).
+- S8 : les 13 points de `docs/specs/s8.md` §17 sont validés en bloc (décision du 28/10 (12:05 UTC), carte « Tout valider »). Ils couvrent :
+  - Symfony 7.4 LTS sur PHP 8.3 pour le squelette ;
+  - fenêtre de `btcusd_2y` dans DEV (2021-01-01 → 2023-01-01) ;
+  - porte criterion bloquante et couverture ≥ 94 % ;
+  - R hors frais, et trop peu de trades jugé avant l'expectancy négative ;
+  - `return_annualized` gardé (20 ULP) ;
+  - rejets comptés dans l'entonnoir ;
+  - régime à l'entrée de `trades.csv` reporté au jalon 1.5.
 
 ## Code (moteur Rust `tv4`)
 
@@ -40,7 +48,7 @@ Plateforme de trading crypto **spot** sur OKX : moteur de backtest, de paper tra
 - `Cargo.lock` est commité. Une crate de `docs/03-architecture.md` §3.1 pas encore utilisée est déclarée avec `=` dans `[workspace.dependencies]` pour garder la version vérifiée jusqu'à son premier usage.
 - Identifiants en anglais ; commentaires, messages d'erreur et documentation en français. `HashMap`/`HashSet` interdits par clippy (ordre non déterministe) ; `unwrap()` interdit dans la lib.
 - Format du hash des données : `docs/dataset-hash.md` (`dsh-v1`), qui fait foi pour l'implémentation de S4 et pour un recalcul en PHP au jalon 2.
-- Spécification de S8 (rapports `metrics.json`, `trades.csv`, `equity.csv`, `manifest.json`, `tv4 verify`, `tv4 bench`, squelette Symfony `control-plane/`) : `docs/specs/s8.md`, qui fait foi pour le détail de S8 ; ses points « à valider » sont récapitulés au §17.
+- Spécification de S8 (rapports `metrics.json`, `trades.csv`, `equity.csv`, `manifest.json`, `tv4 verify`, `tv4 bench`, squelette Symfony `control-plane/`) : `docs/specs/s8.md`, qui fait foi pour le détail de S8 ; les 13 points soumis au propriétaire (§17) sont validés depuis le 28/10.
 
 ## Règles de travail
 
