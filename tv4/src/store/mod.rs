@@ -42,7 +42,9 @@
 //! `continuity` des manifestes, [`WriteOptions`] (fin de clôture bornée par la couverture du dump) et
 //! [`quality_report`] (rapport de qualité trimestriel, docs/04 §2.5). S7 ajoute [`merge_period_with`]
 //! (fusion d'une période avec le fichier existant, sous le verrou de partition attendu par
-//! [`PartitionLock::acquire_wait`]) pour l'ingestion OKX par lots et sa reprise.
+//! [`PartitionLock::acquire_wait`]) pour l'ingestion OKX par lots et sa reprise. S9 ajoute les datasets
+//! multi-séries ([`build_dataset_multi`], [`load_dataset_multi`]) : une série par symbole, hash `dsh-v1`
+//! §5.2 sur tous les segments ; [`load_dataset`] garde son refus du multi-séries.
 
 #![forbid(unsafe_code)]
 
@@ -67,7 +69,8 @@ use crate::model::{ModelError, Timeframe, Ts};
 
 pub use self::columns::{Columns, ColumnsParts};
 pub use self::dataset::{
-    BuildOutcome, BuildRequest, BuildStatus, LoadedDataset, build_dataset, fill_gaps, load_dataset,
+    BuildOutcome, BuildRequest, BuildStatus, LoadedDataset, MultiBuildRequest, MultiDataset,
+    build_dataset, build_dataset_multi, fill_gaps, load_dataset, load_dataset_multi,
     read_verified_with_hash,
 };
 pub use self::layout::{GapsPolicy, Partition, Period, Symbol, Window, resolve_rel};
@@ -284,4 +287,22 @@ pub enum StoreError {
         "dataset à {symbols} symbole(s) et {tfs} timeframe(s) : S4 ne charge que des datasets mono-série"
     )]
     MultiSeriesUnsupported { symbols: usize, tfs: usize },
+
+    #[error("dataset à {tfs} timeframe(s) : un dataset multi-séries n'a qu'un seul timeframe")]
+    MultiTimeframeUnsupported { tfs: usize },
+
+    #[error("aucun symbole : un dataset a au moins une série")]
+    NoSymbols,
+
+    #[error("symbole {symbol} demandé deux fois : un symbole n'est une série qu'une fois")]
+    DuplicateSymbol { symbol: String },
+
+    #[error(
+        "symbole {symbol} sans aucune bougie dans la fenêtre [{start_ms}, {end_ms}) : rien dans le stockage pour cette série"
+    )]
+    SymbolWithoutData {
+        symbol: String,
+        start_ms: Ts,
+        end_ms: Ts,
+    },
 }

@@ -89,5 +89,23 @@
       </tbody>
     </table>
   </div>
-  <p class="absent-note"><strong>Absent au jalon 1.</strong> Répartition par pli du walk-forward : jalon 2. Par paire : une seule paire est jouée, <strong>{{ manifest.data.symbol }}</strong>.</p>
+  {% if dist.byPair is not null -%}
+    <h3>Par paire</h3>
+    <div class="scroll">
+    <table class="data">
+      <thead><tr><th scope="col">Paire</th><th scope="col" class="num">Trades</th><th scope="col" class="num">Taux de gain</th><th scope="col" class="num">Espérance (R)</th><th scope="col" class="num">PnL net</th><th scope="col" class="num">Exposition</th></tr></thead>
+      <tbody>
+      {% for row in dist.byPair %}
+        <tr><th scope="row"><code>{{ row.symbol }}</code></th><td class="num">{{ row.trades|int }}</td><td class="num">{{ row.winRate|pct }}</td><td class="num">{{ row.expectancyR|num(2) }}</td><td class="num {{ row.netPnl < 0 ? 'neg' : 'pos' }}">{{ row.netPnl|money }}</td><td class="num">{{ row.exposure|pct }}</td></tr>
+      {% else %}
+        <tr><td colspan="6" class="absent-note">Aucune paire.</td></tr>
+      {% endfor %}
+      </tbody>
+    </table>
+    </div>
+    <p class="absent-note"><strong>Absent au jalon 1.</strong> Répartition par pli du walk-forward : jalon 2.</p>
+  {% else -%}
+  <p class="absent-note"><strong>Absent au jalon 1.</strong> Répartition par pli du walk-forward : jalon 2. Par paire : une seule paire est jouée, <strong>{{ manifest.data.symbolsLabel }}</strong>.</p>
+  {%- endif %}
+
 </section>

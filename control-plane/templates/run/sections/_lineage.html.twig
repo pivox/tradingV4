@@ -15,12 +15,57 @@
     <tr>
       <th scope="row">Données</th>
       <td>
+        {% if metrics.dataBars is not null -%}
         {{ metrics.dataBars|int }} bougies · {{ metrics.minutesMissing|int }} minutes absentes ·
         warmup {{ manifest.config.warmupBars|int }} bougies ·
         {{ metrics.dataSyntheticBars|int }} synthétiques · trous : <code>{{ manifest.data.gapsPolicy }}</code>
+        {%- else -%}
+        {% for s in manifest.data.series %}<code>{{ s.symbol }}</code> : {{ s.rows|int }} lignes{% if s.firstMs is not null %} ({{ s.firstMs|datetime }} → {{ s.lastMs|datetime }}){% endif %}{% if not loop.last %} · {% endif %}{% else %}aucun segment déclaré{% endfor %} ·
+        warmup {{ manifest.config.warmupBars|int }} bougies · trous : <code>{{ manifest.data.gapsPolicy }}</code>
+        {%- endif %}
+
         {% if manifest.data.fixtureBlake3 is not null %}<br>Fixture <code>blake3</code> : <code class="hash">{{ manifest.data.fixtureBlake3 }}</code>{% endif %}
       </td>
     </tr>
+{% if metrics.isPortfolio %}
+    <tr>
+      <th scope="row">Univers</th>
+      <td>{% for symbol in manifest.data.symbols %}<code>{{ symbol }}</code>{% if not loop.last %}, {% endif %}{% endfor %} (ordre de la config, départage du rang de priorité)</td>
+    </tr>
+    <tr>
+      <th scope="row">Régime</th>
+      <td>
+        {% if metrics.regime is null -%}
+          aucun : la stratégie ne lit pas le régime
+        {%- else -%}
+          <code>{{ metrics.regime.symbol }}</code> {{ metrics.regime.tf }}, SMA {{ metrics.regime.smaPeriod|int }}
+          · premier jour prêt : {{ metrics.regime.firstReadyMs|datetime }}
+          · {{ metrics.regime.daysBull|int }} jours haussiers, {{ metrics.regime.daysBear|int }} baissiers sur la fenêtre
+        {%- endif %}
+      </td>
+    </tr>
+    <tr>
+      <th scope="row">Instruments</th>
+      <td>
+        {% if metrics.instruments is null -%}
+          non déclarés
+        {%- else -%}
+          source <code>{{ metrics.instruments.source }}</code>
+          {% set instrumentsFile = metrics.instruments.file ?? manifest.instrumentsFile %}
+          {%- if instrumentsFile is not null %} · fichier <code>{{ instrumentsFile }}</code>{% endif %}
+          {%- if metrics.instruments.fetchedAt is not null %} · relevé le {{ metrics.instruments.fetchedAt }}{% endif %}
+          {%- if metrics.instruments.instrumentsHash is not null %}<br><code>instruments_hash</code> : <code class="hash">{{ metrics.instruments.instrumentsHash }}</code>{% endif %}
+          {%- if metrics.instruments.notLive is not empty %}<br>Hors état <code>live</code> : {% for symbol in metrics.instruments.notLive %}<code>{{ symbol }}</code>{% if not loop.last %}, {% endif %}{% endfor %}{% endif %}
+          <br>Changements à venir annoncés par OKX (non appliqués au backtest) :
+          {% for change in metrics.instruments.upcomingChanges -%}
+            {% if loop.first %}<ul>{% endif %}<li><code>{{ change.instId }}</code> : <code>{{ change.param }}</code> devient <code>{{ change.newValue }}</code>, effectif {% if change.effTimeMs is not null %}{{ change.effTimeMs|datetime }}{% else %}<code>{{ change.effTime }}</code>{% endif %}</li>{% if loop.last %}</ul>{% endif %}
+          {%- else -%}
+            aucun
+          {%- endfor %}
+        {%- endif %}
+      </td>
+    </tr>
+{% endif %}
   </table>
   <p class="absent-note"><strong>Absent au jalon 1.</strong> <code>version_hash</code> : le jalon 1 identifie la version du code par la version de la stratégie. Reproductibilité (« rejoué le …, identique à l'octet ») et bouton « Rejouer » : aucun <code>tv4 verify</code> n'est enregistré dans le run, jalon 2.</p>
 </section>

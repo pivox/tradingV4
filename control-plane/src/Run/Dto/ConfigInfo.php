@@ -10,7 +10,9 @@ final readonly class ConfigInfo
     /**
      * @param array<string, bool|int|float|string|null> $strategyParams
      * @param array<string, bool|int|float|string|null> $simRules
-     * @param array<string, bool|int|float|string|null> $instrument
+     * @param array<string, bool|int|float|string|null>|null $instrument  règles de l'instrument (s8 seulement)
+     * @param array<string, array<string, bool|int|float|string|null>>|null $instruments règles par symbole (s9)
+     * @param array<string, bool|int|float|string|null>|null $portfolio   bloc `config.portfolio` (s9)
      */
     public function __construct(
         public string $strategyId,
@@ -25,7 +27,9 @@ final readonly class ConfigInfo
         public int $warmupBars,
         public string $tv4Version,
         public array $simRules,
-        public array $instrument,
+        public ?array $instrument,
+        public ?array $instruments = null,
+        public ?array $portfolio = null,
     ) {
     }
 }

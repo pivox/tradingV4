@@ -4,7 +4,7 @@ declare(strict_types=1);
 
 namespace App\Run\Dto;
 
-/** Contenu de `manifest.json` (schéma `tv4-manifest-s8`). */
+/** Contenu de `manifest.json` (schémas `tv4-manifest-s8` et `tv4-manifest-s9`). */
 final readonly class Manifest
 {
     /**
@@ -25,6 +25,9 @@ final readonly class Manifest
         public array $fileHashes,
         public string $startedAt,
         public Timings $timings,
+        public string $schema = 'tv4-manifest-s8',
+        public ?string $instrumentsHash = null,
+        public ?string $instrumentsFile = null,
     ) {
     }
 }

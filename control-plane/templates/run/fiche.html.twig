@@ -5,8 +5,8 @@
     <h1>Run <code class="hash">{{ manifest.runId }}</code></h1>
     <p>
       Stratégie <strong>{{ manifest.config.strategyId }}</strong> version {{ manifest.config.strategyVersion }}
-      · {% if manifest.data.source == 'dataset' %}dataset <strong>{{ manifest.data.dataset }}</strong>{% else %}fixture <strong>{{ manifest.data.symbol }}</strong>{% endif %}
-      ({{ manifest.data.exchange }}, {{ manifest.data.symbol }}, {{ manifest.data.tf }})
+      · {% if manifest.data.source == 'dataset' %}dataset <strong>{{ manifest.data.dataset }}</strong>{% elseif metrics.isPortfolio %}portefeuille <strong>{{ manifest.data.symbolsLabel }}</strong>{% else %}fixture <strong>{{ manifest.data.symbolsLabel }}</strong>{% endif %}
+      ({{ manifest.data.exchange }}, {{ manifest.data.symbolsLabel }}, {{ manifest.data.tf }})
     </p>
     <p>Fenêtre jouée : {{ windowStart }} → {{ windowEnd }} (fin exclue, après warmup)</p>
   </header>
@@ -19,6 +19,10 @@
   {% include 'run/sections/_plis.html.twig' %}
   {% include 'run/sections/_distribution.html.twig' %}
   {% include 'run/sections/_pourquoi_pas_de_trade.html.twig' %}
+  {% if metrics.isPortfolio -%}
+    {% include 'run/sections/_univers.html.twig' %}
+    {% include 'run/sections/_executabilite.html.twig' %}
+  {%- endif -%}
   {% include 'run/sections/_trades.html.twig' %}
   {% include 'run/sections/_annexe.html.twig' %}
 </article>

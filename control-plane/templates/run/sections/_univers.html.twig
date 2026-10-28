@@ -1,0 +1,64 @@
+{% set pf = metrics.portfolio %}
+<section id="univers" class="section" aria-labelledby="univers-titre">
+  <h2 id="univers-titre">Univers et entonnoir par paire</h2>
+  <p class="note">Univers dans l'ordre de la config : <strong>{{ manifest.data.symbolsLabel }}</strong>. Une jambe par paire, un cash commun. L'entonnoir de chaque paire s'ajoute à l'entonnoir global ci-dessus ; « cash » et « max_positions » sont des contraintes de portefeuille, pas des défauts d'exécutabilité.</p>
+  {% if metrics.funnelByPair is null %}
+    <p class="absent-note"><strong>Absent.</strong> Ce run ne porte pas de bloc <code>funnel_by_pair</code>.</p>
+  {% else %}
+  <div class="scroll">
+  <table class="data">
+    <thead>
+      <tr>
+        <th scope="col">Paire</th><th scope="col" class="num">Évaluations</th><th scope="col" class="num">Signaux d'entrée</th>
+        <th scope="col" class="num">Ordres d'entrée</th><th scope="col" class="num">Lots ouverts</th><th scope="col" class="num">Trades</th>
+        <th scope="col" class="num"><code>min_notional</code></th><th scope="col" class="num"><code>lot_step</code></th>
+        <th scope="col" class="num"><code>cash</code></th><th scope="col" class="num"><code>max_positions</code></th>
+        <th scope="col" class="num"><code>volume</code></th><th scope="col" class="num"><code>other</code></th>
+      </tr>
+    </thead>
+    <tbody>
+    {% for row in metrics.funnelByPair %}
+      <tr>
+        <th scope="row"><code>{{ row.symbol }}</code></th>
+        <td class="num">{{ row.evaluations|int }}</td><td class="num">{{ row.entrySignals|int }}</td>
+        <td class="num">{{ row.entryOrders|int }}</td><td class="num">{{ row.entryFills|int }}</td><td class="num">{{ row.trades|int }}</td>
+        {% for reason in ['min_notional', 'lot_step', 'cash', 'max_positions', 'volume', 'other'] %}
+          <td class="num">{{ (row.rejected[reason] ?? 0)|int }}</td>
+        {% endfor %}
+      </tr>
+    {% endfor %}
+    </tbody>
+  </table>
+  </div>
+  <p class="note">Colonnes de rejets : entrées refusées, par motif. <code>min_notional</code> : quantité sous le minimum d'ordre (<code>minSz</code>). <code>lot_step</code> : moins d'un pas de quantité. <code>volume</code> : règle de 0,5 % du volume de la minute.</p>
+  {% endif %}
+  <div class="cols">
+    {% if pf is not null %}
+    <table class="kv">
+      <caption>Portefeuille</caption>
+      <tbody>
+        <tr><th scope="row">Jambes</th><td class="num">{{ pf.legs|int }}</td></tr>
+        <tr><th scope="row">Minutes de la grille commune</th><td class="num">{{ pf.gridMinutes|int }}</td></tr>
+        <tr><th scope="row">Positions ouvertes au plus</th><td class="num">{{ pf.maxOpenPositions|int }}</td></tr>
+        <tr><th scope="row">Plafond de positions atteint</th><td class="num">{{ pf.positionsCapHits|int }} fois</td></tr>
+        <tr><th scope="row">Coût maximal engagé / capital initial</th><td class="num">{{ pf.maxCostToInitial|pct }}</td></tr>
+        <tr><th scope="row">Sorties sur trou de cotation</th><td class="num">{{ pf.quoteGapExits|int }}</td></tr>
+        <tr><th scope="row">Sizing</th><td><code>{{ pf.sizing }}</code></td></tr>
+        <tr><th scope="row">Capital initial</th><td class="num">{{ pf.initialCash|money }}</td></tr>
+      </tbody>
+    </table>
+    {% endif %}
+    {% if metrics.priority is not null %}
+    <table class="kv">
+      <caption>Priorité des signaux</caption>
+      <tbody>
+        <tr><th scope="row">Règle</th><td><code>{{ metrics.priority.rule }}</code></td></tr>
+        <tr><th scope="row">Fenêtre de liquidité</th><td class="num">{{ metrics.priority.liquidityWindowDays|int }} jours</td></tr>
+        <tr><th scope="row">Source du rang</th><td><code>{{ metrics.priority.rankSource }}</code>{% if metrics.priority.rankExchange is not null %} ({{ metrics.priority.rankExchange }}){% endif %}</td></tr>
+        <tr><th scope="row">Jours classés</th><td class="num">{{ metrics.priority.rankDays|int }}</td></tr>
+        <tr><th scope="row">Jours à historique partiel</th><td class="num">{{ metrics.priority.partialDays|int }}</td></tr>
+      </tbody>
+    </table>
+    {% endif %}
+  </div>
+</section>

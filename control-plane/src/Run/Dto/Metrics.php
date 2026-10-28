@@ -4,22 +4,26 @@ declare(strict_types=1);
 
 namespace App\Run\Dto;
 
-/** Contenu de `metrics.json` (schéma `tv4-metrics-s8`), sans le bloc `config` repris par le manifeste. */
+/**
+ * Contenu de `metrics.json` (schémas `tv4-metrics-s8` et `tv4-metrics-s9`), sans le bloc `config` repris par
+ * le manifeste. Les blocs propres au portefeuille (s9) valent null pour un run s8 ou s'ils sont absents.
+ */
 final readonly class Metrics
 {
     /**
      * @param array<string, int>  $sim
      * @param array<string, int>  $rejectedByReason
      * @param list<string>        $simDeviations
+     * @param list<PairFunnel>|null $funnelByPair
      */
     public function __construct(
         public string $configHash,
         public string $datasetHash,
-        public int $dataBars,
-        public int $dataSyntheticBars,
-        public int $minutesMissing,
-        public int $windowStartIndex,
-        public int $windowBars,
+        public ?int $dataBars,
+        public ?int $dataSyntheticBars,
+        public ?int $minutesMissing,
+        public ?int $windowStartIndex,
+        public ?int $windowBars,
         public int $nTrades,
         public int $nTradesForced,
         public bool $forcedClose,
@@ -57,6 +61,20 @@ final readonly class Metrics
         public Exposure $exposure,
         public Funnel $funnel,
         public Distribution $distribution,
+        public string $schema = 'tv4-metrics-s8',
+        public ?array $funnelByPair = null,
+        public ?PortfolioInfo $portfolio = null,
+        public ?PriorityInfo $priority = null,
+        public ?RegimeInfo $regime = null,
+        public ?InstrumentsInfo $instruments = null,
+        public ?Executability $executability = null,
+        public ?G1Executable $g1Executable = null,
     ) {
+    }
+
+    /** Vrai pour un run du mode portefeuille (schéma s9). */
+    public function isPortfolio(): bool
+    {
+        return 'tv4-metrics-s9' === $this->schema;
     }
 }
