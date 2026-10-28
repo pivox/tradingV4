@@ -1,0 +1,17 @@
+#!/usr/bin/env php
+<?php
+
+declare(strict_types=1);
+
+use App\Console\KernelFactory;
+use App\Console\Tv4Application;
+use Symfony\Component\Console\Input\ArgvInput;
+
+require dirname(__DIR__) . '/vendor/autoload.php';
+
+// Environnement et debug lus comme le bin/console d'avant Runtime : `--env=<env>` / `-e <env>`
+// (défaut : APP_ENV, sinon prod) ; debug actif sauf APP_DEBUG=0 ou `--no-debug`. Le debug actif par
+// défaut fait vérifier la fraîcheur du conteneur : jamais de cache prod périmé après un git pull.
+$input = new ArgvInput();
+$kernel = KernelFactory::create($input, $_SERVER);
+exit((new Tv4Application($kernel))->run($input));

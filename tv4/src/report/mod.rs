@@ -1,14 +1,31 @@
-//! Rapports d'un run (docs/03-architecture.md §2). `metrics.json` (S3) et `trades.csv` (écrit dès S6,
-//! voir [`writers`]) sont écrits de façon atomique ; [`write_json_atomic`] sert aussi aux rapports
-//! d'ingestion de `tv4 ingest kraken` (S5). Les rapports complets (`equity.csv`, `manifest.json`,
-//! verdict) arrivent en S8.
+//! Rapports d'un run (docs/03-architecture.md §2). Un run écrit quatre fichiers de façon atomique :
+//! `metrics.json` ([`metrics`]), `trades.csv` ([`writers`]), `equity.csv` ([`equity`]) puis, en
+//! dernier, `manifest.json` ([`manifest`]) dont la présence marque un run complet. [`write_json_atomic`]
+//! sert aussi aux rapports d'ingestion de `tv4 ingest kraken` (S5).
 //!
 //! Le module lit les résultats de `engine` ; il ne connaît pas les stratégies (id, version et
-//! paramètres lui arrivent dans `RunConfig`) et ne remonte pas vers la CLI.
+//! paramètres lui arrivent dans `RunConfig`) et ne remonte pas vers la CLI. Les sommes et moyennes sont
+//! des boucles `for` dans l'ordre des trades (docs/03 §7.4) ; la libm n'est appelée que dans
+//! [`approx`].
+//!
+//! Écarts d'implémentation (S8) à docs/03 :
+//!
+//! 1. `manifest.json` est défini ici et non dans `engine/manifest.rs` (§4) : `engine` n'écrit rien et
+//!    ne connaît ni l'horloge ni le binaire.
+//! 2. La clôture forcée qui suit la dernière 1m n'entre pas dans `equity.csv` ni dans les drawdowns :
+//!    `equity_final` reste dans `metrics.json` à part.
+//! 3. `equity.csv` d'un run de 2 ans compte au plus 17 520 lignes de données au pas `1h` (moins avec le
+//!    warmup et les heures sans transaction).
 
 #![forbid(unsafe_code)]
 
+pub mod approx;
+pub mod distribution;
+pub mod drawdown;
+pub mod equity;
+pub mod manifest;
 pub mod metrics;
+pub mod verify;
 pub mod writers;
 
 use std::fs::{self, File};
@@ -20,8 +37,10 @@ use thiserror::Error;
 
 use crate::model::{ModelError, hash};
 
-pub use metrics::{DataInfo, DatasetRef, EngineInfo, Metrics};
-pub use writers::write_trades_csv;
+pub use equity::write_equity_csv;
+pub use manifest::{EngineInfo, Manifest, run_id};
+pub use metrics::{DataInfo, DatasetRef, Metrics, RunVerdict};
+pub use writers::{TradesContext, write_trades_csv};
 
 /// Erreurs d'écriture d'un rapport.
 #[derive(Debug, Error)]
@@ -41,6 +60,30 @@ pub enum ReportError {
 
     #[error("production du CSV impossible : {0}")]
     Csv(String),
+
+    #[error("lecture d'un CSV de rapport impossible : {0}")]
+    CsvRead(String),
+
+    /// L'entonnoir ne boucle pas : un compteur est incohérent avec les autres (bug du moteur).
+    #[error("entonnoir incohérent : {detail}")]
+    FunnelInconsistent { detail: String },
+
+    #[error("instant {ts_ms} ms hors de la plage des dates")]
+    Timestamp { ts_ms: i64 },
+
+    #[error("débordement d'entier dans {context}")]
+    Overflow { context: &'static str },
+
+    #[error("série incohérente : {detail}")]
+    Series { detail: String },
+}
+
+/// Octets de `value` en JSON canonique (clés triées), suivi d'un `\n` : ce que
+/// [`write_json_atomic`] écrit.
+pub fn json_bytes<T: Serialize>(value: &T) -> Result<Vec<u8>, ReportError> {
+    let mut text = hash::canonical_json(value)?;
+    text.push('\n');
+    Ok(text.into_bytes())
 }
 
 /// Écrit `value` en JSON canonique (clés triées), suivi d'un `\n`, dans `dir/name`.
@@ -52,13 +95,15 @@ pub fn write_json_atomic<T: Serialize>(
     name: &str,
     value: &T,
 ) -> Result<PathBuf, ReportError> {
-    let mut text = hash::canonical_json(value)?;
-    text.push('\n');
-    write_bytes_atomic(dir, name, text.as_bytes())
+    write_bytes_atomic(dir, name, &json_bytes(value)?)
 }
 
 /// Écrit `bytes` dans `dir/name` de façon atomique (même schéma que [`write_json_atomic`]).
-fn write_bytes_atomic(dir: &Path, name: &str, bytes: &[u8]) -> Result<PathBuf, ReportError> {
+pub(crate) fn write_bytes_atomic(
+    dir: &Path,
+    name: &str,
+    bytes: &[u8],
+) -> Result<PathBuf, ReportError> {
     let io = |path: &Path| {
         let path = path.display().to_string();
         move |source| ReportError::Io { path, source }

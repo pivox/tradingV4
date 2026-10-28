@@ -44,6 +44,9 @@ pub struct PositionView {
 pub struct Trade {
     pub lot_id: u64,
     pub entry_signal_ms: Ts,
+    /// Instant d'arrivée de l'ordre d'achat rempli à l'exchange simulé (`active_from_ms` de l'ordre,
+    /// c'est-à-dire `signal_ms + activation_delay_bars × 60 000`).
+    pub entry_order_ms: Ts,
     /// `open_time` de la 1m de fill d'entrée.
     pub entry_ms: Ts,
     /// Open pour un market, limite pour une limit.
@@ -53,6 +56,10 @@ pub struct Trade {
     pub entry_slippage: f64,
     pub entry_liquidity: Liquidity,
     pub exit_signal_ms: Ts,
+    /// Instant d'arrivée de l'ordre de sortie : `active_from_ms` d'un ordre en attente, `entry_ms` du
+    /// fill qui a posé le stop initial, instant d'activation du dernier `MoveStop` appliqué pour un
+    /// stop déplacé, activation du take-profit, `exit_ms` pour la clôture forcée.
+    pub exit_order_ms: Ts,
     /// `open_time` de la 1m de fill de sortie ; clôture de la dernière 1m pour la clôture forcée.
     pub exit_ms: Ts,
     pub exit_ref_price: f64,
@@ -68,6 +75,10 @@ pub struct Trade {
     /// Excursion défavorable maximale en quote : `qty × (plus bas − prix d'entrée)`, négative en général.
     pub mae: f64,
     pub stop_at_exit: Option<f64>,
+    /// Stop de la position juste après le fill qui a ouvert ce lot (`None` sans stop).
+    pub stop_at_entry: Option<f64>,
+    /// Vrai si un `MoveStop` a été appliqué depuis l'ouverture de la position (stop suiveur).
+    pub stop_moved: bool,
     pub capped_by_cash: bool,
     pub exit_reason: ExitReason,
     /// Redondant avec `exit_reason == ForcedClose`, demandé tel quel dans `trades.csv` (docs/03 §7.2).
@@ -81,9 +92,13 @@ pub struct Trade {
 pub(super) struct Lot {
     pub id: u64,
     pub entry_signal_ms: Ts,
+    /// `active_from_ms` de l'ordre d'achat rempli.
+    pub order_ms: Ts,
     pub entry_ms: Ts,
     pub entry_ref_price: f64,
     pub entry_price: f64,
+    /// Stop de la position juste après ce fill.
+    pub stop_at_entry: Option<f64>,
     pub lots_init: u64,
     pub lots_left: u64,
     pub cost: f64,

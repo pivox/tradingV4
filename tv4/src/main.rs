@@ -1,5 +1,6 @@
 //! Point d'entrée du binaire `tv4` : lit la ligne de commande, délègue à `tv4::cli`, traduit
-//! l'erreur éventuelle en message sur stderr et en code de sortie non nul.
+//! l'erreur éventuelle en message sur stderr et en code de sortie non nul : 1 par défaut, 3 pour deux
+//! runs différents (`tv4 verify`), 2 réservé par clap aux erreurs d'usage.
 
 #![forbid(unsafe_code)]
 
@@ -15,7 +16,7 @@ fn main() -> ExitCode {
         Ok(()) => ExitCode::SUCCESS,
         Err(erreur) => {
             eprintln!("erreur : {erreur}");
-            ExitCode::FAILURE
+            ExitCode::from(erreur.exit_code())
         }
     }
 }

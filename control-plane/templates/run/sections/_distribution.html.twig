@@ -1,0 +1,93 @@
+{% set dist = metrics.distribution %}
+<section id="distribution" class="section" aria-labelledby="distribution-titre">
+  <h2 id="distribution-titre">Distribution</h2>
+
+  <h3>Multiples de R</h3>
+  {% if histogramChart is null %}
+    <p class="absent-note"><strong>Absent.</strong> Aucun trade n'a de multiple de R défini (stop initial absent ou au-dessus du prix d'entrée).</p>
+  {% else %}
+    <p>Moyenne : <strong>{{ dist.rMean|num(2) }} R</strong> · médiane : <strong>{{ dist.rMedian|num(2) }} R</strong> · {{ metrics.tradesWithR|int }} trades avec R défini.</p>
+    <figure>
+      <svg class="chart" viewBox="0 0 {{ histogramChart.plot.width }} {{ histogramChart.plot.height }}" role="img" aria-labelledby="hist-titre">
+        <title id="hist-titre">Histogramme des multiples de R par seau de 0,5</title>
+        {% for t in histogramChart.yTicks %}
+          <line class="grid" x1="{{ histogramChart.plot.left }}" x2="{{ histogramChart.plot.xRight }}" y1="{{ t.pos|round(2) }}" y2="{{ t.pos|round(2) }}"/>
+          <text class="tick" x="{{ histogramChart.plot.left - 6 }}" y="{{ (t.pos + 4)|round(2) }}" text-anchor="end">{{ t.label }}</text>
+        {% endfor %}
+        {% for bar in histogramChart.bars %}
+          <rect class="bar {{ bar.loss ? 'loss' : 'win' }}" x="{{ bar.x|round(2) }}" y="{{ bar.y|round(2) }}" width="{{ bar.width|round(2) }}" height="{{ bar.height|round(2) }}"><title>{{ bar.range }} R : {{ bar.count }} trade(s)</title></rect>
+        {% endfor %}
+        {% for t in histogramChart.xTicks %}
+          <text class="tick" x="{{ t.pos|round(2) }}" y="{{ histogramChart.plot.height - 8 }}" text-anchor="middle">{{ t.label }}</text>
+        {% endfor %}
+        <line class="axis" x1="{{ histogramChart.plot.left }}" x2="{{ histogramChart.plot.xRight }}" y1="{{ histogramChart.plot.yBottom }}" y2="{{ histogramChart.plot.yBottom }}"/>
+        {% if histogramChart.zeroX is not null %}
+          <line class="zero" x1="{{ histogramChart.zeroX|round(2) }}" x2="{{ histogramChart.zeroX|round(2) }}" y1="{{ histogramChart.plot.top }}" y2="{{ histogramChart.plot.yBottom }}"/>
+        {% endif %}
+      </svg>
+      <figcaption>Trades par multiple de R ; barres pleines à droite de la ligne zéro (gains), barres claires cernées d'un trait à gauche (pertes). Hors bornes : {{ dist.histogramR.underflow|int }} sous {{ dist.histogramR.min|num(0) }} R, {{ dist.histogramR.overflow|int }} au-dessus de {{ dist.histogramR.max|num(0) }} R.</figcaption>
+    </figure>
+  {% endif %}
+
+  <h3>MFE contre MAE</h3>
+  {% if scatterChart.empty %}
+    <p class="absent-note"><strong>Absent.</strong> Aucun trade.</p>
+  {% else %}
+    <figure>
+      <svg class="chart" viewBox="0 0 {{ scatterChart.plot.width }} {{ scatterChart.plot.height }}" role="img" aria-labelledby="scatter-titre">
+        <title id="scatter-titre">Nuage MFE contre MAE, un point par trade</title>
+        {% for t in scatterChart.yTicks %}
+          <line class="grid" x1="{{ scatterChart.plot.left }}" x2="{{ scatterChart.plot.xRight }}" y1="{{ t.pos|round(2) }}" y2="{{ t.pos|round(2) }}"/>
+          <text class="tick" x="{{ scatterChart.plot.left - 6 }}" y="{{ (t.pos + 4)|round(2) }}" text-anchor="end">{{ t.label }}</text>
+        {% endfor %}
+        {% for t in scatterChart.xTicks %}
+          <text class="tick" x="{{ t.pos|round(2) }}" y="{{ scatterChart.plot.height - 8 }}" text-anchor="middle">{{ t.label }}</text>
+        {% endfor %}
+        <line class="axis" x1="{{ scatterChart.plot.left }}" x2="{{ scatterChart.plot.xRight }}" y1="{{ scatterChart.plot.yBottom }}" y2="{{ scatterChart.plot.yBottom }}"/>
+        {% for p in scatterChart.points %}
+          {% if p.winner %}
+            <circle class="pt win" cx="{{ p.x|round(2) }}" cy="{{ p.y|round(2) }}" r="4"><title>Lot {{ p.lotId }} : gagnant</title></circle>
+          {% else %}
+            <rect class="pt loss" x="{{ (p.x - 3.5)|round(2) }}" y="{{ (p.y - 3.5)|round(2) }}" width="7" height="7"><title>Lot {{ p.lotId }} : perdant</title></rect>
+          {% endif %}
+        {% endfor %}
+      </svg>
+      <figcaption>Horizontal : MAE (pire excursion défavorable, monnaie de cotation). Vertical : MFE (meilleure excursion favorable). Cercle : trade gagnant ; carré : trade perdant ou nul.</figcaption>
+    </figure>
+  {% endif %}
+
+  <div class="cols">
+    <table class="kv">
+      <caption>PnL net sans les meilleurs trades</caption>
+      <thead><tr><th scope="col">Sans les</th><th scope="col" class="num">PnL net</th></tr></thead>
+      <tbody>
+      {% for row in dist.pnlWithoutBest %}
+        <tr><th scope="row">{{ row.n }} meilleur{{ row.n > 1 ? 's' : '' }}</th><td class="num">{{ row.pnlNet|money }}</td></tr>
+      {% endfor %}
+      </tbody>
+    </table>
+    <table class="kv">
+      <caption>Par année de sortie (UTC)</caption>
+      <thead><tr><th scope="col">Année</th><th scope="col" class="num">Trades</th><th scope="col" class="num">Gagnants</th><th scope="col" class="num">PnL net</th></tr></thead>
+      <tbody>
+      {% for row in dist.byYear %}
+        <tr><th scope="row">{{ row.year }}</th><td class="num">{{ row.nTrades|int }}</td><td class="num">{{ row.nWins|int }}</td><td class="num">{{ row.pnlNet|money }}</td></tr>
+      {% else %}
+        <tr><td colspan="4" class="absent-note">Aucun trade.</td></tr>
+      {% endfor %}
+      </tbody>
+    </table>
+    <table class="kv">
+      <caption>Par type de sortie</caption>
+      <thead><tr><th scope="col">Type</th><th scope="col" class="num">Trades</th><th scope="col" class="num">PnL net</th></tr></thead>
+      <tbody>
+      {% for row in dist.byExitType %}
+        <tr><th scope="row"><code>{{ row.exitType }}</code></th><td class="num">{{ row.nTrades|int }}</td><td class="num">{{ row.pnlNet|money }}</td></tr>
+      {% else %}
+        <tr><td colspan="3" class="absent-note">Aucun trade.</td></tr>
+      {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  <p class="absent-note"><strong>Absent au jalon 1.</strong> Répartition par pli du walk-forward : jalon 2. Par paire : une seule paire est jouée, <strong>{{ manifest.data.symbol }}</strong>.</p>
+</section>

@@ -2,7 +2,7 @@
 
 Control plane Symfony de tradingV4. Le moteur (`tv4/`, Rust) calcule ; ce répertoire présente et pilote. Il ne contient aucune logique de backtest et ne recalcule aucun résultat.
 
-**État : rien n'est encore codé ici.** Le squelette arrive à l'étape S8 du jalon 1 (`docs/03-architecture.md` §11, point 8).
+**État : squelette du jalon 1 (étape S8, lot C).** Une seule commande, `tv4:report`, qui rend le rapport HTML statique d'un run produit par `tv4`. Rien d'autre n'est codé ici.
 
 ## Jalon 1 : squelette minimal de rendu du rapport
 
@@ -12,6 +12,45 @@ Control plane Symfony de tradingV4. Le moteur (`tv4/`, Rust) calcule ; ce réper
 - Les hashes (`config_hash`, `dataset_hash`, `result_hash`) et le commit du moteur sont affichés tels que `tv4` les a écrits : `tv4` reste la source de vérité (`docs/03-architecture.md` §15.2). Le format `dsh-v1` est spécifié dans `docs/dataset-hash.md` pour permettre une vérification indépendante.
 
 Le rapport jetable côté moteur (templating Rust) est écarté (`docs/05-ihm.md` §7, point 3).
+
+### Installation et usage
+
+Prérequis : PHP 8.3 et Composer 2. Symfony **7.4 LTS** (la 7.3 n'a plus de version publiée, la 8.x exige PHP 8.4.1). Le squelette est écrit à la main : ni `symfony/flex`, ni `symfony/runtime`, aucun fichier `.env`, aucune base de données.
+
+```sh
+cd control-plane
+composer install --no-interaction
+php bin/console tv4:report <run_dir> [--output <fichier.html>] [--env <env>] [--no-debug]
+```
+
+- `<run_dir>` contient les quatre fichiers écrits par `tv4 backtest` : `manifest.json` (`tv4-manifest-s8`), `metrics.json` (`tv4-metrics-s8`), `trades.csv` (36 colonnes) et `equity.csv`. Un fichier absent, un JSON invalide, un schéma inconnu, une clé manquante, un en-tête CSV inattendu ou un nombre mal formé arrêtent le rendu avec le nom du fichier, le chemin JSON ou la ligne CSV en cause.
+- `--output` : défaut `<run_dir>/report.html`, écriture atomique.
+- Codes de sortie : 0 rendu écrit ; 1 run invalide ou écriture impossible ; 2 erreur d'usage (argument manquant, option ou commande inconnue), posé par `App\Console\Tv4Application`, que Symfony sortirait sinon en 1.
+- Environnement et debug, lus par `bin/console` comme avant Symfony Runtime (`App\Console\KernelFactory`) : `--env=<env>` ou `-e <env>` (défaut : variable `APP_ENV`, sinon `prod`) ; debug **actif par défaut** (`APP_DEBUG` absent), éteint par `APP_DEBUG=0` ou par `--no-debug`.
+- Cache et fraîcheur : le cache Twig compilé est désactivé (`config/packages/twig.php`) et le debug actif par défaut fait vérifier à Symfony la fraîcheur des ressources du conteneur. Après un `git pull`, le rapport ne reflète donc jamais un template ou une configuration antérieurs. Avec `APP_DEBUG=0` ou `--no-debug`, le conteneur de `var/cache/<env>` n'est plus revérifié : vider `var/cache/` après chaque `git pull` (`rm -rf var/cache`).
+- Le HTML est autonome (CSS en ligne, SVG calculés en PHP, aucun JavaScript, aucune ressource externe) et déterministe : aucune date de génération, aucun chemin absolu, deux rendus du même run sont identiques à l'octet.
+- À `--equity-step 1m`, `equity.csv` approche le million de lignes : `php -d memory_limit=512M bin/console tv4:report …`.
+
+Le control plane ne recalcule ni hash ni métrique : il affiche ce que `tv4` a écrit. Une section sans données est rendue comme absente, avec sa raison (portes G0 à G7, plis du walk-forward : jalons 1.5 et 2).
+
+### Organisation
+
+- `src/Run/` : lecture et validation (`RunDirectoryReader`, `Json/JsonObject`, `Csv/*`), DTO immuables dans `Run/Dto/`, `InvalidRunException`.
+- `src/Report/` : mise en forme française (`Format`), graphiques SVG (`Chart/*`), `ReportRenderer`, `ReportWriter`.
+- `src/Command/Tv4ReportCommand.php` : la commande ; `src/Console/` : `Tv4Application` (code de sortie 2 pour l'usage) et `KernelFactory` (environnement et debug).
+- `templates/report/standalone.html.twig` (document complet, CSS) inclut `templates/run/fiche.html.twig` (fiche de run de `docs/05-ihm.md` §4, une section par partial dans `templates/run/sections/`), réutilisable telle quelle par la fiche du jalon 2a.
+- `tests/fixtures/run-exemple/` : run d'exemple **fabriqué** (voir son `README.md`) : ce n'est pas une sortie de `tv4`.
+
+### Qualité
+
+```sh
+composer validate --strict
+composer test     # PHPUnit 12
+composer stan     # PHPStan niveau max sur src/ et tests/
+composer cs       # PHP_CodeSniffer, standard PSR-12
+```
+
+`composer.lock` est commité ; `vendor/`, `var/` et `config/reference.php` (généré par Symfony) sont ignorés. Le job CI `control-plane` lance ces commandes ; le job `rapport-bout-en-bout` rend le rapport d'un vrai run de fumée de `tv4` pour contrôler la conformité des DTO.
 
 ## Jalon 2 : control plane
 

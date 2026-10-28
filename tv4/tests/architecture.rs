@@ -667,3 +667,72 @@ fn l_analyseur_detecte_chrono() {
 fn les_fichiers_d_un_module_absent_sont_une_liste_vide() {
     assert!(module_files(&src_dir(), "execution").is_empty());
 }
+
+/// Appels de la libm interdits hors de `report/approx.rs` (docs/03 §7.4) : leurs résultats ne sont
+/// pas exacts au bit d'une machine à l'autre. Forme méthode (`x.ln()`) et forme chemin (`f64::ln(x)`).
+const LIBM_CALLS: [&str; 17] = [
+    ".ln(", ".ln_1p(", ".log(", ".log2(", ".log10(", ".exp(", ".exp2(", ".exp_m1(", ".powf(",
+    ".powi(", ".sin(", ".cos(", ".tan(", ".cbrt(", ".hypot(", ".atan(", ".atan2(",
+];
+
+/// Formes chemin des mêmes appels, pour `f64` et `f32`.
+const LIBM_PATH_CALLS: [&str; 8] = [
+    "f64::ln(",
+    "f64::exp(",
+    "f64::powf(",
+    "f64::powi(",
+    "f64::log10(",
+    "f32::ln(",
+    "f32::exp(",
+    "f32::powf(",
+];
+
+/// Appels de la libm trouvés dans `source` (commentaires retirés).
+fn libm_calls(source: &str) -> Vec<&'static str> {
+    let code = strip_line_comments(source);
+    LIBM_CALLS
+        .iter()
+        .chain(LIBM_PATH_CALLS.iter())
+        .filter(|call| code.contains(**call))
+        .copied()
+        .collect()
+}
+
+#[test]
+fn la_libm_n_est_appelee_que_dans_report_approx() {
+    let src = src_dir();
+    let mut files = Vec::new();
+    collect_rs_files(&src, &mut files);
+    assert!(files.len() > 40, "{} fichiers lus", files.len());
+    let approx = src.join("report").join("approx.rs");
+    assert!(approx.is_file(), "report/approx.rs absent");
+    let mut violations = Vec::new();
+    for path in files {
+        if path == approx {
+            continue;
+        }
+        for call in libm_calls(&read(&path)) {
+            violations.push(format!("{} appelle `{call}`", path.display()));
+        }
+    }
+    assert!(
+        violations.is_empty(),
+        "la libm n'est permise que dans report/approx.rs (docs/03 §7.4) :\n{}",
+        violations.join("\n")
+    );
+    // Le seul fichier autorisé s'en sert bien : la règle n'est pas vacuement verte.
+    let calls = libm_calls(&read(&approx));
+    assert!(
+        calls.contains(&".ln(") && calls.contains(&".powf("),
+        "{calls:?}"
+    );
+}
+
+#[test]
+fn l_analyseur_de_libm_distingue_appel_commentaire_et_expect() {
+    assert_eq!(libm_calls("let y = x.ln();"), [".ln("]);
+    assert_eq!(libm_calls("let y = f64::powf(x, 2.0);"), ["f64::powf("]);
+    assert!(libm_calls("// x.ln() est interdit ici").is_empty());
+    assert!(libm_calls("let y = r.expect(\"ok\");").is_empty());
+    assert!(libm_calls("let y = x.exp_like();").is_empty());
+}

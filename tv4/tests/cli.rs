@@ -4,6 +4,7 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
 
 use tv4::model::hash;
+use tv4::report::writers::project_s6;
 
 mod common;
 use common::{DATASET_HASH_SKIP, HASH_FIXTURE_MOIS};
@@ -35,27 +36,6 @@ fn le_sha_vient_de_git_quand_git_est_disponible() {
         .is_ok_and(|sortie| sortie.status.success());
     if git_ok {
         assert_ne!(env!("TV4_GIT_SHA"), "unknown");
-    }
-}
-
-#[test]
-fn les_sous_commandes_vides_sortent_en_erreur_avec_leur_etape() {
-    let cas: [(&[&str], &str); 2] = [(&["verify"], "S8"), (&["bench"], "S8")];
-    for (args, etape) in cas {
-        let sortie = tv4(args);
-        // Code 1 : erreur applicative (clap utilise 2 pour une erreur d'usage).
-        assert_eq!(sortie.status.code(), Some(1), "{args:?}");
-        assert!(
-            sortie.stdout.is_empty(),
-            "{args:?} ne doit rien écrire sur stdout"
-        );
-        let erreur = String::from_utf8_lossy(&sortie.stderr);
-        assert!(erreur.contains("erreur :"), "{args:?} : {erreur}");
-        assert!(
-            erreur.contains("n'est pas encore implémentée"),
-            "{args:?} : {erreur}"
-        );
-        assert!(erreur.contains(etape), "{args:?} : {erreur}");
     }
 }
 
@@ -112,6 +92,13 @@ fn blake3_du_fichier(path: &Path) -> String {
     hash::blake3_hex(&std::fs::read(path).unwrap())
 }
 
+/// BLAKE3 de la projection S6 (25 premières colonnes) d'un `trades.csv` de S8 : c'est la valeur de
+/// l'oracle S6, recoupée par l'oracle Python indépendant.
+fn blake3_projection_s6(path: &Path) -> String {
+    let projete = project_s6(&std::fs::read(path).unwrap()).unwrap();
+    hash::blake3_hex(&projete)
+}
+
 /// `sma_cross` 1m (60/240) sur la fixture : valeurs de l'oracle S6 (`oracle.json`,
 /// `sma_cross.fixture_1m_defauts`), recoupées au bit avec le moteur par la revue du 15/10. Avant S6
 /// (S3) : 23 trades, `pnl_net` -15.408523707748486, cash final 284.5914762922515, frais
@@ -134,11 +121,17 @@ fn assert_valeurs_1m_de_l_oracle(sortie_dir: &Path) {
     assert_eq!(m["sim"]["exits_over_volume_share"], 3);
     assert_eq!(
         m["config_hash"],
-        "6ea489939050b331f9a2b716a34e52f10ef8dd4a846f9578da4151d6a2e8aa49"
+        // S8 : `"min_trades":30` entre dans la configuration hachée (S6 : `6ea48993…`).
+        "00fbee51dfb4bad5be96083449df30220e155a5d14cf1f29944fa58e3e046cc5"
     );
     assert_eq!(
-        blake3_du_fichier(&sortie_dir.join("trades.csv")),
+        blake3_projection_s6(&sortie_dir.join("trades.csv")),
         "43865c157588a1471936e4cc25dbbe8f00f6a715866b8e08610733ae3f4763cc"
+    );
+    // Fichier complet (36 colonnes) : produit par le moteur S8, pas par l'oracle.
+    assert_eq!(
+        blake3_du_fichier(&sortie_dir.join("trades.csv")),
+        "4405033714a6992a3e986a57685d003043078ee5a0af08b3cf93b79fd3c62336"
     );
 }
 
@@ -158,7 +151,7 @@ fn backtest_ecrit_metrics_json() {
     let valeur: serde_json::Value = serde_json::from_str(&texte).unwrap();
     let n_trades = valeur["n_trades"].as_u64().unwrap();
     assert!(n_trades > 0);
-    assert_eq!(valeur["schema"], "tv4-metrics-s6");
+    assert_eq!(valeur["schema"], "tv4-metrics-s8");
     // S6 : l'instrument est dans la configuration hachée, les compteurs du simulateur dans `sim`.
     assert_eq!(valeur["config"]["instrument"]["tick_size"], 0.1);
     assert_eq!(valeur["config"]["instrument"]["lot_size"], 1e-8);
@@ -166,11 +159,14 @@ fn backtest_ecrit_metrics_json() {
     assert!(valeur["sim"]["fills"].as_u64().unwrap() >= 2 * n_trades);
     assert_eq!(valeur["sim_deviations"].as_array().unwrap().len(), 5);
     assert!(valeur.get("s3_deviations").is_none());
-    // Contenu canonique : clés triées, une seule fin de ligne.
-    assert_eq!(
-        texte,
-        format!("{}\n", hash::canonical_json(&valeur).unwrap())
-    );
+    // Contenu canonique : compact, une seule fin de ligne, clés triées (relecture stable ; le tri des clés est vérifié par le test unitaire de `hash`). La
+    // comparaison texte à texte avec `canonical_json(&valeur)` n'est pas possible : `serde_json` sans
+    // `float_roundtrip` relit certains flottants à 1 ULP près (par exemple `profit_factor`).
+    assert!(texte.ends_with("}\n") && !texte.trim_end().contains('\n'));
+    assert!(!texte.contains(": ") && !texte.contains(", "));
+    let relu: serde_json::Value =
+        serde_json::from_str(&hash::canonical_json(&valeur).unwrap()).unwrap();
+    assert_eq!(relu, valeur);
     let stdout = String::from_utf8_lossy(&sortie.stdout);
     assert!(stdout.contains(&format!("{n_trades} trades")), "{stdout}");
     // S6 : trades.csv à côté de metrics.json, un trade par ligne après l'en-tête.
@@ -231,13 +227,13 @@ fn deux_process_meme_metrics() {
 }
 
 #[test]
-fn metrics_s6_schema() {
+fn metrics_s8_schema() {
     let dossier = tempfile::tempdir().unwrap();
     let sortie_dir = dossier.path().join("run");
     let sortie = tv4_owned(&backtest_args(PARAMS_1M, &sortie_dir));
     assert_eq!(sortie.status.code(), Some(0));
     let m = json(&sortie_dir.join("metrics.json"));
-    assert_eq!(m["schema"], "tv4-metrics-s6");
+    assert_eq!(m["schema"], "tv4-metrics-s8");
     assert_eq!(
         m["sim_deviations"],
         serde_json::json!([
@@ -303,6 +299,68 @@ fn metrics_s6_schema() {
     ] {
         assert!(m.get(cle).is_some(), "{cle}");
     }
+    // S8 : le bloc `engine` et la provenance des données passent au manifeste ; toutes les clés du
+    // schéma sont toujours présentes (une valeur indéfinie vaut `null`).
+    assert!(m.get("engine").is_none());
+    for cle in ["fixture_blake3", "hash_format"] {
+        assert!(m["data"].get(cle).is_none(), "{cle} est dans le manifeste");
+    }
+    for cle in [
+        "approx",
+        "avg_holding_ms",
+        "dataset_hash",
+        "distribution",
+        "expectancy_net",
+        "expectancy_r",
+        "exposure",
+        "funnel",
+        "gross_loss",
+        "gross_profit",
+        "mae_mean",
+        "max_drawdown",
+        "mfe_mean",
+        "min_trades",
+        "n_losses",
+        "n_wins",
+        "profit_factor",
+        "return_total",
+        "signals_rejected",
+        "trades_with_r",
+        "verdict",
+        "win_rate",
+    ] {
+        assert!(m.get(cle).is_some(), "{cle} absent de metrics.json");
+    }
+    for cle in [
+        "exchange",
+        "minutes_missing",
+        "gaps_policy",
+        "synthetic_bars",
+    ] {
+        assert!(!m["data"][cle].is_null(), "data.{cle}");
+    }
+    assert_eq!(m["data"]["dataset"], serde_json::Value::Null);
+    assert_eq!(m["min_trades"], 30);
+    assert_eq!(m["config"]["min_trades"], 30);
+    assert_eq!(m["signals_rejected"], m["signals"]["rejected"]);
+    assert_eq!(m["verdict"], "rejected_too_few_trades");
+    assert_eq!(m["funnel"]["exits_by_type"].as_object().unwrap().len(), 7);
+    assert_eq!(
+        m["funnel"]["entry_rejected_by_reason"]
+            .as_object()
+            .unwrap()
+            .len(),
+        17
+    );
+    assert_eq!(m["max_drawdown"].as_object().unwrap().len(), 2);
+    assert_eq!(
+        m["approx"]["ulp_tolerance"],
+        tv4::report::approx::ULP_TOLERANCE
+    );
+    assert!(
+        m["approx"]["return_annualized"].is_null(),
+        "fixture de 8 jours"
+    );
 }
 
 #[test]
@@ -331,7 +389,8 @@ fn backtest_2tf_sur_la_fixture() {
     // simulateur.
     assert_eq!(
         valeur["config_hash"],
-        "dc9137c97f0ae42b32d4a5302e5fef06a4c5d9621a4b1c07b533b7289ee5d172"
+        // S8 : `"min_trades":30` entre dans la configuration hachée (S6 : `dc9137c9…`).
+        "082a150825ede07d780559d387f827e5137bacaf5d0056fa779a7b8150dea3c1"
     );
     // Valeurs de l'oracle S6 (`sma_cross.fixture_2tf_defauts`) : mêmes trades que le 15m seul, 9 signaux
     // au lieu de 11 parce que la tendance 1h filtre deux entrées, 6 achats rejetés par la règle de volume.
@@ -345,8 +404,13 @@ fn backtest_2tf_sur_la_fixture() {
     assert_eq!(valeur["fees_total"].as_f64(), Some(2.6770754080714063));
     assert_eq!(valeur["sim"]["buys_rejected_volume_share"], 6);
     assert_eq!(
-        blake3_du_fichier(&sortie_dir.join("trades.csv")),
+        blake3_projection_s6(&sortie_dir.join("trades.csv")),
         "e26a9b934782945495ab36aa5e38b755573027c60312d0a0526d4ff6fe9e9cc4"
+    );
+    // Fichier complet (36 colonnes) : produit par le moteur S8, pas par l'oracle.
+    assert_eq!(
+        blake3_du_fichier(&sortie_dir.join("trades.csv")),
+        "1a451b19e715af17f46bbfb994f268d308ff7cba32b36158ff06d6562322407d"
     );
 }
 
@@ -404,11 +468,17 @@ fn backtest_15m_valeurs_figees() {
     assert_eq!(valeur["sim"]["exits_over_volume_share"], 1);
     assert_eq!(
         valeur["config_hash"],
-        "bec4b9066d08b9285645e941819551fcf11cc5b00c4c75f3c2f7e9fb20bb7d0a"
+        // S8 : `"min_trades":30` entre dans la configuration hachée (S6 : `bec4b906…`).
+        "be17a04653d1d815ec618657732ea7f4a0da3e0d0ce2f7f272bea11118a1a2d1"
     );
     assert_eq!(
-        blake3_du_fichier(&sortie_dir.join("trades.csv")),
+        blake3_projection_s6(&sortie_dir.join("trades.csv")),
         "e26a9b934782945495ab36aa5e38b755573027c60312d0a0526d4ff6fe9e9cc4"
+    );
+    // Fichier complet (36 colonnes) : produit par le moteur S8, pas par l'oracle.
+    assert_eq!(
+        blake3_du_fichier(&sortie_dir.join("trades.csv")),
+        "76cafa952a7e18eef04ce3c5f54e308d9bd5f30fe23e81e7a789b0afb752afd7"
     );
 }
 
@@ -454,6 +524,53 @@ fn backtest_fichier_absent() {
     let sortie = tv4_owned(&args);
     assert_eq!(sortie.status.code(), Some(1));
     assert!(String::from_utf8_lossy(&sortie.stderr).contains("/n/existe/pas.csv"));
+}
+
+/// Dossier de sortie préexistant (même `run_id` sous un autre commit) : l'ancien manifeste, qui marque
+/// un run complet, ne doit pas survivre à une réécriture interrompue.
+#[test]
+fn backtest_dans_un_dossier_existant_ne_garde_pas_l_ancien_manifeste() {
+    let dossier = tempfile::tempdir().unwrap();
+    let out = dossier.path().join("run");
+    std::fs::create_dir_all(&out).unwrap();
+    std::fs::write(out.join("manifest.json"), b"{\"ancien\":true}\n").unwrap();
+    std::fs::write(out.join("report.html"), b"<html>ancien</html>").unwrap();
+    // Écriture de equity.csv forcée en échec : un dossier porte ce nom.
+    std::fs::create_dir(out.join("equity.csv")).unwrap();
+
+    let sortie = tv4_owned(&backtest_args(PARAMS_1M, &out));
+    assert_eq!(sortie.status.code(), Some(1), "le backtest doit échouer");
+    assert!(String::from_utf8_lossy(&sortie.stderr).contains("equity.csv"));
+    assert!(
+        !out.join("manifest.json").exists(),
+        "l'ancien manifeste ne doit pas subsister à côté de fichiers du nouveau run"
+    );
+    assert!(!out.join("report.html").exists(), "rapport périmé");
+    // metrics.json et trades.csv sont ceux du nouveau run (écrits avant l'échec).
+    assert!(out.join("metrics.json").is_file());
+    assert!(out.join("trades.csv").is_file());
+}
+
+/// Réécriture réussie : l'ancien manifeste et l'ancien rapport sont remplacés, pas conservés.
+#[test]
+fn backtest_dans_un_dossier_existant_reecrit_le_manifeste_et_retire_le_rapport() {
+    let dossier = tempfile::tempdir().unwrap();
+    let out = dossier.path().join("run");
+    std::fs::create_dir_all(&out).unwrap();
+    std::fs::write(out.join("manifest.json"), b"{\"ancien\":true}\n").unwrap();
+    std::fs::write(out.join("report.html"), b"<html>ancien</html>").unwrap();
+
+    let sortie = tv4_owned(&backtest_args(PARAMS_1M, &out));
+    assert_eq!(
+        sortie.status.code(),
+        Some(0),
+        "{}",
+        String::from_utf8_lossy(&sortie.stderr)
+    );
+    assert!(!out.join("report.html").exists(), "rapport périmé");
+    let manifeste = json(&out.join("manifest.json"));
+    assert!(manifeste.get("ancien").is_none());
+    assert_eq!(manifeste["schema"], "tv4-manifest-s8");
 }
 
 // --- tv4 ingest csv, dataset build, backtest --dataset (S4) ---
@@ -614,6 +731,12 @@ fn preuve_s4_ingest_build_backtest_reproduit_s3() {
     let mut fixture = json(&out_fixture.join("metrics.json"));
     let data = dataset["data"].take();
     assert!(fixture["data"].take().is_object());
+    // Le `dataset_hash` (`dsh-v1`) porte la fenêtre dans son en-tête : celui du dataset (fenêtre du
+    // mois) diffère de celui de la fixture (fenêtre des bougies lues), c'est attendu.
+    let hash_dataset = dataset["dataset_hash"].take();
+    let hash_fixture = fixture["dataset_hash"].take();
+    assert_eq!(hash_dataset, DATASET_HASH_SKIP);
+    assert_ne!(hash_dataset, hash_fixture);
     assert_eq!(dataset, fixture);
     assert!(dataset["n_trades"].as_u64().unwrap() > 0);
     // trades.csv identique à l'octet entre les deux chemins de données.
@@ -623,8 +746,12 @@ fn preuve_s4_ingest_build_backtest_reproduit_s3() {
     assert_eq!(trades_dataset, trades_fixture);
     assert_eq!(data["source"], "dataset");
     assert_eq!(data["dataset"], "fixture_2020_01");
-    assert_eq!(data["dataset_hash"], DATASET_HASH_SKIP);
-    assert_eq!(data["hash_format"], "dsh-v1");
+    assert_eq!(data["exchange"], "kraken");
+    assert_eq!(data["minutes_missing"], 1_370);
+    assert_eq!(
+        json(&out_dataset.join("manifest.json"))["hash_format"],
+        "dsh-v1"
+    );
     assert_eq!(data["bars"], 10_000);
     assert_eq!(data["synthetic_bars"], 0);
 }
@@ -840,7 +967,7 @@ fn backtest_ffill_rejoue_les_bougies_synthetiques() {
     assert_eq!(metrics["data"]["bars"], 11_370);
     assert_eq!(metrics["data"]["synthetic_bars"], 1_370);
     assert_eq!(metrics["data"]["gaps_policy"], "ffill");
-    assert_eq!(metrics["data"]["dataset_hash"], DATASET_HASH_FFILL);
+    assert_eq!(metrics["dataset_hash"], DATASET_HASH_FFILL);
     // Valeurs de l'oracle S6 (`sma_cross.completee_1m_defauts`), recoupées au bit avec le moteur.
     assert_eq!(metrics["n_trades"], 5);
     assert_eq!(metrics["signals"]["emitted"], 34);
@@ -850,8 +977,13 @@ fn backtest_ffill_rejoue_les_bougies_synthetiques() {
     assert_eq!(metrics["sim"]["stops_triggered"], 3);
     assert_eq!(metrics["sim"]["bars_zero_volume_blocked"], 8);
     assert_eq!(
-        blake3_du_fichier(&out.join("trades.csv")),
+        blake3_projection_s6(&out.join("trades.csv")),
         "b62215bbacd177314f8f861f034a7655432d37023614de4849e64b25498a8152"
+    );
+    // Fichier complet (36 colonnes) : produit par le moteur S8, pas par l'oracle.
+    assert_eq!(
+        blake3_du_fichier(&out.join("trades.csv")),
+        "a86ec6db3bdaa88341ea2dfd5b797973a3367f71d271f170181f221b8bc151fe"
     );
 }
 
@@ -909,8 +1041,13 @@ fn backtest_ffill_multi_tf_valeurs_figees() {
     assert_eq!(metrics["sim"]["bars_zero_volume_blocked"], 12);
     assert_eq!(metrics["sim"]["buys_rejected_volume_share"], 8);
     assert_eq!(
-        blake3_du_fichier(&out.join("trades.csv")),
+        blake3_projection_s6(&out.join("trades.csv")),
         "e26a9b934782945495ab36aa5e38b755573027c60312d0a0526d4ff6fe9e9cc4"
+    );
+    // Fichier complet (36 colonnes) : produit par le moteur S8, pas par l'oracle.
+    assert_eq!(
+        blake3_du_fichier(&out.join("trades.csv")),
+        "76cafa952a7e18eef04ce3c5f54e308d9bd5f30fe23e81e7a789b0afb752afd7"
     );
 }
 

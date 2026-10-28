@@ -1,5 +1,8 @@
 # CI tradingV4 (docs/03-architecture.md §3 ligne Qualité, §4 et §11 S1).
 # Sans filtrage par chemin : chaque push et chaque pull request passe tout le contrôle.
+# Jobs : `qualite` (format, clippy, tests, double run de fumée avec `tv4 verify`, couverture), `bench`
+# (criterion `engine_2y_1m` et sa porte), `control-plane` (PHP : composer, phpcs, phpstan, phpunit) et
+# `rapport-bout-en-bout` (rend avec le control plane le run écrit par `tv4`).
 name: CI
 
 on:
@@ -50,12 +53,160 @@ jobs:
       - name: Tests
         run: cargo test --locked --all-targets
 
+      # Binaire debug (opt-level = 1) : les opérations IEEE ne dépendent pas du niveau d'optimisation
+      # (pas de contraction FMA, docs/03 §7.4) et les valeurs épinglées des tests tournent déjà en debug.
+      - name: Construire le binaire
+        run: cargo build --locked --bin tv4
+
+      # Même job, deux process : le double run que les tests Rust ne font que depuis un test. `tv4 verify`
+      # compare metrics.json, trades.csv et equity.csv à l'octet (code 0 identiques, 3 différents).
+      - name: Backtest de fumée, deux process, et tv4 verify
+        run: |
+          set -euo pipefail
+          for r in a b; do
+            ./target/debug/tv4 backtest --fixture fixtures/kraken_xbtusd_1m.csv --strategy sma_cross \
+              --params config/strategies/sma_cross.toml --fees okx --out runs/fumee-$r
+          done
+          ./target/debug/tv4 verify runs/fumee-a runs/fumee-b
+          ./target/debug/tv4 backtest --fixture fixtures/kraken_xbtusd_1m.csv --strategy sma_cross \
+            --params config/strategies/sma_cross.toml --fees bitvavo_usdc --out runs/fumee-bitvavo
+
+      - name: Publier les runs de fumée
+        uses: actions/upload-artifact@v4
+        with:
+          name: runs-fumee
+          path: runs/
+          if-no-files-found: error
+
+      # Seuil de lignes (S8) : couverture mesurée à la fin de S8 (96,53 %), arrondie à l'entier inférieur,
+      # moins 2 points. À valider par le propriétaire (docs/03 ne chiffre pas de seuil).
       - name: Couverture
-        run: cargo llvm-cov --locked --all-features --workspace --lcov --output-path lcov.info
+        run: cargo llvm-cov --locked --all-features --workspace --fail-under-lines 94 --lcov --output-path lcov.info
+
+      - name: Résumé de couverture
+        run: |
+          {
+            echo '### Couverture (cargo llvm-cov)'
+            echo '```'
+            cargo llvm-cov report --summary-only
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
 
       - name: Publier la couverture
         uses: actions/upload-artifact@v4
         with:
           name: couverture-lcov
           path: lcov.info
+          if-no-files-found: error
+
+  # Criterion `engine_2y_1m` (docs/03 §8, docs/specs/s8.md §11) : la boucle de `sma_cross` 15m doit rester sous 50 ns
+  # par 1m. La porte lit la BORNE BASSE de l'intervalle de la médiane : sur un runner partagé la médiane
+  # bouge de quelques dizaines de pour cent, la borne basse ne dépasse le seuil que si même la meilleure
+  # estimation est au-dessus (régression grossière : une allocation ou un hachage par bougie). Elle ne
+  # prouve pas la performance absolue, mesurée sur le poste du propriétaire.
+  bench:
+    name: Criterion engine_2y_1m
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Installer Rust 1.97.0
+        uses: dtolnay/rust-toolchain@1.97.0
+        with:
+          toolchain: 1.97.0
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Benchmark engine_2y_1m
+        run: cargo bench --locked --bench engine -- engine_2y_1m
+
+      - name: Porte sur sma_cross_15m_boucle (borne basse < 50 ns par 1m)
+        run: |
+          set -euo pipefail
+          .github/scripts/criterion-gate.sh \
+            target/criterion/engine_2y_1m/sma_cross_15m_boucle/new/estimates.json 1051200 50
+          {
+            echo '### Criterion engine_2y_1m'
+            echo '```json'
+            cat bench-summary.json
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Publier les estimations criterion
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: criterion-engine-2y-1m
+          path: |
+            target/criterion/engine_2y_1m/**/new/estimates.json
+            bench-summary.json
+          if-no-files-found: error
+
+  # Control plane PHP (docs/05, docs/specs/s8.md §14) : Symfony 7.4 LTS, PHP 8.3 (Symfony 8.x exige PHP 8.4.1).
+  control-plane:
+    name: Control plane (PHP)
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    defaults:
+      run:
+        working-directory: control-plane
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: shivammathur/setup-php@v2
+        with:
+          php-version: '8.3'
+          tools: composer:v2
+          coverage: none
+
+      - run: composer validate --strict
+
+      - run: composer install --no-interaction --no-progress --no-plugins --prefer-dist
+
+      - run: vendor/bin/phpcs
+
+      - run: vendor/bin/phpstan analyse --no-progress
+
+      - run: vendor/bin/phpunit
+
+      # Informatif : un avis publié sur une dépendance ne doit pas casser un commit sans rapport.
+      - run: composer audit
+        continue-on-error: true
+
+  # Conformité entre la vraie sortie de `tv4` et les DTO PHP (la fixture du control plane est écrite à la
+  # main) : le run de fumée A est rendu en HTML.
+  rapport-bout-en-bout:
+    name: Rapport HTML d'un vrai run
+    needs: [qualite, control-plane]
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: shivammathur/setup-php@v2
+        with:
+          php-version: '8.3'
+          tools: composer:v2
+          coverage: none
+
+      - name: Installer le control plane
+        working-directory: control-plane
+        run: composer install --no-interaction --no-progress --no-plugins --no-dev --prefer-dist
+
+      - name: Récupérer les runs de fumée
+        uses: actions/download-artifact@v4
+        with:
+          name: runs-fumee
+          path: runs
+
+      - name: Rendre le rapport du run de fumée
+        working-directory: control-plane
+        run: php bin/console tv4:report ../runs/fumee-a --output ../rapport-fumee.html
+
+      - name: Publier le rapport
+        uses: actions/upload-artifact@v4
+        with:
+          name: rapport-fumee
+          path: rapport-fumee.html
           if-no-files-found: error

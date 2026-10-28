@@ -1,2 +1,5 @@
 # Aucune conversion de fins de ligne sur les fixtures : les empreintes doivent rester stables quel que soit le poste.
 fixtures/** -text
+
+# Golden de run (S8) : octets figés, aucune conversion de fins de ligne.
+tv4/tests/golden_runs/** -text

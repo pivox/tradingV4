@@ -1,10 +1,12 @@
 //! Ligne de commande `tv4` (clap, dérivation). Aucune logique métier ici : chaque sous-commande est
 //! une fonction qui appelle les autres modules (docs/03-architecture.md §2).
 //!
-//! Les sous-commandes pas encore codées sortent en erreur en nommant l'étape du jalon 1 qui les
-//! implémentera (docs/03 §11) ; `backtest` existe depuis S3 (fixture CSV 1m), `ingest csv` et
-//! `dataset build` depuis S4, `ingest kraken` depuis S5, `ingest okx` et `compare-sources` depuis S7.
-//! `grid` arrive au jalon 1.5.
+//! `backtest` existe depuis S3 (fixture CSV 1m), `ingest csv` et `dataset build` depuis S4, `ingest
+//! kraken` depuis S5, `ingest okx` et `compare-sources` depuis S7, `verify` et `bench` depuis S8. `grid`
+//! arrive au jalon 1.5.
+//!
+//! Codes de sortie ([`CliError::exit_code`]) : 0 succès, 1 erreur applicative, 2 erreur d'usage (clap),
+//! 3 `tv4 verify` a trouvé deux runs différents.
 //!
 //! La CLI est le seul module qui lit l'horloge système ([`now_ms`]) : le store reçoit l'instant en
 //! paramètre (docs/03 §5.3, écart 5 de S4).
@@ -15,7 +17,8 @@ use clap::{Parser, Subcommand};
 
 use crate::model::Ts;
 
-pub use backtest::BacktestArgs;
+pub use backtest::{BacktestArgs, RunInputArgs};
+pub use bench::BenchArgs;
 pub use compare_sources::{
     BarReport, CompareReport, CompareSourcesArgs, CompareSourcesOptions, DAY_DELTA_THRESHOLD,
     DAYS_ABOVE_MAX_PERCENT, DateRange, DeltaStats, FileReport, MEDIAN_ABS_DELTA_4H_MAX,
@@ -28,6 +31,7 @@ pub use ingest_okx::{
     DEFAULT_BATCH_PAGES, DEFAULT_LOCK_TIMEOUT, DEFAULT_WORKERS, IngestOkxArgs, MonthReport,
     MonthStatus, OkxIngestOptions, OkxIngestReport, UtcDate, ingest_okx,
 };
+pub use verify::VerifyArgs;
 
 mod backtest;
 mod bench;
@@ -40,17 +44,6 @@ mod verify;
 /// Erreurs de la couche CLI.
 #[derive(Debug, thiserror::Error)]
 pub enum CliError {
-    /// La sous-commande existe dans l'interface mais n'est pas encore codée.
-    #[error(
-        "la sous-commande « {command} » n'est pas encore implémentée : elle sera écrite à l'étape {step} du jalon 1 (docs/03-architecture.md §11)"
-    )]
-    NotImplemented {
-        /// Nom complet tel que tapé par l'utilisateur, par exemple `ingest okx`.
-        command: &'static str,
-        /// Étape du jalon 1 qui l'implémentera, de `S2` à `S8`.
-        step: &'static str,
-    },
-
     /// Un fichier d'entrée n'a pas pu être lu.
     #[error("lecture de `{path}` impossible : {source}")]
     Read {
@@ -141,15 +134,38 @@ pub enum CliError {
         tf: crate::model::Timeframe,
     },
 
+    /// Le binaire en cours d'exécution n'a pas pu être lu pour calculer son hash.
+    #[error("hash du binaire `{path}` impossible : {source}")]
+    BinaryHash {
+        path: String,
+        #[source]
+        source: std::io::Error,
+    },
+
+    /// `tv4 verify` : les deux runs sont lisibles et cohérents mais diffèrent.
+    #[error("les runs diffèrent ({files} fichier(s))")]
+    VerifyMismatch { files: usize },
+
+    #[error(transparent)]
+    Verify(#[from] crate::report::verify::VerifyError),
+
+    /// `tv4 bench` : une mesure est incohérente avec le run (bug du moteur ou de l'enveloppe).
+    #[error("bench incohérent : {detail}")]
+    BenchInconsistent { detail: String },
+
     /// Ni `--fixture` ni `--dataset` (ou les deux) : clap l'interdit, cette erreur évite une panique.
     #[error("indiquer --fixture ou --dataset (un seul des deux)")]
     DataSource,
 }
 
 impl CliError {
-    /// Raccourci pour les sous-commandes vides.
-    pub(crate) fn not_implemented(command: &'static str, step: &'static str) -> Self {
-        CliError::NotImplemented { command, step }
+    /// Code de sortie du processus : 3 pour deux runs différents (`tv4 verify`), 1 pour toute autre
+    /// erreur applicative ; clap garde 2 pour une erreur d'usage.
+    pub fn exit_code(&self) -> u8 {
+        match self {
+            CliError::VerifyMismatch { .. } => 3,
+            _ => 1,
+        }
     }
 }
 
@@ -194,10 +210,10 @@ pub enum Command {
     Backtest(BacktestArgs),
     /// Mesure le biais de lieu Kraken / OKX sur leur recouvrement (clôtures 4h et 1d, mèches 1m).
     CompareSources(CompareSourcesArgs),
-    /// Compare deux runs à l'octet.
-    Verify,
-    /// Mesure le coût moyen par bougie.
-    Bench,
+    /// Compare deux runs à l'octet (S8) : code 0 identiques, 3 différents, 1 erreur ou run incohérent.
+    Verify(VerifyArgs),
+    /// Mesure le coût de la boucle par 1m et le coût moyen par appel de `on_bar` (S8).
+    Bench(BenchArgs),
 }
 
 /// Sources d'ingestion.
@@ -231,8 +247,8 @@ pub fn run(command: &Command) -> Result<(), CliError> {
         },
         Command::Backtest(args) => backtest::run(args),
         Command::CompareSources(args) => compare_sources::run(args),
-        Command::Verify => verify::run(),
-        Command::Bench => bench::run(),
+        Command::Verify(args) => verify::run(args),
+        Command::Bench(args) => bench::run(args),
     }
 }
 
@@ -241,32 +257,67 @@ mod tests {
     use super::*;
     use clap::CommandFactory;
 
-    /// Chaque sous-commande vide, la commande tapée et l'étape annoncée.
-    const EMPTY_COMMANDS: [(&[&str], &str, &str); 2] = [
-        (&["tv4", "verify"], "verify", "S8"),
-        (&["tv4", "bench"], "bench", "S8"),
-    ];
-
     #[test]
     fn la_definition_clap_est_coherente() {
         Cli::command().debug_assert();
     }
 
     #[test]
-    fn chaque_sous_commande_vide_nomme_son_etape() {
-        for (args, command, step) in EMPTY_COMMANDS {
-            let cli = Cli::try_parse_from(args).expect("la ligne de commande doit être valide");
-            let message = match run(&cli.command) {
-                Ok(()) => panic!("« {command} » devrait échouer tant qu'elle est vide"),
-                Err(error) => error.to_string(),
-            };
-            assert!(message.contains(command), "{message}");
-            assert!(message.contains(step), "{message}");
-            assert!(
-                message.contains("n'est pas encore implémentée"),
-                "{message}"
-            );
-        }
+    fn verify_et_bench_se_parsent() {
+        assert!(Cli::try_parse_from(["tv4", "verify"]).is_err());
+        assert!(Cli::try_parse_from(["tv4", "verify", "a"]).is_err());
+        let Command::Verify(args) = Cli::try_parse_from(["tv4", "verify", "a", "b"])
+            .expect("verify valide")
+            .command
+        else {
+            panic!("sous-commande attendue : verify");
+        };
+        assert_eq!(args.run_a, std::path::PathBuf::from("a"));
+        assert_eq!(args.run_b, std::path::PathBuf::from("b"));
+
+        let base = [
+            "tv4",
+            "bench",
+            "--fixture",
+            "f",
+            "--strategy",
+            "s",
+            "--params",
+            "p",
+        ];
+        let Command::Bench(args) = Cli::try_parse_from(base).expect("bench valide").command else {
+            panic!("sous-commande attendue : bench");
+        };
+        assert_eq!(args.repeat, 5);
+        assert_eq!(args.inputs.min_trades, 30);
+        let mut avec_repeat = base.to_vec();
+        avec_repeat.extend(["--repeat", "3"]);
+        let Command::Bench(args) = Cli::try_parse_from(&avec_repeat)
+            .expect("--repeat 3 valide")
+            .command
+        else {
+            panic!("sous-commande attendue : bench");
+        };
+        assert_eq!(args.repeat, 3);
+        avec_repeat.extend(["--repeat", "0"]);
+        assert!(Cli::try_parse_from(avec_repeat).is_err());
+        // Pas d'--out ni d'--equity-step : bench n'écrit rien.
+        let mut avec_out = base.to_vec();
+        avec_out.extend(["--out", "o"]);
+        assert!(Cli::try_parse_from(avec_out).is_err());
+    }
+
+    #[test]
+    fn le_code_de_sortie_distingue_runs_differents_et_erreur() {
+        assert_eq!(CliError::VerifyMismatch { files: 1 }.exit_code(), 3);
+        assert_eq!(CliError::Clock.exit_code(), 1);
+        assert_eq!(
+            CliError::BenchInconsistent {
+                detail: String::new()
+            }
+            .exit_code(),
+            1
+        );
     }
 
     #[test]
@@ -288,13 +339,52 @@ mod tests {
         let Command::Backtest(args) = cli.command else {
             panic!("sous-commande attendue : backtest");
         };
-        assert_eq!(args.fixture, Some(std::path::PathBuf::from("f.csv")));
-        assert!(args.dataset.is_none());
-        assert_eq!(args.root, std::path::PathBuf::from("."));
-        assert_eq!(args.fees, crate::model::ExchangeId::Okx);
-        assert_eq!(args.slippage_bps.bps(), 5.0);
-        assert_eq!(args.capital, 300.0);
-        assert_eq!(args.fees_file, std::path::PathBuf::from("config/fees.toml"));
+        assert_eq!(args.inputs.fixture, Some(std::path::PathBuf::from("f.csv")));
+        assert!(args.inputs.dataset.is_none());
+        assert_eq!(args.inputs.root, std::path::PathBuf::from("."));
+        assert_eq!(args.inputs.fees, crate::model::ExchangeId::Okx);
+        assert_eq!(args.inputs.slippage_bps.bps(), 5.0);
+        assert_eq!(args.inputs.capital, 300.0);
+        assert_eq!(
+            args.inputs.fees_file,
+            std::path::PathBuf::from("config/fees.toml")
+        );
+        assert_eq!(args.inputs.min_trades, 30);
+        assert_eq!(args.equity_step, crate::model::Timeframe::H1);
+        assert_eq!(args.out, Some(std::path::PathBuf::from("sortie")));
+    }
+
+    #[test]
+    fn backtest_out_est_facultatif_et_min_trades_zero_est_refuse() {
+        let base = [
+            "tv4",
+            "backtest",
+            "--fixture",
+            "f",
+            "--strategy",
+            "s",
+            "--params",
+            "p",
+        ];
+        let avec = |extra: &[&str]| {
+            let mut args = base.to_vec();
+            args.extend_from_slice(extra);
+            Cli::try_parse_from(args)
+        };
+        let Command::Backtest(args) = avec(&[]).expect("--out est facultatif").command else {
+            panic!("sous-commande attendue : backtest");
+        };
+        assert!(args.out.is_none());
+        assert!(avec(&["--min-trades", "0"]).is_err());
+        let Command::Backtest(args) = avec(&["--min-trades", "5", "--equity-step", "1m"])
+            .expect("options valides")
+            .command
+        else {
+            panic!("sous-commande attendue : backtest");
+        };
+        assert_eq!(args.inputs.min_trades, 5);
+        assert_eq!(args.equity_step, crate::model::Timeframe::M1);
+        assert!(avec(&["--equity-step", "2m"]).is_err());
     }
 
     #[test]
@@ -321,12 +411,12 @@ mod tests {
         let Command::Backtest(args) = cli.command else {
             panic!("sous-commande attendue : backtest");
         };
-        assert!(args.fixture.is_none());
+        assert!(args.inputs.fixture.is_none());
         assert_eq!(
-            args.dataset,
+            args.inputs.dataset,
             Some(std::path::PathBuf::from("datasets/d.json"))
         );
-        assert_eq!(args.root, std::path::PathBuf::from("R"));
+        assert_eq!(args.inputs.root, std::path::PathBuf::from("R"));
     }
 
     #[test]

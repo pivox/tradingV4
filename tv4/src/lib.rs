@@ -37,6 +37,17 @@ pub mod strategy;
 /// Git sha du commit compilé, fourni par `build.rs` (`unknown` sans git).
 pub const GIT_SHA: &str = env!("TV4_GIT_SHA");
 
+/// Version de rustc qui a compilé le binaire (`release:` de `rustc -vV`), fournie par `build.rs`.
+pub const RUSTC_VERSION: &str = env!("TV4_RUSTC_VERSION");
+/// Commit de rustc (`commit-hash:` de `rustc -vV`), fourni par `build.rs`.
+pub const RUSTC_COMMIT: &str = env!("TV4_RUSTC_COMMIT");
+/// Triplet cible de la compilation (`x86_64-unknown-linux-gnu`), fourni par `build.rs`.
+pub const TARGET: &str = env!("TV4_TARGET");
+/// `target-cpu` de la compilation (`x86-64-v3`) ; repli `default`. Fourni par `build.rs`.
+pub const TARGET_CPU: &str = env!("TV4_TARGET_CPU");
+/// Profil cargo de la compilation (`release` ou `debug`), fourni par `build.rs`.
+pub const BUILD_PROFILE: &str = env!("TV4_PROFILE");
+
 /// Version du paquet suivie du git sha, par exemple `0.1.0 (a1b2c3d4e5f6)`.
 pub const LONG_VERSION: &str = concat!(env!("CARGO_PKG_VERSION"), " (", env!("TV4_GIT_SHA"), ")");
 
@@ -48,6 +59,17 @@ mod tests {
     fn la_version_longue_contient_le_sha() {
         assert!(LONG_VERSION.contains(GIT_SHA));
         assert!(LONG_VERSION.starts_with(env!("CARGO_PKG_VERSION")));
+    }
+
+    #[test]
+    #[cfg(all(target_arch = "x86_64", target_os = "linux"))]
+    fn l_identite_du_binaire_vient_du_build() {
+        assert_eq!(TARGET, "x86_64-unknown-linux-gnu");
+        assert_eq!(TARGET_CPU, "x86-64-v3");
+        assert_eq!(RUSTC_VERSION, "1.97.0");
+        assert_eq!(RUSTC_COMMIT.len(), 40, "{RUSTC_COMMIT}");
+        assert!(RUSTC_COMMIT.chars().all(|c| c.is_ascii_hexdigit()));
+        assert!(matches!(BUILD_PROFILE, "debug" | "release"));
     }
 
     #[test]

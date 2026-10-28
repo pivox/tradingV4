@@ -11,10 +11,19 @@
 //! * `pending_20` : 20 limits d'achat actives et jamais remplies, parcourues à chaque 1m (mesuré,
 //!   indication < 150 ns par 1m).
 //!
+//! `engine_2y_1m` (S8) : la même série synthétique de 2 ans de 1m avec `sma_cross` en 15m, construit par
+//! le registre depuis `config/strategies/sma_cross.toml` (la référence de S8). Deux mesures :
+//!
+//! * `sma_cross_15m_boucle` : la boucle seule, `Mtf` construit hors mesure. Seuil de la CI :
+//!   < 50 ns par 1m (docs/03 §8), appliqué à la borne basse de l'intervalle de la médiane par
+//!   `.github/scripts/criterion-gate.sh` ;
+//! * `sma_cross_15m_cellule` : `run_cell_observed` complet (MTF, indicateurs, boucle, clôture
+//!   forcée), informatif.
+//!
 //! Seule la boucle est chronométrée : un `LoopObserver` note l'instant à `loop_started` et à
 //! `loop_finished`, la préparation (indicateurs, `Mtf`) est exclue. Commande :
-//! `cargo bench --locked --bench engine -- engine_loop_2y_1m`. `cargo test --all-targets` exécute aussi
-//! ce bench une fois, en mode test, sur 2 jours seulement.
+//! `cargo bench --locked --bench engine -- engine_loop_2y_1m` (ou `engine_2y_1m`). `cargo test
+//! --all-targets` exécute aussi ces benchs une fois, en mode test, sur 2 jours seulement.
 
 #[path = "../tests/common/mod.rs"]
 mod common;
@@ -22,12 +31,12 @@ mod common;
 use criterion::{Criterion, Throughput, criterion_group, criterion_main};
 use std::hint::black_box;
 use std::time::{Duration, Instant};
-use tv4::engine::{CellConfig, LoopObserver, run_cell_mtf};
+use tv4::engine::{CellConfig, LoopObserver, NoopObserver, run_cell_mtf, run_cell_observed};
 use tv4::indicators::{Atr, Ema, Rsi, Sma, Vwap, batch};
 use tv4::model::{InstrumentRules, Side, Timeframe};
 use tv4::mtf::Mtf;
 use tv4::sim::SimRules;
-use tv4::strategy::{BarContext, IndicatorSpec, Signal, Size, Strategy};
+use tv4::strategy::{BarContext, IndicatorSpec, Signal, Size, Strategy, registry};
 
 /// 2 ans de bougies 1m (docs/03 §8).
 const N: usize = 1_051_200;
@@ -222,5 +231,63 @@ fn engine_loop_2y_1m(c: &mut Criterion) {
     group.finish();
 }
 
-criterion_group!(benches, indicators_1m, engine_loop_2y_1m);
+/// Paramètres de référence de S8 : le fichier lu par `tv4 backtest --params`.
+const SMA_CROSS_TOML: &str = include_str!("../../config/strategies/sma_cross.toml");
+
+/// Une `sma_cross` fraîche, construite par le registre depuis `config/strategies/sma_cross.toml`.
+fn sma_cross_reference() -> Box<dyn Strategy> {
+    let params: toml::Value = toml::from_str(SMA_CROSS_TOML).expect("sma_cross.toml valide");
+    registry::build("sma_cross", &params).expect("sma_cross construite par le registre")
+}
+
+fn engine_2y_1m(c: &mut Criterion) {
+    let n = taille_boucle();
+    let candles = common::synthetic_candles(n, 42, common::T0, 0.0);
+    let declared = sma_cross_reference().timeframes().to_vec();
+    assert_eq!(declared, [Timeframe::M15], "la référence de S8 est en 15m");
+    let mtf = Mtf::build(&candles, &declared).expect("mtf");
+    let config = CellConfig {
+        symbol: "SYNTH",
+        fees: common::okx_fees(),
+        slippage: common::slippage(5.0),
+        initial_cash: 1.0e6,
+        // Volumes synthétiques minuscules : la règle de part de volume rejetterait tous les achats.
+        sim_rules: SimRules {
+            max_volume_share: 1.0e9,
+            ..SimRules::default()
+        },
+        instrument: InstrumentRules::new(1e-4, 1e-8, 0.0, 0.0).expect("instrument valide"),
+    };
+    let mut group = c.benchmark_group("engine_2y_1m");
+    group.throughput(Throughput::Elements(n as u64));
+    group.sample_size(20);
+    group.bench_function("sma_cross_15m_boucle", |b| {
+        b.iter_custom(|iters| {
+            let mut total = Duration::ZERO;
+            for _ in 0..iters {
+                let mut chrono = Chrono::default();
+                let resultat = run_cell_mtf(&mtf, sma_cross_reference(), &config, &mut chrono)
+                    .expect("run valide");
+                black_box(resultat.trades.len());
+                total += chrono.duree;
+            }
+            total
+        })
+    });
+    group.bench_function("sma_cross_15m_cellule", |b| {
+        b.iter(|| {
+            let resultat = run_cell_observed(
+                black_box(&candles),
+                sma_cross_reference(),
+                &config,
+                &mut NoopObserver,
+            )
+            .expect("run valide");
+            black_box(resultat.trades.len())
+        })
+    });
+    group.finish();
+}
+
+criterion_group!(benches, indicators_1m, engine_loop_2y_1m, engine_2y_1m);
 criterion_main!(benches);

@@ -22,6 +22,15 @@
 //! 5. Depuis S6, `ctx.pending()` rend les ordres en attente du simulateur (copie dans un tampon alloué
 //!    avant la boucle) et `position.stop` le stop en vigueur : le stop est actif.
 //!
+//! Ajouts de S8 (sans effet sur un fill, un prix ni un compteur du simulateur) :
+//!
+//! 1. `RunConfig.min_trades` (défaut [`DEFAULT_MIN_TRADES`]) entre dans le `config_hash` ;
+//!    [`CellResult::with_min_trades`] le remplace et recalcule le hash. `CellConfig` ne change pas.
+//! 2. [`EngineFunnel`] : compteurs d'évaluations et de signaux par classe (entrée, sortie, autre),
+//!    acceptés et refusés par motif ; `CellResult.bars_in_position` compte les 1m où la position est
+//!    non nulle après `Simulator::on_bar`. La somme des rejets des classes redonne `rejections` (S6).
+//! 3. `Strategy::funnel()` est lu une fois après la boucle.
+//!
 //! Écarts d'implémentation (S6) à S3 :
 //!
 //! 1. Le `CellConfig` porte l'`InstrumentRules` (tick, lot, minimums), qui entre dans le `config_hash`
@@ -55,9 +64,9 @@ pub mod config;
 mod run;
 pub mod signals;
 
-pub use config::{CellConfig, RunConfig, StrategyRecord};
+pub use config::{CellConfig, DEFAULT_MIN_TRADES, RunConfig, StrategyRecord};
 pub use run::{CellResult, run_cell, run_cell_mtf, run_cell_observed};
-pub use signals::SignalRejections;
+pub use signals::{EngineFunnel, SignalClass, SignalRejections, StrategyFunnelCounts};
 
 use thiserror::Error;
 
@@ -84,6 +93,9 @@ pub enum EngineError {
 
     #[error("aucune bougie à rejouer")]
     EmptyData,
+
+    #[error("`min_trades` doit valoir au moins 1")]
+    InvalidMinTrades,
 
     #[error("bougie {open_time_ms} : le moteur attend des bougies 1m alignées sur la minute")]
     NotOneMinute { open_time_ms: Ts },

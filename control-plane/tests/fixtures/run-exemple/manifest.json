@@ -1,0 +1,92 @@
+{
+    "config": {
+        "fees": {
+            "exchange": "okx",
+            "maker_bps": 20,
+            "taker_bps": 35
+        },
+        "initial_cash": 300.0,
+        "instrument": {
+            "lot_size": 1.0e-8,
+            "min_notional": 0.0,
+            "min_qty": 0.0,
+            "tick_size": 0.1
+        },
+        "min_trades": 30,
+        "sim_rules": {
+            "activation_delay_bars": 1,
+            "intrabar": "stop_first",
+            "limit_cross_ticks": 1,
+            "market_buy_cash_margin": 0.05,
+            "max_pending": 64,
+            "max_volume_share": 0.005,
+            "stop_stress_bps": 0.0,
+            "tp_ignored_on_fill_bar": true,
+            "version": "s6.1",
+            "zero_volume_no_fill": true
+        },
+        "slippage_bps": 5.0,
+        "strategy": {
+            "id": "sma_cross",
+            "params": {
+                "fast": 20,
+                "slow": 50,
+                "stop_atr_mult": 2.0,
+                "tf": "15m"
+            },
+            "version": "1.1.0"
+        },
+        "tv4_version": "0.1.0",
+        "warmup_bars": 50
+    },
+    "config_hash": "c0de5a1ec0de5a1ec0de5a1ec0de5a1ec0de5a1ec0de5a1ec0de5a1ec0de5a1e",
+    "data": {
+        "bars": 12270,
+        "dataset": "exemple_fabrique",
+        "exchange": "kraken",
+        "first_open_time_ms": 1609429200000,
+        "fixture_blake3": null,
+        "gaps_policy": "skip",
+        "last_open_time_ms": 1610165340000,
+        "source": "dataset",
+        "symbol": "BTC-USD",
+        "synthetic_bars": 0,
+        "tf": "1m"
+    },
+    "dataset_hash": "blake3:da7a5e70da7a5e70da7a5e70da7a5e70da7a5e70da7a5e70da7a5e70da7a5e70",
+    "engine": {
+        "binary_hash": "blake3:b1a4e5eeb1a4e5eeb1a4e5eeb1a4e5eeb1a4e5eeb1a4e5eeb1a4e5eeb1a4e5ee",
+        "git_sha": "f4b1c8e0d001",
+        "profile": "release",
+        "rustc": "1.97.0",
+        "rustc_commit": "2d8144b7880597b6e6d3dfd63a9a9efae3f533d3",
+        "target": "x86_64-unknown-linux-gnu",
+        "target_cpu": "x86-64-v3",
+        "tv4_version": "0.1.0"
+    },
+    "hash_format": "dsh-v1",
+    "outputs": {
+        "equity_step": "1h",
+        "files": {
+            "equity.csv": "blake3:e0017700e0017700e0017700e0017700e0017700e0017700e0017700e0017700",
+            "metrics.json": "blake3:3e741c503e741c503e741c503e741c503e741c503e741c503e741c503e741c50",
+            "trades.csv": "blake3:7e5a17007e5a17007e5a17007e5a17007e5a17007e5a17007e5a17007e5a1700"
+        }
+    },
+    "result_hash": "blake3:7e5a17007e5a17007e5a17007e5a17007e5a17007e5a17007e5a17007e5a1700",
+    "run_id": "5e7f1a2b5e7f1a2b5e7f1a2b5e7f1a2b5e7f1a2b5e7f1a2b5e7f1a2b5e7f1a2b",
+    "schema": "tv4-manifest-s8",
+    "started_at": "2026-10-27T12:00:00Z",
+    "timings": {
+        "cli_cold_ms": 398,
+        "load_ms": 312,
+        "run_ms": 41
+    },
+    "verdict": "rejected_too_few_trades",
+    "window": {
+        "end": "2021-01-09T04:10:00Z",
+        "end_ms": 1610165400000,
+        "start": "2021-01-01T04:10:00Z",
+        "start_ms": 1609474200000
+    }
+}
