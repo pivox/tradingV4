@@ -7,7 +7,8 @@
 //! # Lecture vérifiée
 //!
 //! Comme `build_dataset`, la lecture prend le verrou de chaque partition (une ingestion en cours la
-//! retient : [`crate::store::StoreError::LockBusy`]) et lit chaque fichier par la voie vérifiée du store
+//! retient : [`crate::store::StoreError::LockBusy`], après une attente de
+//! [`COMPARE_LOCK_TIMEOUT`]) et lit chaque fichier par la voie vérifiée du store
 //! ([`crate::store::read_verified_with_hash`]) : le `content_hash` est recalculé sur les lignes et comparé
 //! à celui du manifeste, avec les lignes et la plage du manifeste. Une différence (Parquet remplacé sans
 //! son manifeste, arrêt entre le `rename` et l'écriture du manifeste) est une erreur, jamais un verdict
@@ -66,6 +67,7 @@ use std::fs;
 use std::ops::Range;
 use std::path::{Path, PathBuf};
 use std::str::FromStr;
+use std::time::Duration;
 
 use clap::Args;
 use serde::Serialize;
@@ -170,7 +172,21 @@ pub struct CompareSourcesOptions {
     pub to: Option<Ts>,
     /// Plages `[début, fin)` exclues du calcul.
     pub exclude: Vec<Range<Ts>>,
+    /// Attente maximale du verrou de chaque partition ([`COMPARE_LOCK_TIMEOUT`] en ligne de commande).
+    pub lock_timeout: Duration,
 }
+
+/// Attente maximale du verrou de partition par `compare-sources`. Un écrivain réel tient le verrou
+/// quelques dizaines de millisecondes par écriture ; la fenêtre visée ici est plus courte encore : un
+/// verrou `flock` relâché par un thread reste tenu jusqu'à l'`exec` par l'enfant qu'un autre thread du
+/// même processus vient de lancer (la table des descripteurs est copiée par `clone`, et `O_CLOEXEC`
+/// n'agit qu'à l'`exec`). Deux secondes couvrent largement cette fenêtre ; au-delà, un écrivain
+/// concurrent tient vraiment la partition et l'échec reste [`StoreError::LockBusy`], clair, sans
+/// bloquer la commande.
+///
+/// Pendant cette attente, le verrou de la partition Kraken, déjà pris, reste tenu : un
+/// `ingest kraken` lancé alors échoue aussitôt en `LockBusy` (`write_partition` ne l'attend pas).
+pub const COMPARE_LOCK_TIMEOUT: Duration = Duration::from_secs(2);
 
 impl From<&CompareSourcesArgs> for CompareSourcesOptions {
     fn from(args: &CompareSourcesArgs) -> CompareSourcesOptions {
@@ -181,6 +197,7 @@ impl From<&CompareSourcesArgs> for CompareSourcesOptions {
             from: args.from.map(|d| d.0),
             to: args.to.map(|d| d.0),
             exclude: args.exclude.iter().map(|r| r.0.clone()).collect(),
+            lock_timeout: COMPARE_LOCK_TIMEOUT,
         }
     }
 }
@@ -744,10 +761,14 @@ fn scan_source(root: &Path, partition: Partition) -> Result<Source, CliError> {
     Ok(Source { partition, files })
 }
 
-/// Prend le verrou de `partition` puis inventorie ses fichiers (sous le verrou : un manifeste lu avant
-/// une ingestion ne serait plus celui du Parquet). Une partition absente est refusée sans créer de
-/// verrou.
-fn lock_and_scan(root: &Path, partition: Partition) -> Result<(PartitionLock, Source), CliError> {
+/// Prend le verrou de `partition` (attente de `lock_timeout` au plus, voir [`COMPARE_LOCK_TIMEOUT`])
+/// puis inventorie ses fichiers (sous le verrou : un manifeste lu avant une ingestion ne serait plus
+/// celui du Parquet). Une partition absente est refusée sans créer de verrou.
+fn lock_and_scan(
+    root: &Path,
+    partition: Partition,
+    lock_timeout: Duration,
+) -> Result<(PartitionLock, Source), CliError> {
     let dir = resolve_rel(root, &partition.dir_rel())?;
     if !dir.is_dir() {
         return Err(CliError::CompareMissingSource {
@@ -755,7 +776,7 @@ fn lock_and_scan(root: &Path, partition: Partition) -> Result<(PartitionLock, So
             dir: dir.display().to_string(),
         });
     }
-    let lock = PartitionLock::acquire(root, &partition)?;
+    let lock = PartitionLock::acquire_wait(root, &partition, lock_timeout)?;
     let source = scan_source(root, partition)?;
     Ok((lock, source))
 }
@@ -861,10 +882,12 @@ pub fn compare_sources(
     let (lock_kraken, kraken) = lock_and_scan(
         &options.root,
         Partition::new(ExchangeId::Kraken, options.kraken.clone(), Timeframe::M1),
+        options.lock_timeout,
     )?;
     let (lock_okx, okx) = lock_and_scan(
         &options.root,
         Partition::new(ExchangeId::Okx, options.okx.clone(), Timeframe::M1),
+        options.lock_timeout,
     )?;
     let (Some(k), Some(o)) = (kraken.present(), okx.present()) else {
         return Err(CliError::CompareNoOverlap {

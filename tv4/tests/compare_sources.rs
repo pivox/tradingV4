@@ -11,11 +11,15 @@ use std::fs;
 use std::ops::Range;
 use std::path::Path;
 use std::process::{Command, Output};
+use std::thread;
+use std::time::{Duration, Instant};
 
 use serde_json::Value;
 use tempfile::TempDir;
 
-use tv4::cli::{CliError, CompareReport, CompareSourcesOptions, Verdict, compare_sources};
+use tv4::cli::{
+    COMPARE_LOCK_TIMEOUT, CliError, CompareReport, CompareSourcesOptions, Verdict, compare_sources,
+};
 use tv4::model::{Candle, ExchangeId, Timeframe, Ts};
 use tv4::store::{Columns, Partition, PartitionLock, StoreError, Symbol, write_partition};
 
@@ -83,6 +87,7 @@ fn options(root: &Path) -> CompareSourcesOptions {
         from: None,
         to: None,
         exclude: Vec::new(),
+        lock_timeout: COMPARE_LOCK_TIMEOUT,
     }
 }
 
@@ -523,20 +528,62 @@ fn hash_du_manifeste_non_verifie() {
 }
 
 /// CS-2 : la lecture prend le verrou de partition, comme `build_dataset` : une ingestion en cours la
-/// retient.
+/// retient, et l'échec reste `LockBusy` une fois l'attente écoulée (délai court ici pour garder le
+/// test rapide).
 #[test]
-fn partition_verrouillee_par_une_ingestion_refusee() {
+fn partition_verrouillee_au_dela_de_l_attente_refusee_avec_un_message_clair() {
     let k = series(T0..T0 + 3 * DAY, price);
     let dir = stores(&k, &k);
     let partition = Partition::new(ExchangeId::Okx, sym("BTC-USDC"), Timeframe::M1);
-    let verrou = PartitionLock::acquire(dir.path(), &partition).expect("verrou");
-    let resultat = compare_sources(&options(dir.path()));
+    let verrou =
+        PartitionLock::acquire_wait(dir.path(), &partition, COMPARE_LOCK_TIMEOUT).expect("verrou");
+    let court = CompareSourcesOptions {
+        lock_timeout: Duration::from_millis(150),
+        ..options(dir.path())
+    };
+    let debut = Instant::now();
+    let resultat = compare_sources(&court);
     assert!(
-        matches!(resultat, Err(CliError::Store(StoreError::LockBusy { .. }))),
-        "{resultat:?}"
+        debut.elapsed() >= Duration::from_millis(150),
+        "l'attente n'a pas eu lieu"
     );
+    let Err(erreur) = resultat else {
+        panic!("la partition verrouillée aurait dû être refusée");
+    };
+    assert!(
+        matches!(erreur, CliError::Store(StoreError::LockBusy { .. })),
+        "{erreur:?}"
+    );
+    let message = erreur.to_string();
+    assert!(message.contains("okx/BTC-USDC/1m"), "{message}");
+    assert!(message.contains("déjà verrouillée"), "{message}");
     drop(verrou);
     assert!(compare_sources(&options(dir.path())).is_ok());
+}
+
+/// Un verrou relâché pendant l'attente (écrivain qui termine, ou verrou encore retenu quelques
+/// microsecondes par un sous-processus fraîchement lancé) n'est pas une erreur : la comparaison réussit.
+#[test]
+fn verrou_relache_pendant_l_attente_la_comparaison_reussit() {
+    let k = series(T0..T0 + 3 * DAY, price);
+    let dir = stores(&k, &k);
+    let partition = Partition::new(ExchangeId::Okx, sym("BTC-USDC"), Timeframe::M1);
+    let verrou =
+        PartitionLock::acquire_wait(dir.path(), &partition, COMPARE_LOCK_TIMEOUT).expect("verrou");
+    let debut = Instant::now();
+    let libere = thread::spawn(move || {
+        thread::sleep(Duration::from_millis(400));
+        drop(verrou);
+    });
+    let resultat = compare_sources(&options(dir.path()));
+    let attente = debut.elapsed();
+    libere.join().expect("thread de libération");
+    let (rapport, _) = resultat.expect("comparaison après libération");
+    assert_eq!(rapport.verdict, Verdict::Ok);
+    assert!(
+        attente >= Duration::from_millis(350),
+        "pas d'attente : {attente:?}"
+    );
 }
 
 // --- Binaire ------------------------------------------------------------------------------------

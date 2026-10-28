@@ -20,10 +20,10 @@ use crate::model::Ts;
 pub use backtest::{BacktestArgs, RunInputArgs};
 pub use bench::BenchArgs;
 pub use compare_sources::{
-    BarReport, CompareReport, CompareSourcesArgs, CompareSourcesOptions, DAY_DELTA_THRESHOLD,
-    DAYS_ABOVE_MAX_PERCENT, DateRange, DeltaStats, FileReport, MEDIAN_ABS_DELTA_4H_MAX,
-    MinuteCounts, RangeReport, ShareReport, SourceReport, ThresholdsReport, Verdict,
-    WICK_THRESHOLDS, WickReport, WickSide, compare_sources,
+    BarReport, COMPARE_LOCK_TIMEOUT, CompareReport, CompareSourcesArgs, CompareSourcesOptions,
+    DAY_DELTA_THRESHOLD, DAYS_ABOVE_MAX_PERCENT, DateRange, DeltaStats, FileReport,
+    MEDIAN_ABS_DELTA_4H_MAX, MinuteCounts, RangeReport, ShareReport, SourceReport,
+    ThresholdsReport, Verdict, WICK_THRESHOLDS, WickReport, WickSide, compare_sources,
 };
 pub use dataset::DatasetBuildArgs;
 pub use ingest::{IngestCsvArgs, IngestKrakenArgs, IngestSummary, ingest_kraken};
