@@ -40,6 +40,13 @@ Plateforme de trading crypto **spot** sur OKX : moteur de backtest, de paper tra
   - `return_annualized` gardé (20 ULP) ;
   - rejets comptés dans l'entonnoir ;
   - régime à l'entrée de `trades.csv` reporté au jalon 1.5.
+- S9 : les 12 points de `docs/specs/s9.md` §20 autres que le capital (point suivant) sont validés en bloc (décision du 28/10 (17:18 UTC), carte « Tout valider »). Ils couvrent :
+  - `upcChg` stocké et haché sans être appliqué, et `tv4 instruments fetch` qui refuse toute clé dont `perm` n'est pas en lecture seule ;
+  - rang de liquidité 90 j calculé sur les données du run ;
+  - régime exposé en série (clôtures 1d closes, SMA200) plus `bull()`, une stratégie par paire ;
+  - trou de cotation à T = 7 jours, grille = union des minutes présentes, démarrage commun des paires ;
+  - `min_order_bump` en S9, désactivé par défaut ;
+  - G0 au notional tiré des entrées du run, plafonné à 300 €, avec les minutes absentes à 0 dans la médiane de volume.
 - Mode portefeuille (S9) : capital initial hors du `config_hash`. Un même hash doit donner les mêmes trades à 300 € et à 3 000 € (04 §4.2). Le capital est écrit dans `metrics.json` et dans le manifeste, et `tv4 verify` refuse deux runs de capitaux différents (décision du 28/10 (13:52 UTC), carte « Hors du hash »).
 
 ## Code (moteur Rust `tv4`)
@@ -50,7 +57,7 @@ Plateforme de trading crypto **spot** sur OKX : moteur de backtest, de paper tra
 - Identifiants en anglais ; commentaires, messages d'erreur et documentation en français. `HashMap`/`HashSet` interdits par clippy (ordre non déterministe) ; `unwrap()` interdit dans la lib.
 - Format du hash des données : `docs/dataset-hash.md` (`dsh-v1`), qui fait foi pour l'implémentation de S4 et pour un recalcul en PHP au jalon 2.
 - Spécification de S8 (rapports `metrics.json`, `trades.csv`, `equity.csv`, `manifest.json`, `tv4 verify`, `tv4 bench`, squelette Symfony `control-plane/`) : `docs/specs/s8.md`, qui fait foi pour le détail de S8 ; les 13 points soumis au propriétaire (§17) sont validés depuis le 28/10.
-- Spécification de S9 (portefeuille multi-paires, `tv4 instruments fetch`, rapports `tv4-metrics-s9` et `tv4-manifest-s9`, exécutabilité G0 et G1, trou de cotation, régime BTC/SMA200) : `docs/specs/s9.md`, qui fait foi pour le détail de S9 ; ses points soumis au propriétaire (§20) sont à valider, hors le capital du mode portefeuille hors du `config_hash` (décidé le 28/10).
+- Spécification de S9 (portefeuille multi-paires, `tv4 instruments fetch`, rapports `tv4-metrics-s9` et `tv4-manifest-s9`, exécutabilité G0 et G1, trou de cotation, régime BTC/SMA200) : `docs/specs/s9.md`, qui fait foi pour le détail de S9 ; ses points soumis au propriétaire (§20) sont tous validés depuis le 28/10.
 
 ## Règles de travail
 
