@@ -48,6 +48,7 @@ Plateforme de trading crypto **spot** sur OKX : moteur de backtest, de paper tra
   - `min_order_bump` en S9, désactivé par défaut ;
   - G0 au notional tiré des entrées du run, plafonné à 300 €, avec les minutes absentes à 0 dans la médiane de volume.
 - Mode portefeuille (S9) : capital initial hors du `config_hash`. Un même hash doit donner les mêmes trades à 300 € et à 3 000 € (04 §4.2). Le capital est écrit dans `metrics.json` et dans le manifeste, et `tv4 verify` refuse deux runs de capitaux différents (décision du 28/10 (13:52 UTC), carte « Hors du hash »).
+- Repli S33 (conditionnel : seulement si le cycle 1 ne sort aucun candidat validé) : setups déclaratifs en TOML assemblant des briques Rust typées, bornés par le validateur aux limites de 04 §4.2, sans aucun scripting ; TOML acté le 14/10 (08:10), dérogation à « écrite en code typé » actée le 28/10 (21:08 UTC), `docs/04-protocole-recherche.md` §4.2 et §10 décision 10, `docs/03-architecture.md` §6 et §13, `docs/notes/declarative-setup-toml.md`.
 
 ## Code (moteur Rust `tv4`)
 
