@@ -24,6 +24,7 @@
 #![forbid(unsafe_code)]
 
 pub mod approx;
+pub mod cost_arithmetic;
 pub mod distribution;
 pub mod drawdown;
 pub mod equity;
@@ -31,6 +32,7 @@ pub mod executability;
 pub mod manifest;
 pub mod metrics;
 pub mod metrics_s9;
+pub mod profiles;
 pub mod verify;
 pub mod writers;
 
@@ -44,7 +46,9 @@ use thiserror::Error;
 use crate::model::{ModelError, hash};
 
 pub use equity::write_equity_csv;
-pub use manifest::{EngineInfo, Manifest, ManifestS9, run_id, run_id_s9};
+pub use manifest::{
+    EngineInfo, Manifest, ManifestS9, ManifestS10Inputs, profiles_id, run_id, run_id_s9,
+};
 pub use metrics::{DataInfo, DatasetRef, Metrics, RunVerdict};
 pub use metrics_s9::MetricsS9;
 pub use writers::{TradesContext, write_trades_csv};

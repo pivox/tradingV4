@@ -22,6 +22,7 @@
   {% if metrics.isPortfolio -%}
     {% include 'run/sections/_univers.html.twig' %}
     {% include 'run/sections/_executabilite.html.twig' %}
+    {%- if metrics.isCosts %}{% include 'run/sections/_couts.html.twig' %}{% endif %}
   {%- endif -%}
   {% include 'run/sections/_trades.html.twig' %}
   {% include 'run/sections/_annexe.html.twig' %}

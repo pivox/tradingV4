@@ -15,8 +15,10 @@
 //! `trailing_stop`, `take_profit`, `end_of_window`. La valeur `roll` (F3 rejetée par G0) n'est jamais
 //! écrite. `gap_forced_exit` (sortie forcée d'une jambe sans cotation au-delà du seuil, docs S9 §4.3)
 //! n'est produite que par le portefeuille de S9 (`exit_reason = quote_gap`) : le chemin de S8 ne
-//! l'écrit pas. Les colonnes `regime_at_entry` (étiquette de régime, jalon 1.5) et
-//! `spread_cost` (spread non modélisé, S10) sont toujours vides au jalon 1.
+//! l'écrit pas. La colonne `regime_at_entry` (étiquette de régime, jalon 1.5) est toujours vide. La
+//! colonne `spread_cost` est vide en s8 et s9 ; la génération s10 la remplit
+//! ([`write_trades_csv_legs_s10`], docs/specs/s10.md §6.4) : `entry_spread + exit_spread`, la part de
+//! spread des fills taker et le débit de sélection adverse des fills au repos du profil maker.
 
 use std::path::{Path, PathBuf};
 
@@ -253,7 +255,9 @@ pub fn trades_csv_s6(trades: &[Trade]) -> Result<Vec<u8>, ReportError> {
 
 /// Contenu de `trades.csv` (36 colonnes) en mémoire.
 pub fn trades_csv(trades: &[Trade], context: &TradesContext<'_>) -> Result<Vec<u8>, ReportError> {
-    trades_csv_rows(trades, context.span_ms, |_| Ok(context.symbol))
+    trades_csv_rows(trades, context.span_ms, SpreadColumn::Empty, |_| {
+        Ok(context.symbol)
+    })
 }
 
 /// Contenu de `trades.csv` (36 colonnes) d'un portefeuille : la colonne `symbol` porte le symbole de la
@@ -265,6 +269,28 @@ pub fn trades_csv_legs(
     symbols: &[&str],
     span_ms: i64,
 ) -> Result<Vec<u8>, ReportError> {
+    trades_csv_legs_rows(trades, trade_legs, symbols, span_ms, SpreadColumn::Empty)
+}
+
+/// Comme [`trades_csv_legs`], pour la génération s10 : la colonne `spread_cost` vaut
+/// `entry_spread + exit_spread` (quote), écrite avec le formateur des autres montants. Les 35 autres
+/// colonnes sont celles de [`trades_csv_legs`] à l'octet.
+pub fn trades_csv_legs_s10(
+    trades: &[Trade],
+    trade_legs: &[u16],
+    symbols: &[&str],
+    span_ms: i64,
+) -> Result<Vec<u8>, ReportError> {
+    trades_csv_legs_rows(trades, trade_legs, symbols, span_ms, SpreadColumn::Filled)
+}
+
+fn trades_csv_legs_rows(
+    trades: &[Trade],
+    trade_legs: &[u16],
+    symbols: &[&str],
+    span_ms: i64,
+    spread: SpreadColumn,
+) -> Result<Vec<u8>, ReportError> {
     if trade_legs.len() != trades.len() {
         return Err(ReportError::Series {
             detail: format!(
@@ -274,7 +300,7 @@ pub fn trades_csv_legs(
             ),
         });
     }
-    trades_csv_rows(trades, span_ms, |i| {
+    trades_csv_rows(trades, span_ms, spread, |i| {
         trade_legs
             .get(i)
             .and_then(|&leg| symbols.get(usize::from(leg)))
@@ -285,10 +311,20 @@ pub fn trades_csv_legs(
     })
 }
 
+/// Contenu de la colonne `spread_cost`.
+#[derive(Clone, Copy)]
+enum SpreadColumn {
+    /// s8 et s9 : colonne vide.
+    Empty,
+    /// s10 : `entry_spread + exit_spread`.
+    Filled,
+}
+
 /// Corps commun de [`trades_csv`] et de [`trades_csv_legs`] : `symbol_of(i)` rend le symbole du trade `i`.
 fn trades_csv_rows<'a>(
     trades: &[Trade],
     span_ms: i64,
+    spread: SpreadColumn,
     symbol_of: impl Fn(usize) -> Result<&'a str, ReportError>,
 ) -> Result<Vec<u8>, ReportError> {
     let csv_error = |e: csv::Error| ReportError::Csv(e.to_string());
@@ -309,9 +345,12 @@ fn trades_csv_rows<'a>(
         row.push(optional(t.stop_at_entry));
         row.push(optional(risk));
         row.push(optional(r));
-        // `regime_at_entry` et `spread_cost` : vides au jalon 1.
+        // `regime_at_entry` : vide au jalon 1. `spread_cost` : vide en s8 et s9, rempli en s10.
         row.push(String::new());
-        row.push(String::new());
+        row.push(match spread {
+            SpreadColumn::Empty => String::new(),
+            SpreadColumn::Filled => (t.entry_spread + t.exit_spread).to_string(),
+        });
         writer.write_record(&row).map_err(csv_error)?;
     }
     finish(writer)
@@ -366,6 +405,19 @@ pub fn write_trades_csv_legs(
     write_bytes_atomic(dir, TRADES_FILE, &bytes)
 }
 
+/// Écrit `trades.csv` d'un portefeuille s10 (voir [`trades_csv_legs_s10`]) dans `dir` de façon
+/// atomique. Rend le chemin final.
+pub fn write_trades_csv_legs_s10(
+    dir: &Path,
+    trades: &[Trade],
+    trade_legs: &[u16],
+    symbols: &[&str],
+    span_ms: i64,
+) -> Result<PathBuf, ReportError> {
+    let bytes = trades_csv_legs_s10(trades, trade_legs, symbols, span_ms)?;
+    write_bytes_atomic(dir, TRADES_FILE, &bytes)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -380,6 +432,7 @@ mod tests {
             entry_price: 100.05,
             entry_fee: 0.5,
             entry_slippage: 0.25,
+            entry_spread: 0.0,
             entry_liquidity: Liquidity::Taker,
             exit_signal_ms: 120_000,
             exit_order_ms: 121_000,
@@ -388,6 +441,7 @@ mod tests {
             exit_price: 102.9485,
             exit_fee: 0.125,
             exit_slippage: 0.0,
+            exit_spread: 0.0,
             exit_liquidity: Liquidity::Maker,
             qty: 0.00000001,
             pnl_net: -1.5,
@@ -604,6 +658,64 @@ mod tests {
         assert_eq!(risk_quote(&t), None);
         t.stop_at_entry = None;
         assert_eq!(r_multiple(&t), None);
+    }
+
+    #[test]
+    fn spread_cost_est_vide_en_s9_et_rempli_en_s10() {
+        let mut a = trade(Some(95.5), false);
+        a.entry_spread = 0.125;
+        a.exit_spread = 0.0625;
+        let mut b = trade(None, true);
+        b.entry_spread = 0.5;
+        let trades = [a, b];
+        let legs = [0u16, 1];
+        let symbols = ["BTC-USD", "ETH-USD"];
+        let s9 = String::from_utf8(trades_csv_legs(&trades, &legs, &symbols, 1_000_000).unwrap())
+            .unwrap();
+        let s10 =
+            String::from_utf8(trades_csv_legs_s10(&trades, &legs, &symbols, 1_000_000).unwrap())
+                .unwrap();
+        assert_eq!(s9.lines().next(), s10.lines().next(), "même en-tête");
+        let champs = |ligne: &str| ligne.split(',').map(str::to_string).collect::<Vec<_>>();
+        for (k, attendu) in [(1usize, "0.1875"), (2, "0.5")] {
+            let (vieux, neuf) = (
+                champs(s9.lines().nth(k).unwrap()),
+                champs(s10.lines().nth(k).unwrap()),
+            );
+            assert_eq!(vieux.len(), 36);
+            assert_eq!(neuf.len(), 36);
+            assert_eq!(
+                vieux[..35],
+                neuf[..35],
+                "les autres colonnes sont inchangées"
+            );
+            assert_eq!(vieux[35], "", "s9 : spread_cost vide");
+            assert_eq!(neuf[35], attendu, "s10 : entry_spread + exit_spread");
+            assert_eq!(neuf[34], "", "regime_at_entry reste vide");
+        }
+    }
+
+    #[test]
+    fn spread_cost_s10_refuse_des_jambes_desalignees() {
+        let trades = [trade(None, false)];
+        assert!(trades_csv_legs_s10(&trades, &[], &["BTC-USD"], 1_000_000).is_err());
+        assert!(trades_csv_legs_s10(&trades, &[3], &["BTC-USD"], 1_000_000).is_err());
+    }
+
+    #[test]
+    fn ecriture_atomique_de_trades_csv_s10() {
+        let dir = std::env::temp_dir().join(format!("tv4-trades-s10-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let mut t = trade(None, false);
+        t.entry_spread = 0.25;
+        let chemin = write_trades_csv_legs_s10(&dir, &[t], &[0], &["BTC-USD"], 1_000_000).unwrap();
+        assert_eq!(chemin, dir.join("trades.csv"));
+        assert!(!dir.join("trades.csv.tmp").exists());
+        assert_eq!(
+            std::fs::read(&chemin).unwrap(),
+            trades_csv_legs_s10(&[t], &[0], &["BTC-USD"], 1_000_000).unwrap()
+        );
+        std::fs::remove_dir_all(&dir).unwrap();
     }
 
     #[test]

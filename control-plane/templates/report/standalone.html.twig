@@ -4,7 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <meta name="color-scheme" content="light dark">
-<title>Run {{ manifest.runId|slice(0, 12) }} · {{ manifest.config.strategyId }} · rapport tradingV4</title>
+<title>{% if profiles is defined %}Profils de coûts · {% endif %}Run {{ manifest.runId|slice(0, 12) }} · {{ manifest.config.strategyId }} · rapport tradingV4</title>
 <style>
 :root {
   --bg: #ffffff;
@@ -77,9 +77,18 @@ svg .bar.loss { fill: var(--loss); fill-opacity: .55; stroke: var(--loss); }
 svg .pt.win { fill: var(--win); fill-opacity: .8; }
 svg .pt.loss { fill: var(--loss); fill-opacity: .8; }
 @media print { body { background: #fff; color: #000; } .section { break-inside: avoid; } }
-</style>
+{% if profiles is defined or metrics.isCosts %}/* Profils de coûts et section « Coûts » (s10) : absents du rendu s8 et s9. */
+.profils-page { max-width: 1100px; margin: 0 auto; padding: 24px 16px 0; }
+.badge.label-passes_costs { border-color: var(--win); }
+.badge.label-cost_fragile, .badge.label-negative { border-color: var(--loss); }
+.badge.label-indeterminate { border-style: dashed; }
+.badge.label-fill_dependent { border-color: var(--loss); border-width: 4px; font-weight: 600; }
+.callout { border-left: 4px solid var(--loss); background: var(--bg); padding: 8px 12px; margin: 12px 0; }
+.callout.fill-dependent { border-left-width: 8px; }
+tr.gate-off td, tr.gate-off th { color: var(--muted); }
+{% endif %}</style>
 </head>
 <body>
-{% include 'run/fiche.html.twig' %}
+{% if profiles is defined %}<div class="profils-page">{% include 'run/sections/_profils.html.twig' %}</div>{% endif %}{% include 'run/fiche.html.twig' %}
 </body>
 </html>

@@ -44,8 +44,12 @@
 //! 6. Un ordre se remplit en entier ou pas du tout dans une 1m. Une vente partielle de la position
 //!    ferme les lots les plus anciens d'abord (FIFO) ; un trade est la part d'un lot fermée par une vente.
 //! 7. `RiskPct` d'un market est calculé au fill, sur le prix de fill et l'equity du signal.
-//! 8. Le slippage de stop est un scalaire en bps plus une composante de stress à 0 ([`SimRules`]) : pas
-//!    de distribution au jalon 1, aucun générateur aléatoire dans le simulateur (calibration en S10).
+//! 8. Chemin hérité (S8, S9) : le slippage de stop est un scalaire en bps plus une composante de stress à
+//!    0 ([`SimRules`]), aucun générateur aléatoire. Depuis S10 (docs/specs/s10.md §5 à §8), un
+//!    [`LegCost`](crate::model::costs::LegCost) par jambe porte un demi-spread, un slippage market, une loi
+//!    de stop tirée par un générateur à compteur pur (`model::rng`, sans état dans le simulateur) et le mode
+//!    d'entrée maker ; `Simulator::new` et `Book::new` construisent le coût hérité (`LegCost::legacy`) et
+//!    rejouent S9 au bit.
 //! 9. Les minimums d'instrument de Kraken sont à 0 : à valider (S9, issue #11).
 //! 10. Une limit traversée d'un tick est remplie en entier : pas de modèle de file d'attente.
 //! 11. Limits pessimistes (règles `s6.1`, proposées au propriétaire le 15/10 ; remplacent la règle de l'issue S6
@@ -68,6 +72,12 @@
 //! Aucune allocation dans `on_bar` ni dans `submit` : la file d'ordres est préallouée à `max_pending`,
 //! les lots à `LOTS_CAPACITY` (un dépassement fait grandir le `VecDeque`, ce qui reste exceptionnel).
 //!
+//! Coûts s10 (docs/specs/s10.md §6 et §7) : tout fill taker part de `ref × (1 ± (h + s))`, un stop de
+//! `ref × (1 − (h + quantile))` puis du stress tiré, un fill au repos reste à `L` exactement (décision 9).
+//! Le profil maker convertit une entrée market en limit sous le bid du signal, tire un fill par ordre
+//! (`queue_missed`, `tp_queue_missed`) et débite la sélection adverse à part. Les termes nuls ne sont pas
+//! écrits : une branche garde l'expression de S9, jusqu'au signe d'un zéro.
+//!
 //! Portefeuille multi-paires (S9, docs S9 §3) : [`Book`] possède une jambe `Simulator` par paire et prête
 //! à celle qui agit le cash, le compteur de lots et le journal de trades communs. Le chemin mono-paire
 //! de S8 ne change pas : `foreign_reserved` vaut `0.0` et se soustrait en dernier de chaque cash libre
@@ -77,6 +87,7 @@
 #![forbid(unsafe_code)]
 
 mod book;
+mod costs;
 mod fills;
 mod orders;
 mod portfolio;
@@ -90,16 +101,19 @@ use std::collections::VecDeque;
 use serde::Serialize;
 use thiserror::Error;
 
+use crate::model::costs::{EntryMode, LegCost, StopCost};
 use crate::model::instrument::{STEP_SNAP, ceil_steps, floor_steps};
 use crate::model::{
     BPS_PER_UNIT, Candle, FeeSchedule, InstrumentRules, ModelError, Side, Slippage, Ts,
 };
 
 pub use book::{Book, BookConfig, BookOutcome, BookRejection, SizingMode};
+pub use costs::CostCounters;
 pub use orders::{Instruction, OrderPrice, PendingView, Rejection, SizeSpec, SubmitContext};
 pub use portfolio::{ExitReason, Liquidity, PositionView, Trade};
 pub use rules::{IntrabarRule, MIN_CASH_MARGIN, SIM_RULES_VERSION, SimRules};
 
+use costs::{adverse_debit, drawn_stop_price, maker_fill_succeeds, split_impact, validate_cost};
 use orders::{Arrival, Order, OrderType, Origin};
 use portfolio::Lot;
 
@@ -215,6 +229,10 @@ struct Entry {
     cost: f64,
     fee: f64,
     slippage: f64,
+    /// Part de spread (taker) ou débit de sélection adverse (maker), voir `Trade::entry_spread`.
+    spread: f64,
+    /// Débit de sélection adverse retiré du cash (0.0 hors profil maker).
+    debit: f64,
     ref_price: f64,
     liquidity: Liquidity,
     capped: bool,
@@ -241,8 +259,13 @@ struct Sale {
 pub struct Simulator {
     maker: f64,
     taker: f64,
-    slippage: Slippage,
-    stop_rate: f64,
+    /// Coût de la jambe : demi-spread, slippage market, loi du stop, mode d'entrée, sélection adverse.
+    cost: LegCost,
+    /// Taux composé d'un fill taker `h + s`, calculé une fois (`LegCost::taker_rate`).
+    taker_rate: f64,
+    /// Taux de frais d'un achat limit pour la réservation et le plafond de cash : le maker, plus la
+    /// sélection adverse en profil maker (s10 §7.4). Égal au maker hors profil maker.
+    maker_reserve_rate: f64,
     rules: SimRules,
     instrument: InstrumentRules,
     inv_tick: f64,
@@ -284,6 +307,10 @@ pub struct Simulator {
     /// le TP est posé après le fill, jamais avant l'achat, donc son touché dans cette 1m est ignoré quel que
     /// soit `tp_ignored_on_fill_bar` (lecture pessimiste de l'ambiguïté du TP de la 1m de fill).
     tp_blocked_fill_bar: bool,
+    /// Profil maker (s10 §7.3) : le tirage de fill du take-profit en vigueur a échoué, il ne peut plus
+    /// être rempli. Remis à faux à chaque pose d'un take-profit neuf (fill d'une entrée) ; un `MoveStop` ne
+    /// le réarme pas.
+    tp_queue_missed: bool,
     /// Close de la dernière 1m passée à `on_bar` : prix à l'arrivée d'un ordre dont la minute
     /// d'activation manque dans la série.
     last_close: Option<f64>,
@@ -295,6 +322,7 @@ pub struct Simulator {
     trades: Vec<Trade>,
     counters: SimCounters,
     detail: SimDetail,
+    cost_counters: CostCounters,
 }
 
 /// Seuil de franchissement d'une limit, en ticks : `limit_cross_ticks − STEP_SNAP`, pour qu'un
@@ -340,7 +368,8 @@ fn valid_size(size: SizeSpec) -> bool {
 
 impl Simulator {
     /// Valide les règles, l'instrument et le capital, puis préalloue la file d'ordres, les lots et les
-    /// trades.
+    /// trades. Le coût est celui du chemin hérité (s10 §2.3) : [`LegCost::legacy`], sans demi-spread, sans
+    /// tirage, stop à taux fixe `(slippage + stop_stress_bps) / 10 000`, entrée taker. Rejoue S9 au bit.
     pub fn new(
         fees: FeeSchedule,
         slippage: Slippage,
@@ -361,11 +390,53 @@ impl Simulator {
                 reason: "le slippage et `stop_stress_bps` cumulés doivent rester sous 10 000 bps",
             });
         }
+        Simulator::with_cost(
+            fees,
+            LegCost::legacy(slippage, rules.stop_stress_bps),
+            rules,
+            instrument,
+            initial_cash,
+            trades_capacity,
+        )
+    }
+
+    /// Comme [`Simulator::new`], avec le coût d'une jambe donné (s10). Le coût est validé (taux dans
+    /// leurs bornes). Pour un stop tiré, `rules.stop_stress_bps` doit valoir 0 : le stress vit dans le
+    /// profil de coûts, et une valeur non nulle serait ignorée en silence.
+    pub fn with_cost(
+        fees: FeeSchedule,
+        cost: LegCost,
+        rules: SimRules,
+        instrument: InstrumentRules,
+        initial_cash: f64,
+        trades_capacity: usize,
+    ) -> Result<Simulator, SimError> {
+        if !(initial_cash.is_finite() && initial_cash > 0.0) {
+            return Err(SimError::InvalidInitialCash {
+                value: initial_cash,
+            });
+        }
+        rules.validate()?;
+        instrument.validate()?;
+        validate_cost(&cost)?;
+        if matches!(cost.stop, StopCost::Drawn { .. }) && rules.stop_stress_bps != 0.0 {
+            return Err(SimError::InvalidRules {
+                reason: "`stop_stress_bps` doit valoir 0 avec un stop tiré : le stress vit dans le profil de coûts",
+            });
+        }
+        let maker = fees.maker_rate();
+        // Sans sélection adverse le taux de réservation est le maker lui-même : l'expression de S9.
+        let maker_reserve_rate = if cost.adverse_selection_rate == 0.0 {
+            maker
+        } else {
+            maker + cost.adverse_selection_rate
+        };
         Ok(Simulator {
-            maker: fees.maker_rate(),
+            maker,
             taker: fees.taker_rate(),
-            slippage,
-            stop_rate: (slippage.bps() + rules.stop_stress_bps) / BPS_PER_UNIT,
+            cost,
+            taker_rate: cost.taker_rate(),
+            maker_reserve_rate,
             rules,
             instrument,
             inv_tick: instrument.inv_tick(),
@@ -390,6 +461,7 @@ impl Simulator {
             tp_active_from_ms: 0,
             tp_arrival: Arrival::Unresolved,
             tp_blocked_fill_bar: false,
+            tp_queue_missed: false,
             last_close: None,
             stop_update: None,
             pending: Vec::with_capacity(rules.max_pending),
@@ -398,6 +470,7 @@ impl Simulator {
             trades: Vec::with_capacity(trades_capacity),
             counters: SimCounters::default(),
             detail: SimDetail::default(),
+            cost_counters: CostCounters::default(),
         })
     }
 
@@ -476,6 +549,11 @@ impl Simulator {
         &self.detail
     }
 
+    /// Compteurs de coûts de s10 (voir [`CostCounters`]), tous nuls pour un coût hérité.
+    pub fn cost_counters(&self) -> &CostCounters {
+        &self.cost_counters
+    }
+
     // -----------------------------------------------------------------------------------------
     // Soumission
     // -----------------------------------------------------------------------------------------
@@ -536,10 +614,12 @@ impl Simulator {
             && sizing::bump_risk_ok(min_qty, price, stop, base, max_risk)
     }
 
-    /// Réservation d'un achat limit : notional plus frais maker estimés.
+    /// Réservation d'un achat limit : notional plus frais maker estimés, et plus la sélection adverse en
+    /// profil maker (s10 §7.4 : `notional × (1 + maker + sélection adverse)`). Sans sélection adverse, le
+    /// taux est le maker seul : l'expression de S9.
     fn reservation(&self, lots: u64, limit: f64) -> f64 {
         let cost = self.qty_of(lots) * limit;
-        cost + cost * self.maker
+        cost + cost * self.maker_reserve_rate
     }
 
     /// Recalcule `quote_reserved` et `reserved_lots` depuis la file : une fonction pure de la file, que
@@ -664,6 +744,26 @@ impl Simulator {
         ctx: SubmitContext,
         max_notional: Option<f64>,
     ) -> Result<(), Rejection> {
+        // Profil maker (s10 §7.1) : une entrée market devient une limit d'achat sous le bid du signal,
+        // `floor_tick(close × (1 − (h + o)))` (l'arrondi au tick est celui de tout prix d'achat), de TTL
+        // `ttl_minutes` 1m. Seul `close[i]` (`ref_price`), `h` et `o` interviennent : rien de postérieur à
+        // la décision. Les limits de la stratégie gardent leur prix et leur TTL.
+        let (price, converted) = match (price, self.cost.entry) {
+            (OrderPrice::Market, EntryMode::Maker { ttl_minutes, .. }) => {
+                let rate = self
+                    .cost
+                    .maker_entry_rate()
+                    .unwrap_or(self.cost.half_spread_rate);
+                (
+                    OrderPrice::Limit {
+                        price: ctx.ref_price * (1.0 - rate),
+                        ttl_bars: ttl_minutes,
+                    },
+                    true,
+                )
+            }
+            (price, _) => (price, false),
+        };
         if let OrderPrice::Limit { price, .. } = price
             && !valid_price(price)
         {
@@ -731,8 +831,8 @@ impl Simulator {
                     }
                 }
                 let free = self.cash - self.quote_reserved - self.foreign_reserved;
-                let cap =
-                    free * (1.0 - self.rules.market_buy_cash_margin) / (limit * (1.0 + self.maker));
+                let cap = free * (1.0 - self.rules.market_buy_cash_margin)
+                    / (limit * (1.0 + self.maker_reserve_rate));
                 let capped = cap < q;
                 let qf = if capped { cap } else { q };
                 if !(qf.is_finite() && qf > 0.0) {
@@ -771,7 +871,12 @@ impl Simulator {
                 order.stop = stop;
                 order.take_profit = take_profit;
                 order.max_notional = max_notional;
-                self.accept(order)
+                order.maker_entry = converted;
+                let accepted = self.accept(order);
+                if converted {
+                    self.cost_counters.maker_entries_converted += 1;
+                }
+                accepted
             }
         }
     }
@@ -1097,7 +1202,7 @@ impl Simulator {
             self.counters.entries_dropped_while_long += 1;
             return Ok(false);
         }
-        let price = fills::market_buy_price(candle.open, self.slippage);
+        let price = fills::market_buy_price(candle.open, self.taker_rate);
         let Some(mut q) = sizing::size_qty(order.size, order.equity_at_signal, price, order.stop)
         else {
             self.counters.entries_invalid_risk_at_fill += 1;
@@ -1153,7 +1258,12 @@ impl Simulator {
         self.detail.entries_bumped_to_min += u64::from(bumped);
         let cost = qty * price;
         let fee = cost * self.taker;
-        let slippage = qty * (price - candle.open);
+        let (slippage, spread) = split_impact(
+            qty * (price - candle.open),
+            qty,
+            candle.open,
+            self.cost.half_spread_rate,
+        );
         self.fill_buy(
             &order,
             candle,
@@ -1163,6 +1273,8 @@ impl Simulator {
                 cost,
                 fee,
                 slippage,
+                spread,
+                debit: 0.0,
                 ref_price: candle.open,
                 liquidity: Liquidity::Taker,
                 capped,
@@ -1183,7 +1295,7 @@ impl Simulator {
             return Ok(());
         }
         self.cancel_limit_sells();
-        let price = fills::market_sell_price(candle.open, self.slippage);
+        let price = fills::market_sell_price(candle.open, self.taker_rate);
         if self.qty_of(self.qty_lots) * price > vol_limit {
             self.counters.exits_over_volume_share += 1;
         }
@@ -1217,9 +1329,11 @@ impl Simulator {
     }
 
     /// Étape 4 : limits d'achat actives. Une limit marketable à l'arrivée que l'open franchit encore est
-    /// prise en taker à `min(open × (1 + s), L)` ; sinon (au repos, ou devenue au repos à cette 1m) elle
-    /// est remplie à `L` en maker si le plus bas franchit `L` d'au moins `limit_cross_ticks` ticks.
-    /// Rend vrai si au moins un achat a été rempli.
+    /// prise en taker à `min(open × (1 + (h + s)), L)` ; sinon (au repos, ou devenue au repos à cette 1m)
+    /// elle est remplie à `L` en maker si le plus bas franchit `L` d'au moins `limit_cross_ticks` ticks.
+    /// En profil maker, un ordre au repos traversé tire d'abord son fill (un tirage par ordre, s10 §7.3) :
+    /// un échec le marque `queue_missed`, il garde sa réservation et ne se remplit plus. Rend vrai si au
+    /// moins un achat a été rempli.
     fn step_limit_buys(&mut self, candle: &Candle, vol_limit: f64) -> Result<bool, SimError> {
         let t = candle.open_time_ms;
         let tick = self.instrument.tick_size;
@@ -1228,7 +1342,10 @@ impl Simulator {
         while let Some(candidate) = self.pending.get(k) {
             // Lecture par référence : la file est parcourue à chaque 1m, la copie d'un `Order` entier
             // n'a lieu que pour un ordre réellement rempli.
-            if candidate.kind != OrderType::LimitBuy || candidate.active_from_ms > t {
+            if candidate.kind != OrderType::LimitBuy
+                || candidate.active_from_ms > t
+                || candidate.queue_missed
+            {
                 k += 1;
                 continue;
             }
@@ -1240,11 +1357,16 @@ impl Simulator {
             let taker = marketable && candle.open < candidate.limit;
             let resting_cross =
                 candle.low <= fills::buy_cross_level(candidate.limit, tick, self.kt);
+            let (limit, active_from_ms) = (candidate.limit, candidate.active_from_ms);
             if marketable && !taker {
                 // L'open ne franchit plus la limite : l'ordre est au repos à partir de cette 1m.
                 self.pending[k].arrival = Arrival::Resting;
             }
             if !(taker || resting_cross) {
+                k += 1;
+                continue;
+            }
+            if !taker && !self.draw_resting_fill(k, active_from_ms, limit, false) {
                 k += 1;
                 continue;
             }
@@ -1256,7 +1378,7 @@ impl Simulator {
                 continue;
             }
             let price = if taker {
-                let price = fills::marketable_buy_price(order.limit, candle.open, self.slippage);
+                let price = fills::marketable_buy_price(order.limit, candle.open, self.taker_rate);
                 debug_assert!(
                     candle.open <= price && price <= order.limit,
                     "fill taker d'une limit d'achat hors de [open, limite]"
@@ -1274,15 +1396,33 @@ impl Simulator {
                 continue;
             }
             let cost = qty * price;
-            let (fee, slippage, ref_price, liquidity) = if taker {
+            let (fee, slippage, spread, debit, ref_price, liquidity) = if taker {
+                let (slippage, spread) = split_impact(
+                    qty * (price - candle.open),
+                    qty,
+                    candle.open,
+                    self.cost.half_spread_rate,
+                );
                 (
                     cost * self.taker,
-                    qty * (price - candle.open),
+                    slippage,
+                    spread,
+                    0.0,
                     candle.open,
                     Liquidity::Taker,
                 )
             } else {
-                (cost * self.maker, 0.0, order.limit, Liquidity::Maker)
+                // Fill au repos : prix `L`, spread nul ; en profil maker la sélection adverse est
+                // débitée à part et portée par `spread` (s10 §6.3 et §7.4).
+                let debit = adverse_debit(cost, self.cost.adverse_selection_rate);
+                (
+                    cost * self.maker,
+                    0.0,
+                    debit,
+                    debit,
+                    order.limit,
+                    Liquidity::Maker,
+                )
             };
             // La réservation couvre les frais maker : en taker, le cash libre (hors réservations des
             // autres ordres) peut ne pas couvrir le fill, qui est alors abandonné comme un achat market.
@@ -1299,6 +1439,8 @@ impl Simulator {
                     cost,
                     fee,
                     slippage,
+                    spread,
+                    debit,
                     ref_price,
                     liquidity,
                     capped: order.capped,
@@ -1306,9 +1448,68 @@ impl Simulator {
             )?;
             self.counters.fills_limit += 1;
             self.counters.limits_marketable_at_arrival += u64::from(taker);
+            if order.maker_entry {
+                if taker {
+                    self.cost_counters.maker_entries_taken_at_arrival += 1;
+                } else {
+                    self.cost_counters.maker_entries_filled_maker += 1;
+                }
+            }
             bought = true;
         }
         Ok(bought)
+    }
+
+    /// Profil maker (s10 §7.3) : tirage de fill d'un ordre au repos traversé, à la première 1m qui le
+    /// rend éligible. Rend vrai si l'ordre peut être rempli : hors profil maker, toujours (aucun tirage).
+    /// Un échec marque l'ordre `queue_missed` : il garde sa réservation jusqu'à son expiration ou son
+    /// annulation et ne se remplit plus. Les tirages ne dépendent que de la clé de l'ordre (graine, jambe,
+    /// `active_from_ms`, prix et côté), pas de la minute où il est fait.
+    fn draw_resting_fill(&mut self, k: usize, active_from_ms: Ts, limit: f64, sell: bool) -> bool {
+        let EntryMode::Maker {
+            fill_probability, ..
+        } = self.cost.entry
+        else {
+            return true;
+        };
+        self.cost_counters.maker_fill_draws += 1;
+        if maker_fill_succeeds(&self.cost, fill_probability, active_from_ms, limit, sell) {
+            self.cost_counters.maker_fills += 1;
+            true
+        } else {
+            self.cost_counters.maker_fill_missed += 1;
+            if let Some(order) = self.pending.get_mut(k) {
+                order.queue_missed = true;
+            }
+            false
+        }
+    }
+
+    /// Profil maker : tirage de fill du take-profit au repos, à la clé `[leg_key, MAKER_FILL,
+    /// tp_active_from_ms, tp.to_bits() ^ (1 << 63)]`. Un échec pose `tp_queue_missed` : le take-profit ne se
+    /// remplit plus à ce niveau (un `MoveStop` ne le réarme pas). Vrai hors profil maker.
+    fn draw_take_profit_fill(&mut self, tp: f64) -> bool {
+        let EntryMode::Maker {
+            fill_probability, ..
+        } = self.cost.entry
+        else {
+            return true;
+        };
+        self.cost_counters.maker_fill_draws += 1;
+        if maker_fill_succeeds(
+            &self.cost,
+            fill_probability,
+            self.tp_active_from_ms,
+            tp,
+            true,
+        ) {
+            self.cost_counters.maker_fills += 1;
+            true
+        } else {
+            self.cost_counters.maker_fill_missed += 1;
+            self.tp_queue_missed = true;
+            false
+        }
     }
 
     /// Étape 5 : stop, ventes limit et take-profit (voir [`IntrabarRule`]).
@@ -1327,7 +1528,9 @@ impl Simulator {
             // L'open ne franchit plus le take-profit : il est au repos à partir de cette 1m.
             self.tp_arrival = Arrival::Resting;
         }
+        // Un take-profit dont le tirage de fill a échoué (profil maker) ne se remplit plus.
         let tp_cross = pos
+            && !self.tp_queue_missed
             && (tp_taker
                 || self
                     .take_profit
@@ -1345,7 +1548,15 @@ impl Simulator {
         }
         self.fill_limit_sells(candle, vol_limit)?;
         if self.qty_lots > 0 && tp_ok {
-            self.execute_take_profit(candle, vol_limit, tp_taker)?;
+            // Au repos, en profil maker, le tirage de fill précède l'exécution (s10 §7.3).
+            let allowed = tp_taker
+                || match self.take_profit {
+                    Some(tp) => self.draw_take_profit_fill(tp),
+                    None => true,
+                };
+            if allowed {
+                self.execute_take_profit(candle, vol_limit, tp_taker)?;
+            }
         }
         if self.qty_lots > 0 && stop_hit {
             self.execute_stop(candle, vol_limit)?;
@@ -1353,15 +1564,18 @@ impl Simulator {
         Ok(())
     }
 
-    /// Ventes limit actives, dans l'ordre d'arrivée : taker à `max(open × (1 − s), L)` si marketable à
-    /// l'arrivée et que l'open franchit encore `L`, sinon maker à `L` quand le plus haut la franchit
-    /// d'au moins `limit_cross_ticks` ticks.
+    /// Ventes limit actives, dans l'ordre d'arrivée : taker à `max(open × (1 − (h + s)), L)` si
+    /// marketable à l'arrivée et que l'open franchit encore `L`, sinon maker à `L` quand le plus haut la
+    /// franchit d'au moins `limit_cross_ticks` ticks (après le tirage de fill du profil maker).
     fn fill_limit_sells(&mut self, candle: &Candle, vol_limit: f64) -> Result<(), SimError> {
         let t = candle.open_time_ms;
         let tick = self.instrument.tick_size;
         let mut k = 0;
         while let Some(candidate) = self.pending.get(k) {
-            if candidate.kind != OrderType::LimitSell || candidate.active_from_ms > t {
+            if candidate.kind != OrderType::LimitSell
+                || candidate.active_from_ms > t
+                || candidate.queue_missed
+            {
                 k += 1;
                 continue;
             }
@@ -1373,6 +1587,7 @@ impl Simulator {
             let taker = marketable && candle.open > candidate.limit;
             let resting_cross =
                 candle.high >= fills::sell_cross_level(candidate.limit, tick, self.kt);
+            let (limit, active_from_ms) = (candidate.limit, candidate.active_from_ms);
             if marketable && !taker {
                 self.pending[k].arrival = Arrival::Resting;
             }
@@ -1380,11 +1595,15 @@ impl Simulator {
                 k += 1;
                 continue;
             }
+            if !taker && !self.draw_resting_fill(k, active_from_ms, limit, true) {
+                k += 1;
+                continue;
+            }
             let order = self.pending.remove(k);
             self.reservations_dirty = true;
             self.recompute_reservations();
             let price = if taker {
-                let price = fills::marketable_sell_price(order.limit, candle.open, self.slippage);
+                let price = fills::marketable_sell_price(order.limit, candle.open, self.taker_rate);
                 debug_assert!(
                     order.limit <= price && price <= candle.open,
                     "fill taker d'une limit de vente hors de [limite, open]"
@@ -1421,7 +1640,8 @@ impl Simulator {
         Ok(())
     }
 
-    /// Stop franchi : exécuté au pire du niveau et de l'open, taker, avec slippage de stop.
+    /// Stop franchi : exécuté au pire du niveau et de l'open, taker, avec slippage de stop. Chemin
+    /// hérité : taux fixe. s10 : slippage tiré dans la loi, puis stress tiré (s10 §5.2).
     fn execute_stop(&mut self, candle: &Candle, vol_limit: f64) -> Result<(), SimError> {
         let Some(stop) = self.stop else {
             return Err(SimError::InvariantViolated {
@@ -1429,7 +1649,27 @@ impl Simulator {
             });
         };
         let worst = fills::stop_reference(stop, candle.open);
-        let price = fills::stop_price(worst, self.stop_rate);
+        let price = match self.cost.stop {
+            StopCost::Fixed { rate } => fills::stop_price(worst, rate),
+            StopCost::Drawn {
+                dist,
+                stress_probability,
+                stress_drop,
+            } => {
+                let (price, stressed) = drawn_stop_price(
+                    &self.cost,
+                    &dist,
+                    stress_probability,
+                    stress_drop,
+                    stop,
+                    worst,
+                    candle.open_time_ms,
+                );
+                self.cost_counters.stop_fills_drawn += 1;
+                self.cost_counters.stop_stress_fills += u64::from(stressed);
+                price
+            }
+        };
         if self.qty_of(self.qty_lots) * price > vol_limit {
             self.counters.exits_over_volume_share += 1;
         }
@@ -1465,7 +1705,7 @@ impl Simulator {
             });
         };
         let price = if taker {
-            let price = fills::marketable_sell_price(tp, candle.open, self.slippage);
+            let price = fills::marketable_sell_price(tp, candle.open, self.taker_rate);
             debug_assert!(
                 tp <= price && price <= candle.open,
                 "fill taker d'un take-profit hors de [tp, open]"
@@ -1517,10 +1757,21 @@ impl Simulator {
     /// Enregistre un achat rempli : cash, lot FIFO, prix moyen et, pour une entrée, stop et take-profit.
     fn fill_buy(&mut self, order: &Order, candle: &Candle, entry: Entry) -> Result<(), SimError> {
         let t = candle.open_time_ms;
-        if !(entry.cost.is_finite() && entry.fee.is_finite() && entry.slippage.is_finite()) {
+        if !(entry.cost.is_finite()
+            && entry.fee.is_finite()
+            && entry.slippage.is_finite()
+            && entry.spread.is_finite()
+            && entry.debit.is_finite())
+        {
             return Err(SimError::NonFiniteAmount { open_time_ms: t });
         }
-        let cash = self.cash - (entry.cost + entry.fee);
+        // Le débit de sélection adverse (profil maker) n'est écrit que s'il est non nul : sans lui,
+        // l'expression est celle de S9.
+        let cash = if entry.debit == 0.0 {
+            self.cash - (entry.cost + entry.fee)
+        } else {
+            self.cash - (entry.cost + entry.fee + entry.debit)
+        };
         if !(cash.is_finite() && cash >= 0.0) {
             return Err(SimError::NegativeCash {
                 open_time_ms: t,
@@ -1549,6 +1800,8 @@ impl Simulator {
             cost: entry.cost,
             fee: entry.fee,
             slippage: entry.slippage,
+            spread: entry.spread,
+            debit: entry.debit,
             liquidity: entry.liquidity,
             capped: entry.capped,
             tag: order.tag,
@@ -1571,6 +1824,7 @@ impl Simulator {
             self.take_profit = order.take_profit;
             self.stop_signal_ms = order.signal_ms;
             self.tp_signal_ms = order.signal_ms;
+            self.tp_queue_missed = false;
             // Le take-profit arrive à la 1m suivante : celle du fill l'ignore (ou, si cette règle est
             // levée, il arrive à l'open de cette même 1m). Exception pessimiste : une entrée limit au repos
             // (maker) est remplie en cours de 1m, le TP est posé après le fill et ne peut pas être pris à
@@ -1588,6 +1842,10 @@ impl Simulator {
         }
         self.counters.fills += 1;
         self.counters.entries_capped_by_cash += u64::from(entry.capped);
+        match entry.liquidity {
+            Liquidity::Taker => self.cost_counters.spread_cost_total += entry.spread,
+            Liquidity::Maker => self.cost_counters.adverse_selection_total += entry.debit,
+        }
         Ok(())
     }
 
@@ -1595,7 +1853,9 @@ impl Simulator {
     ///
     /// Les montants d'un trade sont au prorata `k / K` de la vente et `k / lots_init` du lot ; pour un
     /// lot fermé d'un coup, les deux parts valent exactement 1.0 et le trade reprend les montants au bit.
-    /// `taker` vrai : le slippage de la vente est `qty × (référence − prix)`, sinon 0.
+    /// `taker` vrai : l'impact de la vente est `qty × (référence − prix)`, réparti en part de spread
+    /// (`min(impact, qty × référence × h)`) et slippage ; sinon le slippage est nul et, en profil maker,
+    /// la sélection adverse est débitée à part (s10 §6.3 et §7.4).
     fn sell_lots(&mut self, sale: Sale, taker: bool) -> Result<(), SimError> {
         let at = sale.exit_ms;
         let total = sale.lots;
@@ -1605,15 +1865,31 @@ impl Simulator {
         let qty_total = self.qty_of(total);
         let proceeds = qty_total * sale.price;
         let fee = proceeds * sale.rate;
-        let slippage = if taker {
-            qty_total * (sale.ref_price - sale.price)
+        let (slippage, spread, debit) = if taker {
+            let (slippage, spread) = split_impact(
+                qty_total * (sale.ref_price - sale.price),
+                qty_total,
+                sale.ref_price,
+                self.cost.half_spread_rate,
+            );
+            (slippage, spread, 0.0)
         } else {
-            0.0
+            let debit = adverse_debit(proceeds, self.cost.adverse_selection_rate);
+            (0.0, debit, debit)
         };
-        if !(proceeds.is_finite() && fee.is_finite() && slippage.is_finite()) {
+        if !(proceeds.is_finite()
+            && fee.is_finite()
+            && slippage.is_finite()
+            && spread.is_finite()
+            && debit.is_finite())
+        {
             return Err(SimError::NonFiniteAmount { open_time_ms: at });
         }
-        let cash = self.cash + (proceeds - fee);
+        let cash = if debit == 0.0 {
+            self.cash + (proceeds - fee)
+        } else {
+            self.cash + (proceeds - fee - debit)
+        };
         if !(cash.is_finite() && cash >= 0.0) {
             return Err(SimError::NegativeCash {
                 open_time_ms: at,
@@ -1640,11 +1916,19 @@ impl Simulator {
             let proceeds_i = proceeds * share;
             let fee_i = fee * share;
             let slippage_i = slippage * share;
+            let spread_i = spread * share;
+            let debit_i = debit * share;
             let entry_cost = lot.cost * part;
             let entry_fee = lot.fee * part;
             let entry_slippage = lot.slippage * part;
+            let entry_spread = lot.spread * part;
+            let entry_debit = lot.debit * part;
             let qty = self.qty_of(k);
-            let pnl_net = (proceeds_i - fee_i) - (entry_cost + entry_fee);
+            let pnl_net = if debit_i == 0.0 && entry_debit == 0.0 {
+                (proceeds_i - fee_i) - (entry_cost + entry_fee)
+            } else {
+                (proceeds_i - fee_i - debit_i) - (entry_cost + entry_fee + entry_debit)
+            };
             self.trades.push(Trade {
                 lot_id: lot.id,
                 entry_signal_ms: lot.entry_signal_ms,
@@ -1654,6 +1938,7 @@ impl Simulator {
                 entry_price: lot.entry_price,
                 entry_fee,
                 entry_slippage,
+                entry_spread,
                 entry_liquidity: lot.liquidity,
                 exit_signal_ms: sale.signal_ms,
                 exit_order_ms: sale.order_ms,
@@ -1662,6 +1947,7 @@ impl Simulator {
                 exit_price: sale.price,
                 exit_fee: fee_i,
                 exit_slippage: slippage_i,
+                exit_spread: spread_i,
                 exit_liquidity,
                 qty,
                 pnl_net,
@@ -1685,6 +1971,10 @@ impl Simulator {
         }
         self.qty_lots -= total;
         self.counters.fills += 1;
+        match exit_liquidity {
+            Liquidity::Taker => self.cost_counters.spread_cost_total += spread,
+            Liquidity::Maker => self.cost_counters.adverse_selection_total += debit,
+        }
         if self.qty_lots == 0 {
             self.avg_price = 0.0;
             self.stop = None;
@@ -1720,7 +2010,7 @@ impl Simulator {
             self.sell_lots(
                 Sale {
                     lots: self.qty_lots,
-                    price: fills::market_sell_price(last.close, self.slippage),
+                    price: fills::market_sell_price(last.close, self.taker_rate),
                     rate: self.taker,
                     ref_price: last.close,
                     reason: ExitReason::ForcedClose,
@@ -1807,7 +2097,7 @@ impl Simulator {
         self.sell_lots(
             Sale {
                 lots: self.qty_lots,
-                price: fills::market_sell_price(last_close, self.slippage),
+                price: fills::market_sell_price(last_close, self.taker_rate),
                 rate: self.taker,
                 ref_price: last_close,
                 reason: ExitReason::QuoteGap,

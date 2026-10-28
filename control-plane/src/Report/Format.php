@@ -124,6 +124,16 @@ final class Format
         };
     }
 
+    /** Booléen en français ; « — » pour une valeur non définie (null). */
+    public function yesNo(?bool $value): string
+    {
+        return match ($value) {
+            null => '—',
+            true => 'oui',
+            false => 'non',
+        };
+    }
+
     private function utc(int $ms): DateTimeImmutable
     {
         return (new DateTimeImmutable('@' . intdiv($ms, 1000)))->setTimezone(new DateTimeZone('UTC'));

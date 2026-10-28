@@ -12,8 +12,8 @@
         <tr><th scope="row">Grille de frais</th><td>{{ c.feesExchange }}</td></tr>
         <tr class="sub"><th scope="row">maker</th><td class="num">{{ c.makerBps|num(2) }} bps</td></tr>
         <tr class="sub"><th scope="row">taker</th><td class="num">{{ c.takerBps|num(2) }} bps</td></tr>
-        <tr><th scope="row">Slippage</th><td class="num">{{ c.slippageBps|num(2) }} bps</td></tr>
-        <tr><th scope="row">Capital initial</th><td class="num">{{ c.initialCash|money }}</td></tr>
+        {% if c.slippageBps is not null %}<tr><th scope="row">Slippage</th><td class="num">{{ c.slippageBps|num(2) }} bps</td></tr>
+        {% endif %}<tr><th scope="row">Capital initial</th><td class="num">{{ c.initialCash|money }}</td></tr>
         <tr><th scope="row"><code>min_trades</code></th><td class="num">{{ c.minTrades|int }}</td></tr>
         <tr><th scope="row">Warmup</th><td class="num">{{ c.warmupBars|int }} bougies</td></tr>
         <tr><th scope="row">Version du moteur (hachée)</th><td>{{ c.tv4Version }}</td></tr>

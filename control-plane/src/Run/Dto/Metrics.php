@@ -5,8 +5,10 @@ declare(strict_types=1);
 namespace App\Run\Dto;
 
 /**
- * Contenu de `metrics.json` (schémas `tv4-metrics-s8` et `tv4-metrics-s9`), sans le bloc `config` repris par
- * le manifeste. Les blocs propres au portefeuille (s9) valent null pour un run s8 ou s'ils sont absents.
+ * Contenu de `metrics.json` (schémas `tv4-metrics-s8`, `tv4-metrics-s9` et `tv4-metrics-s10`), sans le bloc `config`
+ * repris par le manifeste. Les blocs propres au portefeuille (s9) valent null pour un run s8 ou s'ils sont absents.
+ * Un run s10 est un run portefeuille qui porte en plus les blocs `costs`, `cost_arithmetic` et `cost_counters`
+ * (obligatoires en s10, null avant).
  * `signalsRejectedMaxPositions` (s9) compte les refus du plafond de positions, inclus dans `signalsRejected`
  * mais hors de `rejectedByReason` ; null pour un run s8.
  */
@@ -72,12 +74,21 @@ final readonly class Metrics
         public ?Executability $executability = null,
         public ?G1Executable $g1Executable = null,
         public ?int $signalsRejectedMaxPositions = null,
+        public ?CostsBlock $costs = null,
+        public ?CostArithmetic $costArithmetic = null,
+        public ?CostCounters $costCounters = null,
     ) {
     }
 
-    /** Vrai pour un run du mode portefeuille (schéma s9). */
+    /** Vrai pour un run du mode portefeuille (schémas s9 et s10). */
     public function isPortfolio(): bool
     {
-        return 'tv4-metrics-s9' === $this->schema;
+        return 'tv4-metrics-s9' === $this->schema || $this->isCosts();
+    }
+
+    /** Vrai pour un run joué avec un profil de coûts (schéma s10). */
+    public function isCosts(): bool
+    {
+        return 'tv4-metrics-s10' === $this->schema;
     }
 }

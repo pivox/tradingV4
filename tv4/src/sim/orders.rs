@@ -192,6 +192,12 @@ pub(super) struct Order {
     pub max_notional: Option<f64>,
     /// Limits : situation par rapport au prix à l'arrivée. `Unresolved` pour un market.
     pub arrival: Arrival,
+    /// Profil maker (s10 §7.3) : le tirage de fill de cet ordre au repos a échoué, il ne peut plus être
+    /// rempli. Il garde sa réservation jusqu'à son expiration ou son annulation. Toujours faux hors du
+    /// profil maker.
+    pub queue_missed: bool,
+    /// `LimitBuy` issu de la conversion d'une entrée market du profil maker (s10 §7.1).
+    pub maker_entry: bool,
 }
 
 impl Order {
@@ -223,6 +229,8 @@ impl Order {
             take_profit: None,
             max_notional: None,
             arrival: Arrival::Unresolved,
+            queue_missed: false,
+            maker_entry: false,
         }
     }
 

@@ -1,0 +1,837 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="color-scheme" content="light dark">
+<title>Run 5e7f90015e7f · sma_cross · rapport tradingV4</title>
+<style>
+:root {
+  --bg: #ffffff;
+  --surface: #f4f6f8;
+  --text: #1b1f24;
+  --muted: #57606a;
+  --border: #d0d7de;
+  --accent: #0b5cad;
+  --win: #0a6a9e;
+  --loss: #b3420b;
+  --neutral: #4a5560;
+  --absent-bg: #eef0f2;
+}
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #14171a;
+    --surface: #1d2227;
+    --text: #e6e8eb;
+    --muted: #a3acb5;
+    --border: #3a424a;
+    --accent: #6cb2f0;
+    --win: #5cb8e6;
+    --loss: #f08a5d;
+    --neutral: #aab4bd;
+    --absent-bg: #1a1e22;
+  }
+}
+* { box-sizing: border-box; }
+body { margin: 0; background: var(--bg); color: var(--text); font: 15px/1.5 system-ui, -apple-system, "Segoe UI", sans-serif; }
+.run { max-width: 1100px; margin: 0 auto; padding: 24px 16px 64px; }
+h1 { font-size: 1.5rem; margin: 0 0 8px; overflow-wrap: anywhere; }
+h2 { font-size: 1.2rem; margin: 0 0 12px; }
+h3 { font-size: 1rem; margin: 20px 0 8px; }
+.kicker { color: var(--muted); margin: 0; font-size: .85rem; text-transform: uppercase; letter-spacing: .05em; }
+.section { border: 1px solid var(--border); border-radius: 8px; padding: 16px; margin: 20px 0; background: var(--surface); }
+.section.absent { background: var(--absent-bg); border-style: dashed; }
+.absent-note { color: var(--muted); }
+.note { color: var(--muted); font-size: .9rem; }
+.badge { display: inline-block; border: 2px solid var(--neutral); border-radius: 6px; padding: 4px 10px; font-size: 1.05rem; }
+.verdict-ok .badge { border-color: var(--win); }
+.verdict-rejected_too_few_trades .badge, .verdict-rejected_negative_expectancy .badge { border-color: var(--loss); border-style: dashed; }
+code { font: .88em ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
+code.hash { overflow-wrap: anywhere; word-break: break-all; }
+table { border-collapse: collapse; width: 100%; }
+caption { text-align: left; font-weight: 600; padding-bottom: 4px; }
+th, td { text-align: left; padding: 4px 8px; border-bottom: 1px solid var(--border); vertical-align: top; }
+thead th { border-bottom: 2px solid var(--border); }
+.num { text-align: right; font-variant-numeric: tabular-nums; white-space: nowrap; }
+td.neg { color: var(--loss); }
+td.pos { color: var(--win); }
+tr.sub th { padding-left: 24px; font-weight: 400; color: var(--muted); }
+.kv th { font-weight: 400; }
+.cols { display: grid; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); gap: 16px; align-items: start; }
+.scroll { overflow-x: auto; }
+table.data { font-size: .85rem; }
+table.data td, table.data th { white-space: nowrap; }
+figure { margin: 12px 0; }
+figcaption { color: var(--muted); font-size: .85rem; }
+svg.chart { width: 100%; height: auto; display: block; }
+svg .grid { stroke: var(--border); stroke-width: 1; }
+svg .axis { stroke: var(--muted); stroke-width: 1; }
+svg .zero { stroke: var(--muted); stroke-width: 1; stroke-dasharray: 4 3; }
+svg .tick { fill: var(--muted); font: 11px system-ui, sans-serif; }
+svg .line { fill: none; stroke-width: 1.8; stroke-linejoin: round; }
+svg .line.equity { stroke: var(--win); }
+svg .line.dd { stroke: var(--loss); stroke-width: 1.2; }
+svg .area.dd { fill: var(--loss); fill-opacity: .25; stroke: none; }
+svg .bar.win { fill: var(--win); }
+svg .bar.loss { fill: var(--loss); fill-opacity: .55; stroke: var(--loss); }
+svg .pt.win { fill: var(--win); fill-opacity: .8; }
+svg .pt.loss { fill: var(--loss); fill-opacity: .8; }
+@media print { body { background: #fff; color: #000; } .section { break-inside: avoid; } }
+</style>
+</head>
+<body>
+<article class="run">
+  <header class="run-header">
+    <p class="kicker">tradingV4 · rapport de run</p>
+    <h1>Run <code class="hash">5e7f90015e7f90015e7f90015e7f90015e7f90015e7f90015e7f90015e7f9001</code></h1>
+    <p>
+      Stratégie <strong>sma_cross</strong> version 1.1.0
+      · dataset <strong>exemple_portefeuille</strong>      (kraken, BTC-USD, ETH-USD, 1m)
+    </p>
+    <p>Fenêtre jouée : 2021-01-01 04:10 UTC → 2021-01-09 04:10 UTC (fin exclue, après warmup)</p>
+  </header>
+
+  <section id="verdict" class="section verdict verdict-rejected_too_few_trades" aria-labelledby="verdict-titre">
+  <h2 id="verdict-titre">Verdict et marche</h2>
+  <p class="badge">Verdict de tv4 : <strong>rejected_too_few_trades</strong></p>
+      <p>Règle : 10 trades contre un minimum de 30 (<code>min_trades</code>). Une espérance mesurée sur si peu de trades ne se lit pas.</p>
+    <p class="note">Ce verdict concerne ce run seul ; il n'est pas le franchissement d'une porte du protocole de recherche.</p>
+  <p class="absent-note"><strong>Marche du protocole : absent au jalon 1.</strong> Les portes G0 à G7 ne sont pas calculées au jalon 1.</p>
+</section>
+  <section id="resume" class="section" aria-labelledby="resume-titre">
+  <h2 id="resume-titre">Résumé</h2>
+  <div class="cols">
+    <table class="kv">
+      <caption>Résultat</caption>
+      <tr><th scope="row">PnL net</th><td class="num neg">−2,71</td></tr>
+      <tr><th scope="row">PnL réalisé</th><td class="num">−15,56</td></tr>
+      <tr><th scope="row">PnL marked</th><td class="num">12,85</td></tr>
+      <tr><th scope="row">Rendement total</th><td class="num">−0,90 %</td></tr>
+      <tr><th scope="row">Frais totaux</th><td class="num">19,26</td></tr>
+      <tr><th scope="row">Slippage total</th><td class="num">2,75</td></tr>
+      <tr><th scope="row">Clôture forcée en fin de fenêtre</th><td class="num">oui</td></tr>
+    </table>
+    <table class="kv">
+      <caption>Trades</caption>
+      <tr><th scope="row">Trades</th><td class="num">10</td></tr>
+      <tr><th scope="row">Espérance nette par trade</th><td class="num">−0,27</td></tr>
+      <tr><th scope="row">Espérance en R (9 trades avec R)</th><td class="num">−0,22</td></tr>
+      <tr><th scope="row">Profit factor</th><td class="num">0,90</td></tr>
+      <tr><th scope="row">Taux de gain (6 gagnants, 4 perdants)</th><td class="num">60,00 %</td></tr>
+      <tr><th scope="row">Durée moyenne en position</th><td class="num">12 h 50 min</td></tr>
+      <tr><th scope="row">MFE moyen</th><td class="num">4,43</td></tr>
+      <tr><th scope="row">MAE moyen</th><td class="num">−2,76</td></tr>
+    </table>
+    <table class="kv">
+      <caption>Risque</caption>
+      <tr><th scope="row">Drawdown max (1m)</th><td class="num">6,78 % · 20,48</td></tr>
+      <tr><th scope="row">Drawdown max (1h)</th><td class="num">6,69 % · 20,22</td></tr>
+      <tr><th scope="row">Exposition</th><td class="num">66,84 % (7 700 sur 11 520 bougies 1m)</td></tr>
+      <tr><th scope="row">Equity finale</th><td class="num">297,29</td></tr>
+    </table>
+  </div>
+  <p class="note">Montants en monnaie de cotation des données (BTC-USD, ETH-USD). Drawdowns : fraction du pic, puis montant.</p>
+</section>
+  <section id="lineage" class="section" aria-labelledby="lineage-titre">
+  <h2 id="lineage-titre">Lineage</h2>
+  <p class="note">Hashes affichés tels que tv4 les a écrits ; le control plane n'en recalcule aucun.</p>
+  <table class="kv wide">
+    <tr><th scope="row"><code>config_hash</code></th><td><code class="hash">c0de9001c0de9001c0de9001c0de9001c0de9001c0de9001c0de9001c0de9001</code></td></tr>
+    <tr><th scope="row"><code>dataset_hash</code> (dsh-v1)</th><td><code class="hash">blake3:da7a9001da7a9001da7a9001da7a9001da7a9001da7a9001da7a9001da7a9001</code></td></tr>
+    <tr><th scope="row"><code>result_hash</code></th><td><code class="hash">blake3:7e5a90017e5a90017e5a90017e5a90017e5a90017e5a90017e5a90017e5a9001</code></td></tr>
+    <tr><th scope="row"><code>run_id</code></th><td><code class="hash">5e7f90015e7f90015e7f90015e7f90015e7f90015e7f90015e7f90015e7f9001</code></td></tr>
+    <tr><th scope="row">Version de la stratégie</th><td>sma_cross 1.1.0</td></tr>
+    <tr><th scope="row">Moteur : version</th><td>0.1.0</td></tr>
+    <tr><th scope="row">Moteur : commit</th><td><code class="hash">f4b1c8e0d001</code></td></tr>
+    <tr><th scope="row">Moteur : rustc</th><td>1.97.0 (<code class="hash">2d8144b7880597b6e6d3dfd63a9a9efae3f533d3</code>)</td></tr>
+    <tr><th scope="row">Moteur : cible</th><td>x86_64-unknown-linux-gnu, cpu x86-64-v3, profil release</td></tr>
+    <tr><th scope="row">Moteur : <code>binary_hash</code></th><td><code class="hash">blake3:b1a49001b1a49001b1a49001b1a49001b1a49001b1a49001b1a49001b1a49001</code></td></tr>
+    <tr>
+      <th scope="row">Données</th>
+      <td>
+        <code>BTC-USD</code> : 12 270 lignes (2020-12-31 15:40 UTC → 2021-01-09 04:09 UTC) · <code>ETH-USD</code> : 12 254 lignes (2020-12-31 15:40 UTC → 2021-01-09 04:09 UTC) ·
+        warmup 50 bougies · trous : <code>skip</code>
+              </td>
+    </tr>
+    <tr><th scope="row">Capital initial (hors <code>config_hash</code>)</th><td>300,00</td></tr>
+    <tr>
+      <th scope="row">Univers</th>
+      <td><code>BTC-USD</code>, <code>ETH-USD</code> (ordre de la config, départage du rang de priorité)</td>
+    </tr>
+    <tr>
+      <th scope="row">Régime</th>
+      <td>
+        aucun : la stratégie ne lit pas le régime      </td>
+    </tr>
+    <tr>
+      <th scope="row">Instruments</th>
+      <td>
+        source <code>okx</code>
+           · fichier <code>instruments/okx/spot-20261028T124500Z.json</code> · relevé le 2026-10-28T12:45:00.123Z<br><code>instruments_hash</code> : <code class="hash">blake3:1257900c1257900c1257900c1257900c1257900c1257900c1257900c1257900c</code><br>Hors état <code>live</code> : <code>ETH-USDC</code>          <br>Changements à venir annoncés par OKX (non appliqués au backtest) :
+          <ul><li><code>BTC-USDC</code> : <code>minSz</code> devient <code>0.001</code>, effectif 2026-11-02 06:13 UTC</li></ul>      </td>
+    </tr>
+  </table>
+  <p class="absent-note"><strong>Absent au jalon 1.</strong> <code>version_hash</code> : le jalon 1 identifie la version du code par la version de la stratégie. Reproductibilité (« rejoué le …, identique à l'octet ») et bouton « Rejouer » : aucun <code>tv4 verify</code> n'est enregistré dans le run, jalon 2.</p>
+</section>
+  <section id="portes" class="section absent" aria-labelledby="portes-titre">
+  <h2 id="portes-titre">Portes</h2>
+  <p class="absent-note"><strong>Absent au jalon 1.</strong> Bootstrap (borne basse à 90 %) et seuil corrigé pour N essais : jalon 1.5 (research::stats).</p>
+</section>
+  <section id="equity" class="section" aria-labelledby="equity-titre">
+  <h2 id="equity-titre">Equity</h2>
+  <p class="note">Run entier, pas hors échantillon. Pas d'échantillonnage : 1h (193 points).</p>
+  <figure>
+    <svg class="chart" viewBox="0 0 720 240" role="img" aria-labelledby="equity-chart-titre">
+      <title id="equity-chart-titre">Courbe d'equity du run entier</title>
+              <line class="grid" x1="72" x2="708" y1="181.34" y2="181.34"/>
+        <text class="tick" x="66" y="185.34" text-anchor="end">285,00</text>
+              <line class="grid" x1="72" x2="708" y1="131.39" y2="131.39"/>
+        <text class="tick" x="66" y="135.39" text-anchor="end">290,00</text>
+              <line class="grid" x1="72" x2="708" y1="81.44" y2="81.44"/>
+        <text class="tick" x="66" y="85.44" text-anchor="end">295,00</text>
+              <line class="grid" x1="72" x2="708" y1="31.49" y2="31.49"/>
+        <text class="tick" x="66" y="35.49" text-anchor="end">300,00</text>
+                    <text class="tick" x="215.06" y="232" text-anchor="middle">01-03</text>
+              <text class="tick" x="374.75" y="232" text-anchor="middle">01-05</text>
+              <text class="tick" x="534.44" y="232" text-anchor="middle">01-07</text>
+              <text class="tick" x="694.14" y="232" text-anchor="middle">01-09</text>
+            <line class="axis" x1="72" x2="708" y1="212" y2="212"/>
+      <path class="line equity" d="M72.00,31.49L75.33,43.27L78.65,48.40L81.98,30.00L85.31,10.00L88.63,15.10L91.96,20.98L95.29,20.36L98.62,20.36L101.94,20.36L105.27,48.21L108.60,76.75L111.92,76.75L115.25,76.75L118.58,76.75L121.90,76.75L125.23,76.75L128.56,105.28L131.88,110.53L135.21,98.30L138.54,101.81L141.87,122.26L145.19,125.97L148.52,114.82L151.85,121.93L155.17,141.71L158.50,141.26L161.83,129.18L165.15,137.18L168.48,153.18L171.81,146.42L175.14,156.99L178.46,156.99L181.79,156.99L185.12,156.99L188.44,161.19L191.77,171.84L195.10,181.17L198.42,166.58L201.75,153.75L205.08,162.87L208.40,166.47L211.73,147.44L215.06,149.02L218.39,149.02L221.71,149.02L225.04,149.02L228.37,149.02L231.69,164.10L235.02,156.10L238.35,131.62L241.67,122.77L245.00,130.81L248.33,123.73L251.65,103.70L254.98,112.51L258.31,112.51L261.64,112.51L264.96,112.51L268.29,112.51L271.62,112.51L274.94,112.51L278.27,112.51L281.60,112.51L284.92,137.21L288.25,148.98L291.58,167.17L294.90,167.17L298.23,167.17L301.56,167.17L304.89,167.17L308.21,167.17L311.54,167.17L314.87,173.11L318.19,172.59L321.52,192.30L324.85,201.62L328.17,189.61L331.50,187.89L334.83,204.09L338.16,205.81L341.48,188.72L344.81,185.74L348.14,197.97L351.46,192.55L354.79,171.91L358.12,168.93L361.44,178.09L364.77,167.39L368.10,145.93L371.42,145.10L374.75,153.01L378.08,139.78L381.41,120.72L384.73,124.46L388.06,133.12L391.39,120.16L394.71,106.43L398.04,120.18L401.37,120.18L404.69,120.18L408.02,120.18L411.35,120.18L414.67,120.18L418.00,120.18L421.33,120.18L424.66,120.18L427.98,120.18L431.31,122.30L434.64,117.53L437.96,132.69L441.29,134.43L444.62,118.27L447.94,117.64L451.27,133.26L454.60,131.25L457.93,113.99L461.25,114.75L464.58,127.47L467.91,119.19L471.23,99.07L474.56,98.91L477.89,106.15L481.21,112.10L484.54,112.10L487.87,112.10L491.19,112.10L494.52,112.10L497.85,112.10L501.18,112.10L504.50,112.10L507.83,112.10L511.16,112.10L514.48,128.56L517.81,130.42L521.14,108.62L524.46,94.88L527.79,104.14L531.12,103.54L534.44,81.82L537.77,73.35L541.10,86.20L544.43,85.46L547.75,66.86L551.08,65.93L554.41,83.48L557.73,84.02L561.06,70.38L564.39,77.77L567.71,99.73L571.04,101.58L574.37,93.17L577.69,107.95L581.02,132.44L584.35,134.26L587.68,129.86L591.00,149.61L594.33,173.60L597.66,186.89L600.98,186.89L604.31,186.89L607.64,186.89L610.96,186.89L614.29,186.89L617.62,186.89L620.95,186.89L624.27,186.89L627.60,186.89L630.93,206.76L634.25,212.00L637.58,193.65L640.91,186.77L644.23,199.38L647.56,195.71L650.89,171.59L654.21,163.41L657.54,171.94L660.87,161.00L664.20,133.85L667.52,126.69L670.85,132.97L674.18,117.55L677.50,90.94L680.83,87.61L684.16,93.91L687.48,77.13L690.81,54.55L694.14,57.44L697.46,65.59L700.79,49.99L704.12,33.98L707.45,44.30L708.00,47.25"/>
+    </svg>
+    <figcaption>Equity (monnaie de cotation) au fil du temps UTC.</figcaption>
+  </figure>
+  <figure>
+    <svg class="chart" viewBox="0 0 720 140" role="img" aria-labelledby="drawdown-chart-titre">
+      <title id="drawdown-chart-titre">Drawdown du run entier</title>
+              <line class="grid" x1="72" x2="708" y1="101.04" y2="101.04"/>
+        <text class="tick" x="66" y="105.04" text-anchor="end">−6,00 %</text>
+              <line class="grid" x1="72" x2="708" y1="70.69" y2="70.69"/>
+        <text class="tick" x="66" y="74.69" text-anchor="end">−4,00 %</text>
+              <line class="grid" x1="72" x2="708" y1="40.35" y2="40.35"/>
+        <text class="tick" x="66" y="44.35" text-anchor="end">−2,00 %</text>
+              <line class="grid" x1="72" x2="708" y1="10" y2="10"/>
+        <text class="tick" x="66" y="14" text-anchor="end">0,00 %</text>
+                    <text class="tick" x="215.06" y="132" text-anchor="middle">01-03</text>
+              <text class="tick" x="374.75" y="132" text-anchor="middle">01-05</text>
+              <text class="tick" x="534.44" y="132" text-anchor="middle">01-07</text>
+              <text class="tick" x="694.14" y="132" text-anchor="middle">01-09</text>
+            <path class="area dd" d="M72.00,10.00L72.00,10.00L75.33,15.96L78.65,18.56L81.98,10.00L85.31,10.00L88.63,13.05L91.96,16.01L95.29,15.70L98.62,15.70L101.94,15.70L105.27,29.69L108.60,44.04L111.92,44.04L115.25,44.04L118.58,44.04L121.90,44.04L125.23,44.04L128.56,58.37L131.88,61.01L135.21,54.86L138.54,56.63L141.87,66.90L145.19,68.77L148.52,63.17L151.85,66.74L155.17,76.68L158.50,76.45L161.83,70.38L165.15,74.40L168.48,82.44L171.81,79.05L175.14,84.36L178.46,84.36L181.79,84.36L185.12,84.36L188.44,86.47L191.77,91.82L195.10,96.51L198.42,89.17L201.75,82.73L205.08,87.31L208.40,89.12L211.73,79.56L215.06,80.35L218.39,80.35L221.71,80.35L225.04,80.35L228.37,80.35L231.69,87.93L235.02,83.91L238.35,71.61L241.67,67.16L245.00,71.20L248.33,67.64L251.65,57.58L254.98,62.01L258.31,62.01L261.64,62.01L264.96,62.01L268.29,62.01L271.62,62.01L274.94,62.01L278.27,62.01L281.60,62.01L284.92,74.42L288.25,80.33L291.58,89.47L294.90,89.47L298.23,89.47L301.56,89.47L304.89,89.47L308.21,89.47L311.54,89.47L314.87,92.46L318.19,92.19L321.52,102.10L324.85,106.78L328.17,100.75L331.50,99.88L334.83,108.03L338.16,108.89L341.48,100.30L344.81,98.81L348.14,104.95L351.46,102.23L354.79,91.86L358.12,90.35L361.44,94.96L364.77,89.58L368.10,78.80L371.42,78.38L374.75,82.36L378.08,75.71L381.41,66.13L384.73,68.01L388.06,72.36L391.39,65.85L394.71,58.95L398.04,65.86L401.37,65.86L404.69,65.86L408.02,65.86L411.35,65.86L414.67,65.86L418.00,65.86L421.33,65.86L424.66,65.86L427.98,65.86L431.31,66.92L434.64,64.53L437.96,72.14L441.29,73.02L444.62,64.90L447.94,64.58L451.27,72.43L454.60,71.42L457.93,62.75L461.25,63.13L464.58,69.52L467.91,65.36L471.23,55.25L474.56,55.17L477.89,58.81L481.21,61.80L484.54,61.80L487.87,61.80L491.19,61.80L494.52,61.80L497.85,61.80L501.18,61.80L504.50,61.80L507.83,61.80L511.16,61.80L514.48,70.07L517.81,71.00L521.14,60.05L524.46,53.14L527.79,57.80L531.12,57.50L534.44,46.58L537.77,42.33L541.10,48.78L544.43,48.41L547.75,39.06L551.08,38.60L554.41,47.42L557.73,47.69L561.06,40.83L564.39,44.55L567.71,55.58L571.04,56.51L574.37,52.28L577.69,59.71L581.02,72.02L584.35,72.93L587.68,70.72L591.00,80.65L594.33,92.70L597.66,99.38L600.98,99.38L604.31,99.38L607.64,99.38L610.96,99.38L614.29,99.38L617.62,99.38L620.95,99.38L624.27,99.38L627.60,99.38L630.93,109.37L634.25,112.00L637.58,102.78L640.91,99.32L644.23,105.66L647.56,103.81L650.89,91.69L654.21,87.58L657.54,91.87L660.87,86.37L664.20,72.73L667.52,69.13L670.85,72.29L674.18,64.54L677.50,51.17L680.83,49.49L684.16,52.66L687.48,44.22L690.81,32.88L694.14,34.33L697.46,38.42L700.79,30.59L704.12,22.54L707.45,27.73L708.00,29.21L708.00,10.00Z"/>
+      <path class="line dd" d="M72.00,10.00L75.33,15.96L78.65,18.56L81.98,10.00L85.31,10.00L88.63,13.05L91.96,16.01L95.29,15.70L98.62,15.70L101.94,15.70L105.27,29.69L108.60,44.04L111.92,44.04L115.25,44.04L118.58,44.04L121.90,44.04L125.23,44.04L128.56,58.37L131.88,61.01L135.21,54.86L138.54,56.63L141.87,66.90L145.19,68.77L148.52,63.17L151.85,66.74L155.17,76.68L158.50,76.45L161.83,70.38L165.15,74.40L168.48,82.44L171.81,79.05L175.14,84.36L178.46,84.36L181.79,84.36L185.12,84.36L188.44,86.47L191.77,91.82L195.10,96.51L198.42,89.17L201.75,82.73L205.08,87.31L208.40,89.12L211.73,79.56L215.06,80.35L218.39,80.35L221.71,80.35L225.04,80.35L228.37,80.35L231.69,87.93L235.02,83.91L238.35,71.61L241.67,67.16L245.00,71.20L248.33,67.64L251.65,57.58L254.98,62.01L258.31,62.01L261.64,62.01L264.96,62.01L268.29,62.01L271.62,62.01L274.94,62.01L278.27,62.01L281.60,62.01L284.92,74.42L288.25,80.33L291.58,89.47L294.90,89.47L298.23,89.47L301.56,89.47L304.89,89.47L308.21,89.47L311.54,89.47L314.87,92.46L318.19,92.19L321.52,102.10L324.85,106.78L328.17,100.75L331.50,99.88L334.83,108.03L338.16,108.89L341.48,100.30L344.81,98.81L348.14,104.95L351.46,102.23L354.79,91.86L358.12,90.35L361.44,94.96L364.77,89.58L368.10,78.80L371.42,78.38L374.75,82.36L378.08,75.71L381.41,66.13L384.73,68.01L388.06,72.36L391.39,65.85L394.71,58.95L398.04,65.86L401.37,65.86L404.69,65.86L408.02,65.86L411.35,65.86L414.67,65.86L418.00,65.86L421.33,65.86L424.66,65.86L427.98,65.86L431.31,66.92L434.64,64.53L437.96,72.14L441.29,73.02L444.62,64.90L447.94,64.58L451.27,72.43L454.60,71.42L457.93,62.75L461.25,63.13L464.58,69.52L467.91,65.36L471.23,55.25L474.56,55.17L477.89,58.81L481.21,61.80L484.54,61.80L487.87,61.80L491.19,61.80L494.52,61.80L497.85,61.80L501.18,61.80L504.50,61.80L507.83,61.80L511.16,61.80L514.48,70.07L517.81,71.00L521.14,60.05L524.46,53.14L527.79,57.80L531.12,57.50L534.44,46.58L537.77,42.33L541.10,48.78L544.43,48.41L547.75,39.06L551.08,38.60L554.41,47.42L557.73,47.69L561.06,40.83L564.39,44.55L567.71,55.58L571.04,56.51L574.37,52.28L577.69,59.71L581.02,72.02L584.35,72.93L587.68,70.72L591.00,80.65L594.33,92.70L597.66,99.38L600.98,99.38L604.31,99.38L607.64,99.38L610.96,99.38L614.29,99.38L617.62,99.38L620.95,99.38L624.27,99.38L627.60,99.38L630.93,109.37L634.25,112.00L637.58,102.78L640.91,99.32L644.23,105.66L647.56,103.81L650.89,91.69L654.21,87.58L657.54,91.87L660.87,86.37L664.20,72.73L667.52,69.13L670.85,72.29L674.18,64.54L677.50,51.17L680.83,49.49L684.16,52.66L687.48,44.22L690.81,32.88L694.14,34.33L697.46,38.42L700.79,30.59L704.12,22.54L707.45,27.73L708.00,29.21"/>
+    </svg>
+    <figcaption>Drawdown depuis le pic courant (fraction, calculée par tv4 sur les bougies 1m).</figcaption>
+  </figure>
+  <p class="absent-note"><strong>Absent au jalon 1.</strong> Plis du walk-forward, buy &amp; hold net de frais et médiane des contrôles aléatoires : jalon 2.</p>
+</section>
+  <section id="plis" class="section absent" aria-labelledby="plis-titre">
+  <h2 id="plis-titre">Plis du walk-forward</h2>
+  <p class="absent-note"><strong>Absent au jalon 1.</strong> Walk-forward : jalon 2.</p>
+</section>
+  <section id="distribution" class="section" aria-labelledby="distribution-titre">
+  <h2 id="distribution-titre">Distribution</h2>
+
+  <h3>Multiples de R</h3>
+      <p>Moyenne : <strong>−0,22 R</strong> · médiane : <strong>0,24 R</strong> · 9 trades avec R défini.</p>
+    <figure>
+      <svg class="chart" viewBox="0 0 720 220" role="img" aria-labelledby="hist-titre">
+        <title id="hist-titre">Histogramme des multiples de R par seau de 0,5</title>
+                  <line class="grid" x1="72" x2="708" y1="192" y2="192"/>
+          <text class="tick" x="66" y="196" text-anchor="end">0</text>
+                  <line class="grid" x1="72" x2="708" y1="131.33" y2="131.33"/>
+          <text class="tick" x="66" y="135.33" text-anchor="end">1</text>
+                  <line class="grid" x1="72" x2="708" y1="70.67" y2="70.67"/>
+          <text class="tick" x="66" y="74.67" text-anchor="end">2</text>
+                  <line class="grid" x1="72" x2="708" y1="10" y2="10"/>
+          <text class="tick" x="66" y="14" text-anchor="end">3</text>
+                          <rect class="bar loss" x="72" y="192" width="20.2" height="0"><title>[−5,0 ; −4,5[ R : 0 trade(s)</title></rect>
+                  <rect class="bar loss" x="93.2" y="192" width="20.2" height="0"><title>[−4,5 ; −4,0[ R : 0 trade(s)</title></rect>
+                  <rect class="bar loss" x="114.4" y="192" width="20.2" height="0"><title>[−4,0 ; −3,5[ R : 0 trade(s)</title></rect>
+                  <rect class="bar loss" x="135.6" y="192" width="20.2" height="0"><title>[−3,5 ; −3,0[ R : 0 trade(s)</title></rect>
+                  <rect class="bar loss" x="156.8" y="192" width="20.2" height="0"><title>[−3,0 ; −2,5[ R : 0 trade(s)</title></rect>
+                  <rect class="bar loss" x="178" y="70.67" width="20.2" height="121.33"><title>[−2,5 ; −2,0[ R : 2 trade(s)</title></rect>
+                  <rect class="bar loss" x="199.2" y="70.67" width="20.2" height="121.33"><title>[−2,0 ; −1,5[ R : 2 trade(s)</title></rect>
+                  <rect class="bar loss" x="220.4" y="192" width="20.2" height="0"><title>[−1,5 ; −1,0[ R : 0 trade(s)</title></rect>
+                  <rect class="bar loss" x="241.6" y="192" width="20.2" height="0"><title>[−1,0 ; −0,5[ R : 0 trade(s)</title></rect>
+                  <rect class="bar loss" x="262.8" y="192" width="20.2" height="0"><title>[−0,5 ; 0,0[ R : 0 trade(s)</title></rect>
+                  <rect class="bar win" x="284" y="10" width="20.2" height="182"><title>[0,0 ; 0,5[ R : 3 trade(s)</title></rect>
+                  <rect class="bar win" x="305.2" y="192" width="20.2" height="0"><title>[0,5 ; 1,0[ R : 0 trade(s)</title></rect>
+                  <rect class="bar win" x="326.4" y="131.33" width="20.2" height="60.67"><title>[1,0 ; 1,5[ R : 1 trade(s)</title></rect>
+                  <rect class="bar win" x="347.6" y="192" width="20.2" height="0"><title>[1,5 ; 2,0[ R : 0 trade(s)</title></rect>
+                  <rect class="bar win" x="368.8" y="192" width="20.2" height="0"><title>[2,0 ; 2,5[ R : 0 trade(s)</title></rect>
+                  <rect class="bar win" x="390" y="192" width="20.2" height="0"><title>[2,5 ; 3,0[ R : 0 trade(s)</title></rect>
+                  <rect class="bar win" x="411.2" y="192" width="20.2" height="0"><title>[3,0 ; 3,5[ R : 0 trade(s)</title></rect>
+                  <rect class="bar win" x="432.4" y="131.33" width="20.2" height="60.67"><title>[3,5 ; 4,0[ R : 1 trade(s)</title></rect>
+                  <rect class="bar win" x="453.6" y="192" width="20.2" height="0"><title>[4,0 ; 4,5[ R : 0 trade(s)</title></rect>
+                  <rect class="bar win" x="474.8" y="192" width="20.2" height="0"><title>[4,5 ; 5,0[ R : 0 trade(s)</title></rect>
+                  <rect class="bar win" x="496" y="192" width="20.2" height="0"><title>[5,0 ; 5,5[ R : 0 trade(s)</title></rect>
+                  <rect class="bar win" x="517.2" y="192" width="20.2" height="0"><title>[5,5 ; 6,0[ R : 0 trade(s)</title></rect>
+                  <rect class="bar win" x="538.4" y="192" width="20.2" height="0"><title>[6,0 ; 6,5[ R : 0 trade(s)</title></rect>
+                  <rect class="bar win" x="559.6" y="192" width="20.2" height="0"><title>[6,5 ; 7,0[ R : 0 trade(s)</title></rect>
+                  <rect class="bar win" x="580.8" y="192" width="20.2" height="0"><title>[7,0 ; 7,5[ R : 0 trade(s)</title></rect>
+                  <rect class="bar win" x="602" y="192" width="20.2" height="0"><title>[7,5 ; 8,0[ R : 0 trade(s)</title></rect>
+                  <rect class="bar win" x="623.2" y="192" width="20.2" height="0"><title>[8,0 ; 8,5[ R : 0 trade(s)</title></rect>
+                  <rect class="bar win" x="644.4" y="192" width="20.2" height="0"><title>[8,5 ; 9,0[ R : 0 trade(s)</title></rect>
+                  <rect class="bar win" x="665.6" y="192" width="20.2" height="0"><title>[9,0 ; 9,5[ R : 0 trade(s)</title></rect>
+                  <rect class="bar win" x="686.8" y="192" width="20.2" height="0"><title>[9,5 ; 10,0[ R : 0 trade(s)</title></rect>
+                          <text class="tick" x="114.4" y="212" text-anchor="middle">−4</text>
+                  <text class="tick" x="199.2" y="212" text-anchor="middle">−2</text>
+                  <text class="tick" x="284" y="212" text-anchor="middle">0</text>
+                  <text class="tick" x="368.8" y="212" text-anchor="middle">2</text>
+                  <text class="tick" x="453.6" y="212" text-anchor="middle">4</text>
+                  <text class="tick" x="538.4" y="212" text-anchor="middle">6</text>
+                  <text class="tick" x="623.2" y="212" text-anchor="middle">8</text>
+                  <text class="tick" x="708" y="212" text-anchor="middle">10</text>
+                <line class="axis" x1="72" x2="708" y1="192" y2="192"/>
+                  <line class="zero" x1="284" x2="284" y1="10" y2="192"/>
+              </svg>
+      <figcaption>Trades par multiple de R ; barres pleines à droite de la ligne zéro (gains), barres claires cernées d'un trait à gauche (pertes). Hors bornes : 0 sous −5 R, 0 au-dessus de 10 R.</figcaption>
+    </figure>
+  
+  <h3>MFE contre MAE</h3>
+      <figure>
+      <svg class="chart" viewBox="0 0 720 280" role="img" aria-labelledby="scatter-titre">
+        <title id="scatter-titre">Nuage MFE contre MAE, un point par trade</title>
+                  <line class="grid" x1="72" x2="708" y1="252" y2="252"/>
+          <text class="tick" x="66" y="256" text-anchor="end">0,00</text>
+                  <line class="grid" x1="72" x2="708" y1="177.56" y2="177.56"/>
+          <text class="tick" x="66" y="181.56" text-anchor="end">5,00</text>
+                  <line class="grid" x1="72" x2="708" y1="103.13" y2="103.13"/>
+          <text class="tick" x="66" y="107.13" text-anchor="end">10,00</text>
+                  <line class="grid" x1="72" x2="708" y1="28.69" y2="28.69"/>
+          <text class="tick" x="66" y="32.69" text-anchor="end">15,00</text>
+                          <text class="tick" x="143.59" y="272" text-anchor="middle">−6,00</text>
+                  <text class="tick" x="237.66" y="272" text-anchor="middle">−5,00</text>
+                  <text class="tick" x="331.73" y="272" text-anchor="middle">−4,00</text>
+                  <text class="tick" x="425.8" y="272" text-anchor="middle">−3,00</text>
+                  <text class="tick" x="519.86" y="272" text-anchor="middle">−2,00</text>
+                  <text class="tick" x="613.93" y="272" text-anchor="middle">−1,00</text>
+                  <text class="tick" x="708" y="272" text-anchor="middle">0,00</text>
+                <line class="axis" x1="72" x2="708" y1="252" y2="252"/>
+                              <circle class="pt win" cx="636.49" cy="203.82" r="4"><title>Lot 1 : gagnant</title></circle>
+                                        <rect class="pt loss" x="374.41" y="248.5" width="7" height="7"><title>Lot 2 : perdant</title></rect>
+                                        <rect class="pt loss" x="68.5" y="248.5" width="7" height="7"><title>Lot 3 : perdant</title></rect>
+                                        <circle class="pt win" cx="567.81" cy="210.1" r="4"><title>Lot 4 : gagnant</title></circle>
+                                        <circle class="pt win" cx="652.07" cy="167.27" r="4"><title>Lot 5 : gagnant</title></circle>
+                                        <rect class="pt loss" x="384.72" y="248.5" width="7" height="7"><title>Lot 6 : perdant</title></rect>
+                                        <circle class="pt win" cx="407.55" cy="147.34" r="4"><title>Lot 7 : gagnant</title></circle>
+                                        <circle class="pt win" cx="639.57" cy="201.62" r="4"><title>Lot 8 : gagnant</title></circle>
+                                        <rect class="pt loss" x="190.88" y="160.43" width="7" height="7"><title>Lot 9 : perdant</title></rect>
+                                        <circle class="pt win" cx="544.26" cy="10" r="4"><title>Lot 10 : gagnant</title></circle>
+                        </svg>
+      <figcaption>Horizontal : MAE (pire excursion défavorable, monnaie de cotation). Vertical : MFE (meilleure excursion favorable). Cercle : trade gagnant ; carré : trade perdant ou nul.</figcaption>
+    </figure>
+  
+  <div class="cols">
+    <table class="kv">
+      <caption>PnL net sans les meilleurs trades</caption>
+      <thead><tr><th scope="col">Sans les</th><th scope="col" class="num">PnL net</th></tr></thead>
+      <tbody>
+              <tr><th scope="row">1 meilleur</th><td class="num">−15,56</td></tr>
+              <tr><th scope="row">3 meilleurs</th><td class="num">−23,91</td></tr>
+              <tr><th scope="row">5 meilleurs</th><td class="num">−25,84</td></tr>
+              <tr><th scope="row">10 meilleurs</th><td class="num">—</td></tr>
+            </tbody>
+    </table>
+    <table class="kv">
+      <caption>Par année de sortie (UTC)</caption>
+      <thead><tr><th scope="col">Année</th><th scope="col" class="num">Trades</th><th scope="col" class="num">Gagnants</th><th scope="col" class="num">PnL net</th></tr></thead>
+      <tbody>
+              <tr><th scope="row">2021</th><td class="num">10</td><td class="num">6</td><td class="num">−2,71</td></tr>
+            </tbody>
+    </table>
+    <table class="kv">
+      <caption>Par type de sortie</caption>
+      <thead><tr><th scope="col">Type</th><th scope="col" class="num">Trades</th><th scope="col" class="num">PnL net</th></tr></thead>
+      <tbody>
+              <tr><th scope="row"><code>end_of_window</code></th><td class="num">1</td><td class="num">12,85</td></tr>
+              <tr><th scope="row"><code>gap_forced_exit</code></th><td class="num">1</td><td class="num">−7,49</td></tr>
+              <tr><th scope="row"><code>stop_loss</code></th><td class="num">2</td><td class="num">−11,12</td></tr>
+              <tr><th scope="row"><code>strategy_exit</code></th><td class="num">4</td><td class="num">1,44</td></tr>
+              <tr><th scope="row"><code>trailing_stop</code></th><td class="num">2</td><td class="num">1,61</td></tr>
+            </tbody>
+    </table>
+  </div>
+  <h3>Par paire</h3>
+    <div class="scroll">
+    <table class="data">
+      <thead><tr><th scope="col">Paire</th><th scope="col" class="num">Trades</th><th scope="col" class="num">Taux de gain</th><th scope="col" class="num">Espérance (R)</th><th scope="col" class="num">PnL net</th><th scope="col" class="num">Exposition</th></tr></thead>
+      <tbody>
+              <tr><th scope="row"><code>BTC-USD</code></th><td class="num">6</td><td class="num">66,67 %</td><td class="num">0,27</td><td class="num pos">8,82</td><td class="num">41,05 %</td></tr>
+              <tr><th scope="row"><code>ETH-USD</code></th><td class="num">4</td><td class="num">50,00 %</td><td class="num">−0,83</td><td class="num neg">−11,52</td><td class="num">25,79 %</td></tr>
+            </tbody>
+    </table>
+    </div>
+    <p class="absent-note"><strong>Absent au jalon 1.</strong> Répartition par pli du walk-forward : jalon 2.</p>
+  
+</section>
+  <section id="pourquoi" class="section" aria-labelledby="pourquoi-titre">
+  <h2 id="pourquoi-titre">Pourquoi pas de trade</h2>
+  <p class="note">Entonnoir des signaux, dans l'ordre : une ligne à zéro n'est détaillée que si elle compte.</p>
+  <table class="kv wide">
+    <caption>Entrées</caption>
+    <tbody>
+      <tr><th scope="row">Évaluations de la stratégie</th><td class="num">768</td></tr>
+              <tr><th scope="row">Signaux d'entrée bruts (déclarés par la stratégie)</th><td class="num">18</td></tr>
+                            <tr class="sub"><th scope="row">dont filtrés : <code>stop_not_positive</code></th><td class="num">1</td></tr>
+                                      <tr class="sub"><th scope="row">dont filtrés : <code>trend_filter</code></th><td class="num">2</td></tr>
+                              <tr><th scope="row">Signaux d'entrée émis</th><td class="num">15</td></tr>
+                      <tr class="sub"><th scope="row">dont rejetés : <code>below_minimum</code></th><td class="num">1</td></tr>
+                                                                                      <tr class="sub"><th scope="row">dont rejetés : <code>insufficient_quote</code></th><td class="num">1</td></tr>
+                                                                                                                                                                                <tr class="sub"><th scope="row">dont rejetés : <code>max_positions</code></th><td class="num">3</td></tr>      <tr><th scope="row">Ordres d'entrée acceptés</th><td class="num">10</td></tr>
+                                                                                                <tr><th scope="row">Lots ouverts</th><td class="num">10</td></tr>
+      <tr><th scope="row">Trades</th><td class="num">10</td></tr>
+    </tbody>
+  </table>
+  <div class="cols">
+    <table class="kv">
+      <caption>Sorties et autres signaux</caption>
+      <tbody>
+        <tr><th scope="row">Signaux de sortie émis</th><td class="num">5</td></tr>
+        <tr><th scope="row">Ordres de sortie acceptés</th><td class="num">5</td></tr>
+        <tr><th scope="row">Autres signaux émis (stop, annulation)</th><td class="num">2</td></tr>
+        <tr><th scope="row">Autres signaux acceptés</th><td class="num">2</td></tr>
+        <tr><th scope="row">Signaux émis / acceptés / rejetés</th><td class="num">22 / 17 / 5</td></tr>
+                            <tr class="sub"><th scope="row">rejet : <code>below_minimum</code></th><td class="num">1</td></tr>
+                                                                                                              <tr class="sub"><th scope="row">rejet : <code>insufficient_quote</code></th><td class="num">1</td></tr>
+                                                                                                                                                                                                                                  <tr class="sub"><th scope="row">rejet : <code>max_positions</code></th><td class="num">3</td></tr>      </tbody>
+    </table>
+    <table class="kv">
+      <caption>Trades par type de sortie</caption>
+      <tbody>
+                  <tr><th scope="row"><code>end_of_window</code></th><td class="num">1</td></tr>
+                  <tr><th scope="row"><code>gap_forced_exit</code></th><td class="num">1</td></tr>
+                  <tr><th scope="row"><code>limit_sell</code></th><td class="num">0</td></tr>
+                  <tr><th scope="row"><code>stop_loss</code></th><td class="num">2</td></tr>
+                  <tr><th scope="row"><code>strategy_exit</code></th><td class="num">4</td></tr>
+                  <tr><th scope="row"><code>take_profit</code></th><td class="num">0</td></tr>
+                  <tr><th scope="row"><code>time_stop</code></th><td class="num">0</td></tr>
+                  <tr><th scope="row"><code>trailing_stop</code></th><td class="num">2</td></tr>
+              </tbody>
+    </table>
+    <table class="kv">
+      <caption>Compteurs du simulateur non nuls</caption>
+      <tbody>
+                            <tr><th scope="row"><code>bars_zero_volume_blocked</code></th><td class="num">2</td></tr>
+                                                                                            <tr><th scope="row"><code>entries_capped_by_cash</code></th><td class="num">10</td></tr>
+                                                                                                              <tr><th scope="row"><code>fills</code></th><td class="num">20</td></tr>
+                                                        <tr><th scope="row"><code>fills_market</code></th><td class="num">15</td></tr>
+                                                                          <tr><th scope="row"><code>move_stops_applied</code></th><td class="num">2</td></tr>
+                                                                                                                                <tr><th scope="row"><code>stops_triggered</code></th><td class="num">4</td></tr>
+                                                            </tbody>
+    </table>
+  </div>
+  <p class="note"><code>bars_zero_volume_blocked</code> est toujours affiché : une minute sans volume ne donne aucun fill.</p>
+</section>
+  <section id="univers" class="section" aria-labelledby="univers-titre">
+  <h2 id="univers-titre">Univers et entonnoir par paire</h2>
+  <p class="note">Univers dans l'ordre de la config : <strong>BTC-USD, ETH-USD</strong>. Une jambe par paire, un cash commun. L'entonnoir de chaque paire s'ajoute à l'entonnoir global ci-dessus ; « cash » et « max_positions » sont des contraintes de portefeuille, pas des défauts d'exécutabilité.</p>
+    <div class="scroll">
+  <table class="data">
+    <thead>
+      <tr>
+        <th scope="col">Paire</th><th scope="col" class="num">Évaluations</th><th scope="col" class="num">Signaux d'entrée</th>
+        <th scope="col" class="num">Ordres d'entrée</th><th scope="col" class="num">Lots ouverts</th><th scope="col" class="num">Trades</th>
+        <th scope="col" class="num"><code>min_notional</code></th><th scope="col" class="num"><code>lot_step</code></th>
+        <th scope="col" class="num"><code>cash</code></th><th scope="col" class="num"><code>max_positions</code></th>
+        <th scope="col" class="num"><code>volume</code></th><th scope="col" class="num"><code>other</code></th>
+      </tr>
+    </thead>
+    <tbody>
+          <tr>
+        <th scope="row"><code>BTC-USD</code></th>
+        <td class="num">384</td><td class="num">8</td>
+        <td class="num">6</td><td class="num">6</td><td class="num">6</td>
+                  <td class="num">0</td>
+                  <td class="num">0</td>
+                  <td class="num">1</td>
+                  <td class="num">1</td>
+                  <td class="num">0</td>
+                  <td class="num">0</td>
+              </tr>
+          <tr>
+        <th scope="row"><code>ETH-USD</code></th>
+        <td class="num">384</td><td class="num">7</td>
+        <td class="num">4</td><td class="num">4</td><td class="num">4</td>
+                  <td class="num">1</td>
+                  <td class="num">0</td>
+                  <td class="num">0</td>
+                  <td class="num">2</td>
+                  <td class="num">0</td>
+                  <td class="num">0</td>
+              </tr>
+        </tbody>
+  </table>
+  </div>
+  <p class="note">Colonnes de rejets : entrées refusées, par motif. <code>min_notional</code> : quantité sous le minimum d'ordre (<code>minSz</code>). <code>lot_step</code> : moins d'un pas de quantité. <code>volume</code> : règle de 0,5 % du volume de la minute.</p>
+    <div class="cols">
+        <table class="kv">
+      <caption>Portefeuille</caption>
+      <tbody>
+        <tr><th scope="row">Jambes</th><td class="num">2</td></tr>
+        <tr><th scope="row">Minutes de la grille commune</th><td class="num">12 270</td></tr>
+        <tr><th scope="row">Positions ouvertes au plus</th><td class="num">2</td></tr>
+        <tr><th scope="row">Plafond de positions atteint</th><td class="num">3 fois</td></tr>
+        <tr><th scope="row">Coût maximal engagé / capital initial</th><td class="num">62,18 %</td></tr>
+        <tr><th scope="row">Sorties sur trou de cotation</th><td class="num">1</td></tr>
+        <tr><th scope="row">Sizing</th><td><code>research</code></td></tr>
+        <tr><th scope="row">Capital initial</th><td class="num">300,00</td></tr>
+      </tbody>
+    </table>
+            <table class="kv">
+      <caption>Priorité des signaux</caption>
+      <tbody>
+        <tr><th scope="row">Règle</th><td><code>signal_time_then_liquidity_90d</code></td></tr>
+        <tr><th scope="row">Fenêtre de liquidité</th><td class="num">90 jours</td></tr>
+        <tr><th scope="row">Source du rang</th><td><code>dataset</code> (kraken)</td></tr>
+        <tr><th scope="row">Jours classés</th><td class="num">8</td></tr>
+        <tr><th scope="row">Jours à historique partiel</th><td class="num">8</td></tr>
+      </tbody>
+    </table>
+      </div>
+</section>
+    <section id="executabilite" class="section" aria-labelledby="executabilite-titre">
+  <h2 id="executabilite-titre">Exécutabilité (G0) et G1</h2>
+  <p class="note">Mesure publiée par <code>tv4</code> sur ce run : elle n'est pas le franchissement des portes G0 ou G1, qui restent absentes au jalon 1.</p>
+
+  <h3>Liste live (règle G0)</h3>
+      <p>Capital de référence : <strong>300,00</strong> · règle <code>g0_volume_then_min_size_then_state</code>.</p>
+          <p class="note"><strong>Attention.</strong> Les données ne sont pas les carnets d'exécution OKX en USDC : cette liste ne vaut pas pour l'exécution réelle, elle montre seulement que la règle tourne.</p>
+        <div class="scroll">
+    <table class="data">
+      <thead>
+        <tr>
+          <th scope="col">Paire</th><th scope="col">Instrument OKX</th><th scope="col" class="num">Ordres d'entrée</th>
+          <th scope="col" class="num">Notional de référence</th><th scope="col" class="num">Volume quote 1m médian</th>
+          <th scope="col" class="num">Plafond de volume</th><th scope="col" class="num"><code>minSz</code></th>
+          <th scope="col" class="num">Close médian</th><th scope="col" class="num">Ordre minimum</th>
+          <th scope="col">État</th><th scope="col">Verdict</th>
+        </tr>
+      </thead>
+      <tbody>
+              <tr>
+          <th scope="row"><code>BTC-USD</code></th>
+          <td><code>BTC-USDC</code></td>
+          <td class="num">6</td>
+          <td class="num">61,20</td>
+          <td class="num">41 500,00</td>
+          <td class="num">207,50</td>
+          <td class="num">0,00010000</td>
+          <td class="num">29 200,00</td>
+          <td class="num">2,92</td>
+          <td><code>live</code></td>
+          <td><code>executable</code></td>
+        </tr>
+              <tr>
+          <th scope="row"><code>ETH-USD</code></th>
+          <td><code>ETH-USDC</code></td>
+          <td class="num">4</td>
+          <td class="num">58,00</td>
+          <td class="num">9 100,00</td>
+          <td class="num">45,50</td>
+          <td class="num">0,00100000</td>
+          <td class="num">730,00</td>
+          <td class="num">0,73</td>
+          <td><code>suspend</code></td>
+          <td><code>rejected_volume</code></td>
+        </tr>
+            </tbody>
+    </table>
+    </div>
+    <p class="note">Tests dans l'ordre : volume (0,5 % du volume quote 1m médian, minutes absentes comptées pour 0, au moins égal au notional de référence), puis minimum d'ordre (notional de référence au moins égal à <code>minSz</code> × close médian), puis état <code>live</code>. Une paire sans entrée est <code>indeterminate</code> ; sans fichier d'instruments OKX, le verdict est <code>not_applicable</code>.</p>
+    <div class="cols">
+      <div>
+        <h3>Paires retenues</h3>
+                  <ul><li><code>BTC-USD</code></li></ul>
+              </div>
+      <div>
+        <h3>Paires écartées</h3>
+                  <table class="kv">
+            <thead><tr><th scope="col">Paire</th><th scope="col">Motif</th></tr></thead>
+            <tbody>
+                          <tr><th scope="row"><code>ETH-USD</code></th><td><code>rejected_volume</code></td></tr>
+                        </tbody>
+          </table>
+              </div>
+    </div>
+  
+  <h3>G1 : entrées exécutables au capital réel</h3>
+      <table class="kv">
+      <tbody>
+        <tr><th scope="row">Verdict</th><td><strong><code>fail</code></strong></td></tr>
+        <tr><th scope="row">Part des entrées exécutables</th><td class="num">90,91 % (seuil 95,00 %)</td></tr>
+        <tr><th scope="row">Mesuré au capital de référence</th><td>oui</td></tr>
+                  <tr class="sub"><th scope="row"><code>fills</code></th><td class="num">10</td></tr>
+                  <tr class="sub"><th scope="row"><code>rejected_volume</code></th><td class="num">0</td></tr>
+                  <tr class="sub"><th scope="row"><code>rejected_min_notional</code></th><td class="num">1</td></tr>
+                  <tr class="sub"><th scope="row"><code>rejected_lot_step</code></th><td class="num">0</td></tr>
+                  <tr class="sub"><th scope="row"><code>rejected_cash</code></th><td class="num">1</td></tr>
+                  <tr class="sub"><th scope="row"><code>rejected_max_positions</code></th><td class="num">3</td></tr>
+              </tbody>
+    </table>
+    <p class="note">Part = lots ouverts / (lots ouverts + rejets <code>volume</code>, <code>min_notional</code> et <code>lot_step</code>). Les rejets <code>cash</code> et <code>max_positions</code> sont publiés à côté et ne comptent pas. </p>
+  </section>
+<section id="trades" class="section" aria-labelledby="trades-titre">
+  <h2 id="trades-titre">Trades</h2>
+      <p class="note">10 trades, dans l'ordre du simulateur. Export complet : <code>trades.csv</code>.</p>
+    <div class="scroll">
+  <table class="data">
+    <thead>
+      <tr>
+        <th scope="col">Lot</th><th scope="col">Paire</th><th scope="col">Entrée</th><th scope="col">Sortie</th>
+        <th scope="col" class="num">Prix d'entrée</th><th scope="col" class="num">Prix de sortie</th>
+        <th scope="col" class="num">Durée</th><th scope="col" class="num">Frais</th><th scope="col" class="num">Slippage</th>
+        <th scope="col" class="num">PnL net</th><th scope="col" class="num">R</th>
+        <th scope="col" class="num">MFE</th><th scope="col" class="num">MAE</th>
+        <th scope="col">Type de sortie</th><th scope="col">Tags</th>
+      </tr>
+    </thead>
+    <tbody>
+          <tr>
+        <td class="num">1</td>
+        <td><code>BTC-USD</code></td><td>2021-01-01 05:01 UTC</td>
+        <td>2021-01-01 11:45 UTC</td>
+        <td class="num">29 250,02</td>
+        <td class="num">29 571,41</td>
+        <td class="num">6 h 44 min</td>
+        <td class="num">1,98</td>
+        <td class="num">0,28</td>
+        <td class="num pos">1,11</td>
+        <td class="num">0,32</td>
+        <td class="num">3,24</td>
+        <td class="num">−0,76</td>
+        <td><code>strategy_exit</code></td>
+        <td><code>sma_cross_up</code> → <code>sma_cross_down</code></td>
+      </tr>
+          <tr>
+        <td class="num">2</td>
+        <td><code>ETH-USD</code></td><td>2021-01-01 14:31 UTC</td>
+        <td>2021-01-01 15:50 UTC</td>
+        <td class="num">30 021,60</td>
+        <td class="num">29 631,68</td>
+        <td class="num">1 h 19 min</td>
+        <td class="num">1,97</td>
+        <td class="num">0,28</td>
+        <td class="num neg">−5,64</td>
+        <td class="num">−1,60</td>
+        <td class="num">0,00</td>
+        <td class="num">−3,51</td>
+        <td><code>stop_loss</code></td>
+        <td><code>sma_cross_up</code> → <code></code></td>
+      </tr>
+          <tr>
+        <td class="num">3</td>
+        <td><code>BTC-USD</code></td><td>2021-01-01 21:01 UTC</td>
+        <td>2021-01-02 11:00 UTC</td>
+        <td class="num">30 275,53</td>
+        <td class="num">29 609,59</td>
+        <td class="num">13 h 59 min</td>
+        <td class="num">1,92</td>
+        <td class="num">0,27</td>
+        <td class="num neg">−8,03</td>
+        <td class="num">−2,31</td>
+        <td class="num">0,00</td>
+        <td class="num">−6,76</td>
+        <td><code>strategy_exit</code></td>
+        <td><code>sma_cross_up</code> → <code>sma_cross_down</code></td>
+      </tr>
+          <tr>
+        <td class="num">4</td>
+        <td><code>ETH-USD</code></td><td>2021-01-02 15:16 UTC</td>
+        <td>2021-01-02 23:30 UTC</td>
+        <td class="num">29 596,59</td>
+        <td class="num">29 892,25</td>
+        <td class="num">8 h 14 min</td>
+        <td class="num">1,90</td>
+        <td class="num">0,27</td>
+        <td class="num pos">0,80</td>
+        <td class="num">0,24</td>
+        <td class="num">2,81</td>
+        <td class="num">−1,49</td>
+        <td><code>trailing_stop</code></td>
+        <td><code>sma_cross_up</code> → <code></code></td>
+      </tr>
+          <tr>
+        <td class="num">5</td>
+        <td><code>BTC-USD</code></td><td>2021-01-03 04:01 UTC</td>
+        <td>2021-01-03 11:10 UTC</td>
+        <td class="num">30 828,41</td>
+        <td class="num">31 462,16</td>
+        <td class="num">7 h 9 min</td>
+        <td class="num">1,92</td>
+        <td class="num">0,27</td>
+        <td class="num pos">3,65</td>
+        <td class="num">1,08</td>
+        <td class="num">5,69</td>
+        <td class="num">−0,59</td>
+        <td><code>strategy_exit</code></td>
+        <td><code>sma_cross_up</code> → <code>sma_cross_down</code></td>
+      </tr>
+          <tr>
+        <td class="num">6</td>
+        <td><code>BTC-USD</code></td><td>2021-01-03 20:31 UTC</td>
+        <td>2021-01-03 22:50 UTC</td>
+        <td class="num">30 716,35</td>
+        <td class="num">30 317,43</td>
+        <td class="num">2 h 19 min</td>
+        <td class="num">1,91</td>
+        <td class="num">0,27</td>
+        <td class="num neg">−5,47</td>
+        <td class="num">−1,60</td>
+        <td class="num">0,00</td>
+        <td class="num">−3,40</td>
+        <td><code>stop_loss</code></td>
+        <td><code>sma_cross_up</code> → <code></code></td>
+      </tr>
+          <tr>
+        <td class="num">7</td>
+        <td><code>BTC-USD</code></td><td>2021-01-04 05:31 UTC</td>
+        <td>2021-01-05 06:30 UTC</td>
+        <td class="num">29 821,00</td>
+        <td class="num">30 553,42</td>
+        <td class="num">1 j 0 h</td>
+        <td class="num">1,91</td>
+        <td class="num">0,27</td>
+        <td class="num pos">4,70</td>
+        <td class="num">—</td>
+        <td class="num">7,03</td>
+        <td class="num">−3,19</td>
+        <td><code>strategy_exit</code></td>
+        <td><code>sma_cross_up</code> → <code>sma_cross_down</code></td>
+      </tr>
+          <tr>
+        <td class="num">8</td>
+        <td><code>ETH-USD</code></td><td>2021-01-05 16:31 UTC</td>
+        <td>2021-01-06 07:30 UTC</td>
+        <td class="num">29 655,22</td>
+        <td class="num">29 951,42</td>
+        <td class="num">14 h 59 min</td>
+        <td class="num">1,93</td>
+        <td class="num">0,27</td>
+        <td class="num pos">0,81</td>
+        <td class="num">0,24</td>
+        <td class="num">3,38</td>
+        <td class="num">−0,73</td>
+        <td><code>trailing_stop</code></td>
+        <td><code>sma_cross_up</code> → <code></code></td>
+      </tr>
+          <tr>
+        <td class="num">9</td>
+        <td><code>ETH-USD</code></td><td>2021-01-06 17:31 UTC</td>
+        <td>2021-01-07 18:30 UTC</td>
+        <td class="num">28 193,39</td>
+        <td class="num">27 619,58</td>
+        <td class="num">1 j 0 h</td>
+        <td class="num">1,90</td>
+        <td class="num">0,27</td>
+        <td class="num neg">−7,49</td>
+        <td class="num">−2,18</td>
+        <td class="num">5,92</td>
+        <td class="num">−5,46</td>
+        <td><code>gap_forced_exit</code></td>
+        <td><code>sma_cross_up</code> → <code></code></td>
+      </tr>
+          <tr>
+        <td class="num">10</td>
+        <td><code>BTC-USD</code></td><td>2021-01-08 04:31 UTC</td>
+        <td>2021-01-09 04:10 UTC</td>
+        <td class="num">26 863,73</td>
+        <td class="num">28 348,02</td>
+        <td class="num">23 h 39 min</td>
+        <td class="num">1,92</td>
+        <td class="num">0,27</td>
+        <td class="num pos">12,85</td>
+        <td class="num">3,85</td>
+        <td class="num">16,26</td>
+        <td class="num">−1,74</td>
+        <td><code>end_of_window</code> (forcée)</td>
+        <td><code>sma_cross_up</code> → <code></code></td>
+      </tr>
+        </tbody>
+  </table>
+  </div>
+  <p class="absent-note"><strong>Absent au jalon 1.</strong> Tri, pagination (le rapport est statique, sans JavaScript) et colonne pli du walk-forward.</p>
+</section>
+  <section id="annexe" class="section" aria-labelledby="annexe-titre">
+  <h2 id="annexe-titre">Annexe</h2>
+  <div class="cols">
+    <table class="kv">
+      <caption>Configuration</caption>
+      <tbody>
+        <tr><th scope="row">Stratégie</th><td>sma_cross 1.1.0</td></tr>
+                  <tr class="sub"><th scope="row"><code>fast</code></th><td class="num">20</td></tr>
+                  <tr class="sub"><th scope="row"><code>slow</code></th><td class="num">50</td></tr>
+                  <tr class="sub"><th scope="row"><code>stop_atr_mult</code></th><td class="num">2</td></tr>
+                  <tr class="sub"><th scope="row"><code>tf</code></th><td class="num">15m</td></tr>
+                <tr><th scope="row">Grille de frais</th><td>okx</td></tr>
+        <tr class="sub"><th scope="row">maker</th><td class="num">20,00 bps</td></tr>
+        <tr class="sub"><th scope="row">taker</th><td class="num">35,00 bps</td></tr>
+        <tr><th scope="row">Slippage</th><td class="num">5,00 bps</td></tr>
+        <tr><th scope="row">Capital initial</th><td class="num">300,00</td></tr>
+        <tr><th scope="row"><code>min_trades</code></th><td class="num">30</td></tr>
+        <tr><th scope="row">Warmup</th><td class="num">50 bougies</td></tr>
+        <tr><th scope="row">Version du moteur (hachée)</th><td>0.1.0</td></tr>
+      </tbody>
+    </table>
+    <table class="kv">
+      <caption>Règles du simulateur</caption>
+      <tbody>
+                  <tr><th scope="row"><code>activation_delay_bars</code></th><td class="num">1</td></tr>
+                  <tr><th scope="row"><code>intrabar</code></th><td class="num">stop_first</td></tr>
+                  <tr><th scope="row"><code>limit_cross_ticks</code></th><td class="num">1</td></tr>
+                  <tr><th scope="row"><code>market_buy_cash_margin</code></th><td class="num">0.05</td></tr>
+                  <tr><th scope="row"><code>max_pending</code></th><td class="num">64</td></tr>
+                  <tr><th scope="row"><code>max_volume_share</code></th><td class="num">0.005</td></tr>
+                  <tr><th scope="row"><code>stop_stress_bps</code></th><td class="num">0</td></tr>
+                  <tr><th scope="row"><code>tp_ignored_on_fill_bar</code></th><td class="num">true</td></tr>
+                  <tr><th scope="row"><code>version</code></th><td class="num">s6.1</td></tr>
+                  <tr><th scope="row"><code>zero_volume_no_fill</code></th><td class="num">true</td></tr>
+              </tbody>
+    </table>
+        <table class="kv">
+      <caption>Instrument BTC-USD</caption>
+      <tbody>
+                  <tr><th scope="row"><code>lot_size</code></th><td class="num">0.00000001</td></tr>
+                  <tr><th scope="row"><code>min_notional</code></th><td class="num">0</td></tr>
+                  <tr><th scope="row"><code>min_qty</code></th><td class="num">0.0001</td></tr>
+                  <tr><th scope="row"><code>tick_size</code></th><td class="num">0.1</td></tr>
+              </tbody>
+    </table>
+          <table class="kv">
+      <caption>Instrument ETH-USD</caption>
+      <tbody>
+                  <tr><th scope="row"><code>lot_size</code></th><td class="num">0.00000001</td></tr>
+                  <tr><th scope="row"><code>min_notional</code></th><td class="num">0</td></tr>
+                  <tr><th scope="row"><code>min_qty</code></th><td class="num">0.001</td></tr>
+                  <tr><th scope="row"><code>tick_size</code></th><td class="num">0.01</td></tr>
+              </tbody>
+    </table>
+      <table class="kv">
+      <caption>Portefeuille (haché hors capital initial)</caption>
+      <tbody>
+                  <tr><th scope="row"><code>liquidity_window_days</code></th><td class="num">90</td></tr>
+                  <tr><th scope="row"><code>max_positions</code></th><td class="num">2</td></tr>
+                  <tr><th scope="row"><code>min_order_bump</code></th><td class="num">null</td></tr>
+                  <tr><th scope="row"><code>priority</code></th><td class="num">signal_time_then_liquidity_90d</td></tr>
+                  <tr><th scope="row"><code>quote_gap_ms</code></th><td class="num">604800000</td></tr>
+                  <tr><th scope="row"><code>regime</code></th><td class="num">null</td></tr>
+                  <tr><th scope="row"><code>sizing</code></th><td class="num">research</td></tr>
+                  <tr><th scope="row"><code>universe</code></th><td class="num">[&quot;BTC-USD&quot;,&quot;ETH-USD&quot;]</td></tr>
+              </tbody>
+    </table>
+  </div>
+  <h3>Écarts connus du simulateur</h3>
+  <ul>
+    <li><code>market_buy_cash_margin</code></li><li><code>stop_slippage_fixed</code></li><li><code>instrument_minimums_unvalidated</code></li><li><code>no_maker_fill_probability</code></li><li><code>exit_volume_rule_counted_not_rejected</code></li>  </ul>
+  <h3>Exécution</h3>
+  <table class="kv">
+    <tbody>
+      <tr><th scope="row"><code>started_at</code></th><td>2026-10-27T12:00:00Z</td></tr>
+      <tr><th scope="row">Chargement</th><td class="num">312 ms</td></tr>
+      <tr><th scope="row">Simulation</th><td class="num">41 ms</td></tr>
+      <tr><th scope="row">Commande complète</th><td class="num">398 ms</td></tr>
+      <tr><th scope="row"><code>equity_step</code></th><td>1h</td></tr>
+    </tbody>
+  </table>
+</section>
+</article>
+</body>
+</html>

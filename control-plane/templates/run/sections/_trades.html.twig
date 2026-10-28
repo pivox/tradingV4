@@ -19,7 +19,7 @@
         <th scope="col">Lot</th>{% if metrics.isPortfolio %}<th scope="col">Paire</th>{% endif %}<th scope="col">Entrée</th><th scope="col">Sortie</th>
         <th scope="col" class="num">Prix d'entrée</th><th scope="col" class="num">Prix de sortie</th>
         <th scope="col" class="num">Durée</th><th scope="col" class="num">Frais</th><th scope="col" class="num">Slippage</th>
-        <th scope="col" class="num">PnL net</th><th scope="col" class="num">R</th>
+        {% if metrics.isCosts %}<th scope="col" class="num">Spread</th>{% endif %}<th scope="col" class="num">PnL net</th><th scope="col" class="num">R</th>
         <th scope="col" class="num">MFE</th><th scope="col" class="num">MAE</th>
         <th scope="col">Type de sortie</th><th scope="col">Tags</th>
       </tr>
@@ -35,7 +35,7 @@
         <td class="num">{{ t.holdingMs|duration }}</td>
         <td class="num">{{ (t.entryFee + t.exitFee)|money }}</td>
         <td class="num">{{ (t.entrySlippage + t.exitSlippage)|money }}</td>
-        <td class="num {{ t.pnlNet < 0 ? 'neg' : 'pos' }}">{{ t.pnlNet|money }}</td>
+        {% if metrics.isCosts %}<td class="num">{{ t.spreadCost|money }}</td>{% endif %}<td class="num {{ t.pnlNet < 0 ? 'neg' : 'pos' }}">{{ t.pnlNet|money }}</td>
         <td class="num">{{ t.rMultiple|num(2) }}</td>
         <td class="num">{{ t.mfe|money }}</td>
         <td class="num">{{ t.mae|money }}</td>

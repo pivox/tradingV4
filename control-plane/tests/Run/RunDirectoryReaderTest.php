@@ -163,7 +163,7 @@ final class RunDirectoryReaderTest extends TestCase
         $copy->replace('manifest.json', '"tv4-manifest-s8"', '"tv4-manifest-s7"');
 
         $this->expectException(InvalidRunException::class);
-        $this->expectExceptionMessage('manifest.json : schéma inconnu : "tv4-manifest-s7" (attendu "tv4-manifest-s8" ou "tv4-manifest-s9")');
+        $this->expectExceptionMessage('manifest.json : schéma inconnu : "tv4-manifest-s7" (attendu "tv4-manifest-s8" ou "tv4-manifest-s9" ou "tv4-manifest-s10")');
         $this->reader()->read($copy->directory);
     }
 
@@ -173,7 +173,7 @@ final class RunDirectoryReaderTest extends TestCase
         $copy->replace('metrics.json', '"tv4-metrics-s8"', '"tv4-metrics-s6"');
 
         $this->expectException(InvalidRunException::class);
-        $this->expectExceptionMessage('metrics.json : schéma inconnu : "tv4-metrics-s6" (attendu "tv4-metrics-s8" ou "tv4-metrics-s9")');
+        $this->expectExceptionMessage('metrics.json : schéma inconnu : "tv4-metrics-s6" (attendu "tv4-metrics-s8" ou "tv4-metrics-s9" ou "tv4-metrics-s10")');
         $this->reader()->read($copy->directory);
     }
 
@@ -444,10 +444,10 @@ final class RunDirectoryReaderTest extends TestCase
     {
         $copy = RunFixture::copyPortfolio();
         $this->copy = $copy;
-        $copy->replace('manifest.json', '"tv4-manifest-s9"', '"tv4-manifest-s10"');
+        $copy->replace('manifest.json', '"tv4-manifest-s9"', '"tv4-manifest-s11"');
 
         $this->expectException(InvalidRunException::class);
-        $this->expectExceptionMessage('manifest.json : schéma inconnu : "tv4-manifest-s10" (attendu "tv4-manifest-s8" ou "tv4-manifest-s9")');
+        $this->expectExceptionMessage('manifest.json : schéma inconnu : "tv4-manifest-s11" (attendu "tv4-manifest-s8" ou "tv4-manifest-s9" ou "tv4-manifest-s10")');
         $this->reader()->read($copy->directory);
     }
 

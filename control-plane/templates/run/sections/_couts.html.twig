@@ -1,0 +1,130 @@
+{% set co = metrics.costs %}
+{% set ar = metrics.costArithmetic %}
+{% set cc = metrics.costCounters %}
+<section id="couts" class="section" aria-labelledby="couts-titre">
+  <h2 id="couts-titre">Coûts</h2>
+  <p class="note">Profil de coûts <strong><code>{{ co.profile }}</code></strong> : {% if co.gatesProfile %}profil de porte, jugé par les portes de G1{% else %}profil informatif, hors portes (04 §3){% endif %}. Paramètres résolus par jambe et arithmétique de docs/04-protocole-recherche.md §3.3, telles que <code>tv4</code> les a écrites ; le control plane ne recalcule rien.</p>
+  {% if not co.stressCalibrated %}
+  <p class="callout"><strong>Stress non calibré.</strong> La probabilité de stress des stops est provisoire : elle n'a pas encore été mesurée par <code>tv4 costs calibrate-stress</code> (écart <code>stop_stress_uncalibrated</code>).</p>
+  {% endif %}
+
+  <div class="cols">
+    <table class="kv">
+      <caption>Profil et fichiers</caption>
+      <tbody>
+        <tr><th scope="row">Profil</th><td><code>{{ co.profile }}</code></td></tr>
+        <tr><th scope="row">Rôle</th><td>{{ co.gatesProfile ? 'porte (baseline et adverse)' : 'informatif (maker)' }}</td></tr>
+        <tr><th scope="row">Grille de frais</th><td><code>{{ co.feeGrid }}</code> ({{ manifest.config.makerBps|num(2) }} bps maker, {{ manifest.config.takerBps|num(2) }} bps taker)</td></tr>
+        <tr><th scope="row">Modèle de coûts</th><td><code>{{ co.rulesVersion }}</code></td></tr>
+        <tr><th scope="row">Graine du tirage</th><td class="num">{{ co.seed|int }}</td></tr>
+        <tr><th scope="row">Fichier de coûts</th><td><code>{{ co.costsFile }}</code></td></tr>
+        <tr class="sub"><th scope="row"><code>costs_file_hash</code></th><td><code class="hash">{{ co.costsFileHash }}</code></td></tr>
+        <tr><th scope="row">Fichier de mesures</th><td>{% if co.costMeasuresFile is null and co.costMeasuresHash is null %}aucun : défauts de classe{% else %}{% if co.costMeasuresFile is not null %}<code>{{ co.costMeasuresFile }}</code>{% endif %}{% if co.costMeasuresHash is not null %} <code class="hash">{{ co.costMeasuresHash }}</code>{% endif %}{% endif %}</td></tr>
+        <tr><th scope="row">Stress calibré</th><td>{{ co.stressCalibrated|yesno }}{% if co.stressCalibrationRef is not null %} · mesure <code class="hash">{{ co.stressCalibrationRef }}</code>{% endif %}</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <h3>Paramètres par jambe</h3>
+  <div class="scroll">
+  <table class="data">
+    <thead>
+      <tr>
+        <th scope="col">Paire</th><th scope="col">Classe</th>
+        <th scope="col" class="num">Demi-spread (bp)</th><th scope="col" class="num">Slippage market (bp)</th>
+        <th scope="col" class="num">Stop p50 (bp)</th><th scope="col" class="num">Stop p95 (bp)</th><th scope="col" class="num">Stop p99 (bp)</th><th scope="col" class="num">Stop p100 (bp)</th>
+        <th scope="col" class="num">Stop moyen (bp)</th><th scope="col" class="num">Probabilité de stress</th><th scope="col" class="num">Chute de stress</th>
+        <th scope="col">Entrée</th><th scope="col" class="num">Sélection adverse (bp)</th>
+      </tr>
+    </thead>
+    <tbody>
+    {% for leg in co.legs %}
+      <tr>
+        <th scope="row"><code>{{ leg.symbol }}</code></th>
+        <td><code>{{ leg.class }}</code> ({{ leg.classSource == 'list' ? 'liste' : (leg.classSource == 'fallback' ? 'repli, classe la plus chère' : leg.classSource) }})</td>
+        <td class="num">{{ leg.halfSpreadBps|num(2) }} ({{ leg.spreadSource == 'measured' ? 'mesuré' : (leg.spreadSource == 'default' ? 'défaut' : leg.spreadSource) }})</td>
+        <td class="num">{{ leg.marketSlippageBps|num(2) }} ({{ leg.slippageSource == 'measured' ? 'mesuré' : (leg.slippageSource == 'default' ? 'défaut' : leg.slippageSource) }})</td>
+        <td class="num">{{ leg.stopSlippageBps.p50|num(2) }}</td>
+        <td class="num">{{ leg.stopSlippageBps.p95|num(2) }}</td>
+        <td class="num">{{ leg.stopSlippageBps.p99|num(2) }}</td>
+        <td class="num">{{ leg.stopSlippageBps.p100|num(2) }}</td>
+        <td class="num">{{ leg.stopSlippageMeanBps|num(3) }}</td>
+        <td class="num">{{ leg.stressProbability|pct }}</td>
+        <td class="num">{{ leg.stressDrop|pct }}</td>
+        <td>{% if leg.entry == 'maker' %}<code>maker</code>{% if leg.makerTtlMinutes is not null %}, TTL {{ leg.makerTtlMinutes|int }} min{% endif %}{% if leg.makerFillProbability is not null %}, fill {{ leg.makerFillProbability|pct }}{% endif %}{% else %}<code>{{ leg.entry }}</code>{% endif %}</td>
+        <td class="num">{{ leg.adverseSelectionBps|num(2) }}</td>
+      </tr>
+    {% else %}
+      <tr><td colspan="13" class="absent-note">Aucune jambe.</td></tr>
+    {% endfor %}
+    </tbody>
+  </table>
+  </div>
+  <p class="note">Le slippage de stop est un quantile linéaire par morceaux entre les nœuds p50, p95, p99 et p100 ; un stress tiré au hasard porte le fill à la chute indiquée si elle est pire. Le profil adverse multiplie le demi-spread, le slippage et la probabilité de stress ; le profil maker place l'entrée en limit et débite une sélection adverse sur chaque fill au repos.{% for leg in co.legs %}{% if leg.measuredP95HalfSpreadBps is not null %} Spread p95 mesuré pour <code>{{ leg.symbol }}</code> (non appliqué) : {{ leg.measuredP95HalfSpreadBps|num(2) }} bp.{% endif %}{% endfor %}</p>
+
+  <h3>Arithmétique du coût (04 §3.3)</h3>
+  <div class="cols">
+    <table class="kv">
+      <caption>Coût aller-retour</caption>
+      <tbody>
+        <tr><th scope="row">TF de décision</th><td><code>{{ ar.decisionTf }}</code> ({{ ar.protocolTf ? 'TF du protocole' : 'hors TF du protocole' }})</td></tr>
+        <tr><th scope="row">Coût aller-retour moyen</th><td class="num">{{ ar.roundTripCostMean|money }}</td></tr>
+        <tr><th scope="row">Taux moyen (coût / notional)</th><td class="num">{{ ar.roundTripCostRateMean|pct }}</td></tr>
+        <tr><th scope="row">Taux médian</th><td class="num">{{ ar.roundTripCostRateMedian|pct }}</td></tr>
+        {% for name, amount in ar.costBreakdown %}
+          <tr class="sub"><th scope="row">{{ name == 'fees' ? 'dont frais' : (name == 'slippage' ? 'dont slippage' : (name == 'spread' ? 'dont spread' : name)) }}</th><td class="num">{{ amount|money }}</td></tr>
+        {% endfor %}
+      </tbody>
+    </table>
+    <table class="kv">
+      <caption>Coût / stop et expectancy brute</caption>
+      <tbody>
+        <tr><th scope="row">Coût / stop moyen ({{ ar.tradesWithR|int }} trades avec R)</th><td class="num">{{ ar.costRMean|num(2) }} R</td></tr>
+        <tr><th scope="row">Coût / stop médian</th><td class="num">{{ ar.costRMedian|num(2) }} R</td></tr>
+        <tr><th scope="row">Seuil</th><td class="num">≤ {{ ar.costRLimit|num(2) }} R</td></tr>
+        <tr><th scope="row">Seuil respecté</th><td>{{ ar.costRPass|yesno }}</td></tr>
+        <tr><th scope="row">Expectancy brute (avant coûts)</th><td class="num">{{ ar.grossExpectancy|money }}</td></tr>
+        <tr><th scope="row">Coût / expectancy brute</th><td class="num">{{ ar.costToGross|pct }}</td></tr>
+        <tr><th scope="row">Coût ≤ 1/3 de l'expectancy brute</th><td>{{ ar.costThirdPass|yesno }}</td></tr>
+      </tbody>
+    </table>
+    <table class="kv">
+      <caption>Gain brut médian et hurdle</caption>
+      <tbody>
+        <tr><th scope="row">Gain brut médian (taux)</th><td class="num">{{ ar.grossMedianRate|pct }}</td></tr>
+        <tr><th scope="row">≥ 2 × son propre coût moyen</th><td>{{ ar.grossMedianVsOwnCostPass|yesno }}</td></tr>
+        <tr><th scope="row">Trades par an</th><td class="num">{{ ar.tradesPerYear|num(1) }}</td></tr>
+        <tr><th scope="row">Fraction de capital moyenne</th><td class="num">{{ ar.capitalFractionMean|pct }}</td></tr>
+        <tr><th scope="row">Hurdle annuel</th><td class="num">{{ ar.hurdleAnnual|pct }}</td></tr>
+      </tbody>
+    </table>
+  </div>
+  <p class="note">La porte officielle du gain brut médian compare au coût du profil baseline : elle figure dans <code>profiles.json</code>, pas dans ce run seul. Aucune de ces valeurs ne change le verdict du run.</p>
+
+  <h3>Compteurs de coûts</h3>
+  <div class="scroll">
+  <table class="data">
+    <thead>
+      <tr>
+        <th scope="col">Paire</th><th scope="col" class="num">Stops tirés</th><th scope="col" class="num">Stops en stress</th>
+        <th scope="col" class="num">Entrées converties</th><th scope="col" class="num">Prises à l'arrivée (taker)</th><th scope="col" class="num">Remplies en maker</th>
+        <th scope="col" class="num">Part maker</th><th scope="col" class="num">Tirages de fill</th><th scope="col" class="num">Fills tirés</th><th scope="col" class="num">Fills manqués</th>
+        <th scope="col" class="num">Spread (taker)</th><th scope="col" class="num">Sélection adverse</th>
+      </tr>
+    </thead>
+    <tbody>
+    {% for row in cc.byPair|merge([cc]) %}
+      <tr{% if row.symbol is null %} class="total"{% endif %}>
+        <th scope="row">{% if row.symbol is null %}Total{% else %}<code>{{ row.symbol }}</code>{% endif %}</th>
+        <td class="num">{{ row.stopFillsDrawn|int }}</td><td class="num">{{ row.stopStressFills|int }}</td>
+        <td class="num">{{ row.makerEntriesConverted|int }}</td><td class="num">{{ row.makerEntriesTakenAtArrival|int }}</td><td class="num">{{ row.makerEntriesFilledMaker|int }}</td>
+        <td class="num">{{ row.makerEntryMakerShare|pct }}</td>
+        <td class="num">{{ row.makerFillDraws|int }}</td><td class="num">{{ row.makerFills|int }}</td><td class="num">{{ row.makerFillMissed|int }}</td>
+        <td class="num">{{ row.spreadCostTotal|money }}</td><td class="num">{{ row.adverseSelectionTotal|money }}</td>
+      </tr>
+    {% endfor %}
+    </tbody>
+  </table>
+  </div>
+  <p class="note">Part maker = entrées remplies au repos / (remplies au repos + prises à l'arrivée) ; « — » quand aucune entrée n'est convertie (baseline et adverse). Le spread des fills taker est inclus dans les prix ; la sélection adverse est débitée à part (profil maker).</p>
+</section>

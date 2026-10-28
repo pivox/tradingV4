@@ -63,6 +63,10 @@ fn rules() -> Vec<(&'static str, Rule)> {
         // `report` lit les résultats de `engine`/`sim` ; il ne connaît pas les stratégies (id, version
         // et params lui arrivent dans `RunConfig`) et ne remonte pas vers la CLI.
         ("report", Rule::Forbidden(&["cli", "strategy"])),
+        // S10 : `research` (calibration du stress, contrôles) lit le modèle, les données, `mtf` et les
+        // indicateurs ; il ne produit aucun rapport, n'appelle pas la CLI et ne connaît pas les
+        // stratégies (docs/specs/s10.md §15.1).
+        ("research", Rule::Forbidden(&["cli", "report", "strategy"])),
     ]
 }
 
@@ -735,4 +739,128 @@ fn l_analyseur_de_libm_distingue_appel_commentaire_et_expect() {
     assert!(libm_calls("// x.ln() est interdit ici").is_empty());
     assert!(libm_calls("let y = r.expect(\"ok\");").is_empty());
     assert!(libm_calls("let y = x.exp_like();").is_empty());
+}
+
+// --- S10 : un seul générateur pour la simulation (docs/specs/s10.md §15.1) ---
+
+/// Crates d'aléa interdites dans `src/` : le générateur de la simulation est `model::rng`, écrit dans
+/// le dépôt (SplitMix64 à compteur). `rand` n'est dans `Cargo.lock` qu'à travers `proptest`.
+const FORBIDDEN_RNG_CRATES: [&str; 3] = ["rand", "rand_chacha", "rand_core"];
+
+#[test]
+fn aucun_fichier_de_src_n_utilise_la_crate_rand() {
+    let src = src_dir();
+    let mut files = Vec::new();
+    collect_rs_files(&src, &mut files);
+    assert!(files.len() > 40, "{} fichiers lus", files.len());
+    let mut violations = Vec::new();
+    for path in files {
+        let source = read(&path);
+        for name in FORBIDDEN_RNG_CRATES {
+            if uses_crate(&source, name) {
+                violations.push(format!("{} utilise la crate `{name}`", path.display()));
+            }
+        }
+    }
+    assert!(
+        violations.is_empty(),
+        "l'aléa de la simulation est `model::rng`, sans crate (s10 §8) :\n{}",
+        violations.join("\n")
+    );
+}
+
+#[test]
+fn l_analyseur_voit_la_crate_rand_sans_confondre_les_noms_voisins() {
+    assert!(uses_crate("use rand::Rng;", "rand"));
+    assert!(uses_crate("let x = rand::random::<u64>();", "rand"));
+    assert!(uses_crate("use rand_chacha::ChaCha8Rng;", "rand_chacha"));
+    assert!(uses_crate("use rand as r;", "rand"));
+    assert!(!uses_crate("let operand = 1; operand::f();", "rand"));
+    assert!(!uses_crate("let grand_total = 1;", "rand"));
+    assert!(!uses_crate("use crate::model::rng::draw;", "rand"));
+    assert!(!uses_crate("// use rand::Rng;", "rand"));
+}
+
+/// La constante d'or de SplitMix64, sans tiret bas et en minuscules.
+const SPLITMIX_GAMMA: &str = "0x9e3779b97f4a7c15";
+
+/// `true` si `text` contient la constante d'or de SplitMix64, quelle que soit l'écriture (tirets bas,
+/// majuscules). Les commentaires comptent : la mention vaut la constante.
+fn mentions_splitmix_gamma(text: &str) -> bool {
+    let normalized: String = text
+        .chars()
+        .filter(|c| *c != '_')
+        .map(|c| c.to_ascii_lowercase())
+        .collect();
+    normalized.contains(SPLITMIX_GAMMA)
+}
+
+#[test]
+fn la_constante_splitmix_n_a_que_deux_maisons() {
+    // `model/rng.rs` est le générateur de la simulation ; `marketdata/okx/bucket.rs` n'a que le jitter
+    // des retries réseau. Une troisième copie serait un deuxième générateur à garder identique.
+    let src = src_dir();
+    let autorises = [
+        src.join("model").join("rng.rs"),
+        src.join("marketdata").join("okx").join("bucket.rs"),
+    ];
+    let mut files = Vec::new();
+    collect_rs_files(&src, &mut files);
+    let mut violations = Vec::new();
+    for path in &files {
+        if mentions_splitmix_gamma(&read(path)) && !autorises.contains(path) {
+            violations.push(path.display().to_string());
+        }
+    }
+    assert!(
+        violations.is_empty(),
+        "la constante 0x9E37_79B9_7F4A_7C15 n'a le droit d'apparaître que dans model/rng.rs et \
+         marketdata/okx/bucket.rs :\n{}",
+        violations.join("\n")
+    );
+    // La règle n'est pas vacuement verte : les deux fichiers autorisés la portent bien.
+    for path in &autorises {
+        assert!(path.is_file(), "{} absent", path.display());
+        assert!(
+            mentions_splitmix_gamma(&read(path)),
+            "{} devrait porter la constante",
+            path.display()
+        );
+    }
+}
+
+#[test]
+fn l_analyseur_de_constante_voit_toutes_les_ecritures() {
+    assert!(mentions_splitmix_gamma(
+        "const G: u64 = 0x9E37_79B9_7F4A_7C15;"
+    ));
+    assert!(mentions_splitmix_gamma("0x9e3779b97f4a7c15"));
+    assert!(mentions_splitmix_gamma(
+        "// constante d'or 0x9E37_79B9_7F4A_7C15"
+    ));
+    assert!(mentions_splitmix_gamma(
+        "0X9E3779B9_7F4A7C15".replace('X', "x").as_str()
+    ));
+    assert!(!mentions_splitmix_gamma("0x9E37_79B9_7F4A_7C16"));
+    assert!(!mentions_splitmix_gamma("let x = 0xBF58_476D_1CE4_E5B9;"));
+}
+
+#[test]
+fn la_regle_research_est_declaree() {
+    // Le module `research` arrive avec le lot de calibration : sa règle doit déjà être là.
+    let rule = rules()
+        .into_iter()
+        .find(|(module, _)| *module == "research")
+        .map(|(_, rule)| rule);
+    match rule {
+        Some(Rule::Forbidden(list)) => {
+            for interdit in ["cli", "report", "strategy"] {
+                assert!(
+                    list.contains(&interdit),
+                    "research doit interdire {interdit}"
+                );
+            }
+        }
+        _ => panic!("règle `research` absente ou de mauvaise forme"),
+    }
 }

@@ -4,6 +4,14 @@
 //! par paire (construite par l'appelant), des colonnes déjà chargées par paire, un [`Book`] qui porte le
 //! cash et le journal de trades communs, et aucune écriture (c'est le rôle de `report`).
 //!
+//! # Découpage en étages (docs S10 §9.3)
+//!
+//! `run_portfolio_observed` enchaîne quatre étages, sans changement observable (le golden `portfolio_2legs`
+//! le prouve) : `check_config` (contrôles), `load` (bougies possédées), `share` (tout ce qui emprunte les
+//! bougies et ne change pas d'un profil à l'autre : `Mtf`, colonnes d'indicateurs, série de régime,
+//! départ de fenêtre, rang de liquidité) et `play_profile` (vues par jambe, curseur de régime neuf, boucle,
+//! synthèse). `run_portfolio_profiles` appelle les trois premiers une fois et le dernier trois fois.
+//!
 //! # Déroulé d'une minute `t` de la grille (docs S9 §4.2)
 //!
 //! La grille est l'union triée des `open_time` des 1m de toutes les jambes de l'univers dans la fenêtre,
@@ -59,8 +67,8 @@
 use crate::model::{Candle, FeeSchedule, Side, Timeframe, Ts};
 use crate::mtf::Mtf;
 use crate::sim::{
-    Book, BookConfig, BookRejection, SimCounters, SimDetail, SimError, SizingMode, SubmitContext,
-    Trade, sizing,
+    Book, BookConfig, BookRejection, CostCounters, SimCounters, SimDetail, SimError, SizingMode,
+    SubmitContext, Trade, sizing,
 };
 use crate::store::Columns;
 use crate::strategy::{
@@ -73,7 +81,7 @@ use super::portfolio_config::{
     LIQUIDITY_WINDOW_DAYS, MAX_POSITIONS_LIMIT, PRIORITY_RULE, PortfolioConfig, PortfolioRunConfig,
 };
 use super::priority::RankTable;
-use super::regime::RegimeFeed;
+use super::regime::{RegimeFeed, RegimeSeries};
 use super::run::{
     MINUTE_MS, SIGNALS_FLOOR, TRADES_INITIAL_CAPACITY, check_candles, indicator_column,
     to_pending_order, to_position,
@@ -546,26 +554,61 @@ fn sum_funnels(legs: &[LegResult]) -> EngineFunnel {
 // Entrée principale
 // ---------------------------------------------------------------------------------------------
 
-/// Comme [`run_portfolio`], avec un observateur appelé juste avant et juste après la boucle de la grille.
+/// Compteurs de la préparation partagée (docs S10 §9.4). Ils sont incrémentés par **l'appelant** de
+/// `load` et de `share` ([`run_portfolio_counted`], [`run_portfolio_profiles`](super::run_portfolio_profiles))
+/// juste après chaque appel, jamais par une fonction que chaque profil pourrait rappeler : `play_profile`
+/// n'a accès à aucun de ces compteurs.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct PrepStats {
+    /// Séries de bougies converties depuis les colonnes (jambes, plus la paire de régime hors univers).
+    pub candles_converted: usize,
+    /// `Mtf` des jambes construits (celui de la série de régime est compté à part).
+    pub mtf_builds: usize,
+    /// Séries de régime (1d et SMA200) construites.
+    pub regime_series_built: usize,
+    /// Colonnes d'indicateurs calculées, tous timeframes et toutes jambes confondus.
+    pub indicator_columns_computed: usize,
+    /// Tables de rang de liquidité construites.
+    pub rank_tables_built: usize,
+}
+
+impl PrepStats {
+    /// Ajoute ce que viennent de produire un appel de [`load`] et un appel de [`share`].
+    pub(super) fn record(&mut self, loaded: &Loaded, shared: &Shared<'_>) {
+        self.candles_converted +=
+            loaded.candle_store.len() + usize::from(!loaded.regime_store.is_empty());
+        self.mtf_builds += shared.mtfs.len();
+        self.regime_series_built += usize::from(shared.regime.is_some());
+        self.indicator_columns_computed += shared
+            .preps
+            .iter()
+            .flat_map(|prep| prep.columns.iter())
+            .map(Vec::len)
+            .sum::<usize>();
+        self.rank_tables_built += 1;
+    }
+}
+
+/// Ce que valident les contrôles de configuration et dont la suite a besoin.
+pub(super) struct Checked {
+    /// Au moins une stratégie lit le régime.
+    pub(super) uses_regime: bool,
+    pub(super) warmup_bars: usize,
+}
+
+/// Contrôles de configuration, hors boucle : univers, nombre de stratégies et d'instruments, bornes,
+/// règles du simulateur, déclarations et identité des stratégies.
 ///
 /// # Erreurs
 ///
-/// Configuration invalide (univers vide ou en double, nombre de stratégies ou d'instruments différent
-/// de celui de l'univers, `max_positions` hors de 1 à 64, trou de cotation non positif, stratégies
-/// différentes), symbole absent du dataset, série vide ou mal formée, warmup trop long, série de régime
-/// absente ou trop courte pour la SMA200, et toute erreur de `sim` ou de `strategy`.
-pub fn run_portfolio_observed(
-    inputs: PortfolioInputs<'_>,
-    observer: &mut dyn LoopObserver,
-) -> Result<PortfolioResult, EngineError> {
-    let PortfolioInputs {
-        series,
-        strategies,
-        config,
-    } = inputs;
+/// Univers vide ou en double, nombre de stratégies ou d'instruments différent de celui de l'univers,
+/// `max_positions` hors de 1 à 64, trou de cotation non positif, `min_trades` nul, règles invalides,
+/// stratégies différentes.
+pub(super) fn check_config(
+    strategies: &[Box<dyn Strategy>],
+    config: &PortfolioConfig<'_>,
+) -> Result<Checked, EngineError> {
     let legs = config.universe.len();
-
-    // --- Contrôles de configuration, hors boucle ---
     if legs == 0 {
         return Err(EngineError::EmptyUniverse);
     }
@@ -612,7 +655,7 @@ pub fn run_portfolio_observed(
     for rules in config.instruments {
         rules.validate()?;
     }
-    for strategy in &strategies {
+    for strategy in strategies {
         validate_declaration(strategy.as_ref())?;
     }
     let record = strategies
@@ -631,8 +674,40 @@ pub fn run_portfolio_observed(
         .map(|s| s.warmup_bars())
         .max()
         .unwrap_or(0);
+    Ok(Checked {
+        uses_regime,
+        warmup_bars,
+    })
+}
 
-    // --- Données : une série de bougies par jambe, plus la paire de régime ---
+/// Bougies possédées : une série par jambe, plus la paire de régime si elle n'est pas dans l'univers.
+/// Aucun emprunt : les `Mtf` de [`share`] les empruntent, dans l'étage suivant.
+pub(super) struct Loaded {
+    candle_store: Vec<Vec<Candle>>,
+    /// Vide si aucune stratégie ne lit le régime ou si la paire de régime est dans l'univers.
+    regime_store: Vec<Candle>,
+    /// Indice de la paire de régime dans l'univers, si elle y est.
+    regime_in_universe: Option<usize>,
+}
+
+impl Loaded {
+    /// Plus grand nombre de bougies d'une jambe (capacité du journal de trades).
+    pub(super) fn window_max(&self) -> usize {
+        self.candle_store.iter().map(Vec::len).max().unwrap_or(0)
+    }
+}
+
+/// Convertit les colonnes du dataset en bougies et les contrôle (alignement, ordre).
+///
+/// # Erreurs
+///
+/// Symbole absent du dataset, série vide ou mal formée, série de régime absente.
+pub(super) fn load(
+    series: &[(String, Columns)],
+    config: &PortfolioConfig<'_>,
+    uses_regime: bool,
+) -> Result<Loaded, EngineError> {
+    let legs = config.universe.len();
     let find = |symbol: &str| series.iter().find(|(name, _)| name == symbol);
     let mut candle_store: Vec<Vec<Candle>> = Vec::with_capacity(legs);
     for symbol in config.universe {
@@ -668,28 +743,66 @@ pub fn run_portfolio_observed(
             symbol: config.regime_symbol.to_string(),
         });
     }
+    Ok(Loaded {
+        candle_store,
+        regime_store,
+        regime_in_universe,
+    })
+}
 
-    // --- Multi-timeframe, indicateurs et départ de chaque jambe ---
-    let mut mtfs: Vec<Mtf<'_>> = Vec::with_capacity(legs);
-    for (candles, strategy) in candle_store.iter().zip(&strategies) {
+/// Tout ce qui emprunte les bougies et ne change pas d'un profil à l'autre : `Mtf` de chaque jambe,
+/// colonnes d'indicateurs, série de régime (immuable), départ commun de la fenêtre et table de rang.
+/// Construit **une fois** par [`share`] ; chaque profil le lit par `&` ([`play_profile`]) et ne peut ni
+/// le reconstruire ni le modifier.
+pub(super) struct Shared<'a> {
+    candle_store: &'a [Vec<Candle>],
+    mtfs: Vec<Mtf<'a>>,
+    preps: Vec<LegPrep>,
+    regime: Option<RegimeSeries<'a>>,
+    /// Première minute jouée, commune à toutes les jambes.
+    window_start_ms: Ts,
+    /// Fin de la première 1m de la paire de régime à laquelle la SMA200 existe.
+    regime_ready_ms: Option<Ts>,
+    ranks: RankTable,
+    warmup_bars: usize,
+}
+
+/// Multi-timeframe, colonnes d'indicateurs et départ de chaque jambe, série de régime, départ commun de
+/// la fenêtre et table de rang. Les colonnes sont calculées sur `strategies` ; les autres jeux de
+/// stratégies d'un même appel (profils) doivent déclarer les mêmes indicateurs et timeframes.
+///
+/// # Erreurs
+///
+/// Timeframe ou indicateur invalide, warmup trop long, série de régime absente ou trop courte pour la
+/// SMA200.
+pub(super) fn share<'a>(
+    loaded: &'a Loaded,
+    strategies: &[Box<dyn Strategy>],
+    config: &PortfolioConfig<'_>,
+    checked: &Checked,
+) -> Result<Shared<'a>, EngineError> {
+    let legs = config.universe.len();
+    let uses_regime = checked.uses_regime;
+    let mut mtfs: Vec<Mtf<'a>> = Vec::with_capacity(legs);
+    for (candles, strategy) in loaded.candle_store.iter().zip(strategies) {
         mtfs.push(Mtf::build(candles, strategy.timeframes())?);
     }
     let mut preps: Vec<LegPrep> = Vec::with_capacity(legs);
-    for (mtf, strategy) in mtfs.iter().zip(&strategies) {
+    for (mtf, strategy) in mtfs.iter().zip(strategies) {
         preps.push(prepare_leg(mtf, strategy.as_ref())?);
     }
-    let regime_m1: &[Candle] = match regime_in_universe {
-        Some(k) if uses_regime => candle_store.get(k).map_or(&[], Vec::as_slice),
-        _ => &regime_store,
+    let regime_m1: &'a [Candle] = match loaded.regime_in_universe {
+        Some(k) if uses_regime => loaded.candle_store.get(k).map_or(&[], Vec::as_slice),
+        _ => &loaded.regime_store,
     };
-    let mut feed: Option<RegimeFeed<'_>> = if uses_regime {
-        Some(RegimeFeed::new(regime_m1)?)
+    let regime: Option<RegimeSeries<'a>> = if uses_regime {
+        Some(RegimeSeries::new(regime_m1)?)
     } else {
         None
     };
     // Départ commun : la plus tardive des premières minutes de chaque jambe et de la SMA200 du régime.
     let mut window_start_ms = Ts::MIN;
-    for ((symbol, candles), prep) in config.universe.iter().zip(&candle_store).zip(&preps) {
+    for ((symbol, candles), prep) in config.universe.iter().zip(&loaded.candle_store).zip(&preps) {
         let first = candles
             .get(prep.start)
             .ok_or_else(|| EngineError::LegNotEnoughBars {
@@ -700,8 +813,8 @@ pub fn run_portfolio_observed(
         window_start_ms = window_start_ms.max(first.open_time_ms);
     }
     let mut regime_ready_ms: Option<Ts> = None;
-    if let Some(feed) = feed.as_ref() {
-        let ready = feed
+    if let Some(series) = regime.as_ref() {
+        let ready = series
             .first_ready_open_ms()
             .ok_or_else(|| EngineError::RegimeNotReady {
                 symbol: config.regime_symbol.to_string(),
@@ -709,6 +822,56 @@ pub fn run_portfolio_observed(
         regime_ready_ms = Some(ready.saturating_add(MINUTE_MS));
         window_start_ms = window_start_ms.max(ready);
     }
+    let rank_inputs: Vec<&[Candle]> = loaded.candle_store.iter().map(Vec::as_slice).collect();
+    let ranks = RankTable::build(&rank_inputs);
+    Ok(Shared {
+        candle_store: &loaded.candle_store,
+        mtfs,
+        preps,
+        regime,
+        window_start_ms,
+        regime_ready_ms,
+        ranks,
+        warmup_bars: checked.warmup_bars,
+    })
+}
+
+/// Comme [`run_portfolio`], avec un observateur appelé juste avant et juste après la boucle de la grille.
+///
+/// # Erreurs
+///
+/// Configuration invalide (univers vide ou en double, nombre de stratégies ou d'instruments différent
+/// de celui de l'univers, `max_positions` hors de 1 à 64, trou de cotation non positif, stratégies
+/// différentes), symbole absent du dataset, série vide ou mal formée, warmup trop long, série de régime
+/// absente ou trop courte pour la SMA200, et toute erreur de `sim` ou de `strategy`.
+pub fn run_portfolio_observed(
+    inputs: PortfolioInputs<'_>,
+    observer: &mut dyn LoopObserver,
+) -> Result<PortfolioResult, EngineError> {
+    run_portfolio_counted(inputs, observer).map(|(result, _)| result)
+}
+
+/// Comme [`run_portfolio_observed`], avec les compteurs de la préparation ([`PrepStats`]). Sert de
+/// référence au test de la préparation partagée : un run isolé compte ce que `n` profils ne doivent pas
+/// recompter.
+///
+/// # Erreurs
+///
+/// Celles de [`run_portfolio_observed`].
+pub fn run_portfolio_counted(
+    inputs: PortfolioInputs<'_>,
+    observer: &mut dyn LoopObserver,
+) -> Result<(PortfolioResult, PrepStats), EngineError> {
+    let PortfolioInputs {
+        series,
+        strategies,
+        config,
+    } = inputs;
+    let checked = check_config(&strategies, &config)?;
+    let loaded = load(series, &config, checked.uses_regime)?;
+    let shared = share(&loaded, &strategies, &config, &checked)?;
+    let mut prep = PrepStats::default();
+    prep.record(&loaded, &shared);
 
     // --- Config hachée (sans capital) et simulateur partagé ---
     let run_config = PortfolioRunConfig::new(
@@ -717,31 +880,64 @@ pub fn run_portfolio_observed(
             .map(|s| s.as_ref())
             .ok_or(EngineError::EmptyUniverse)?,
         &config,
-        warmup_bars,
-        uses_regime,
+        checked.warmup_bars,
+        checked.uses_regime,
     );
     let config_hash = run_config.hash()?;
-    let mut book = {
-        let window_max = candle_store.iter().map(Vec::len).max().unwrap_or(0);
-        Book::new(
-            BookConfig {
-                fees: config.fees,
-                slippage: config.slippage,
-                rules: config.sim_rules,
-                initial_cash: config.initial_cash,
-                max_positions: config.max_positions,
-                mode: config.sizing,
-                min_order_bump_max_risk: config.min_order_bump_max_risk,
-                trades_capacity: (window_max / 2 + 1).min(TRADES_INITIAL_CAPACITY),
-            },
-            config.instruments,
-        )?
-    };
-    let rank_inputs: Vec<&[Candle]> = candle_store.iter().map(Vec::as_slice).collect();
-    let ranks = RankTable::build(&rank_inputs);
+    let book = Book::new(
+        book_config(&config, loaded.window_max()),
+        config.instruments,
+    )?;
+    let (result, _) = play_profile(
+        &shared,
+        strategies,
+        book,
+        &config,
+        run_config,
+        config_hash,
+        observer,
+    )?;
+    Ok((result, prep))
+}
 
-    // --- Vues par jambe (emprunts de `mtfs` et de `preps`) ---
-    let column_refs: Vec<Vec<Vec<&[f64]>>> = preps
+/// Paramètres du [`Book`] d'un profil, communs aux chemins hérité et s10.
+pub(super) fn book_config(config: &PortfolioConfig<'_>, window_max: usize) -> BookConfig {
+    BookConfig {
+        fees: config.fees,
+        slippage: config.slippage,
+        rules: config.sim_rules,
+        initial_cash: config.initial_cash,
+        max_positions: config.max_positions,
+        mode: config.sizing,
+        min_order_bump_max_risk: config.min_order_bump_max_risk,
+        trades_capacity: (window_max / 2 + 1).min(TRADES_INITIAL_CAPACITY),
+    }
+}
+
+/// Joue un profil sur la préparation partagée : vues par jambe (coût O(jambes × TF), sans agrégation),
+/// curseur de régime **neuf**, tampons, boucle de la grille, puis synthèse. `shared` est prêté en lecture
+/// seule : ni les bougies possédées ni de quoi appeler [`share`] ne sont ici, donc un `Mtf` ne peut pas
+/// être reconstruit par profil (docs S10 §9.4).
+///
+/// Rend le résultat et les compteurs de coûts de chaque jambe (nuls pour un coût hérité).
+pub(super) fn play_profile(
+    shared: &Shared<'_>,
+    strategies: Vec<Box<dyn Strategy>>,
+    mut book: Book,
+    config: &PortfolioConfig<'_>,
+    run_config: PortfolioRunConfig,
+    config_hash: String,
+    observer: &mut dyn LoopObserver,
+) -> Result<(PortfolioResult, Vec<CostCounters>), EngineError> {
+    let legs = config.universe.len();
+    let candle_store = shared.candle_store;
+    let ranks = &shared.ranks;
+    let window_start_ms = shared.window_start_ms;
+    let mut feed: Option<RegimeFeed<'_>> = shared.regime.as_ref().map(RegimeFeed::new);
+
+    // --- Vues par jambe (emprunts de `shared`) ---
+    let column_refs: Vec<Vec<Vec<&[f64]>>> = shared
+        .preps
         .iter()
         .map(|prep| {
             prep.columns
@@ -755,8 +951,8 @@ pub fn run_portfolio_observed(
     for (k, strategy) in strategies.into_iter().enumerate() {
         let (Some(candles), Some(mtf), Some(prep), Some(refs), Some(symbol)) = (
             candle_store.get(k),
-            mtfs.get(k),
-            preps.get(k),
+            shared.mtfs.get(k),
+            shared.preps.get(k),
             column_refs.get(k),
             config.universe.get(k),
         ) else {
@@ -828,9 +1024,9 @@ pub fn run_portfolio_observed(
     let played = play(
         &mut book,
         &mut runs,
-        &ranks,
+        ranks,
         feed.as_mut(),
-        &config,
+        config,
         max_notional,
         &mut buffers,
     );
@@ -917,9 +1113,10 @@ pub fn run_portfolio_observed(
         max_positions_rejected += leg.max_positions_rejected;
     }
     let funnel = sum_funnels(&leg_results);
-    let regime = match (feed.as_ref(), regime_ready_ms) {
-        (Some(feed), Some(first_ready_ms)) => {
-            let (days_bull, days_bear) = feed.day_counts(window_first_open_ms, window_last_open_ms);
+    let regime = match (shared.regime.as_ref(), shared.regime_ready_ms) {
+        (Some(series), Some(first_ready_ms)) => {
+            let (days_bull, days_bear) =
+                series.day_counts(window_first_open_ms, window_last_open_ms);
             Some(RegimeStats {
                 symbol: config.regime_symbol.to_string(),
                 first_ready_ms,
@@ -930,7 +1127,8 @@ pub fn run_portfolio_observed(
         _ => None,
     };
 
-    Ok(PortfolioResult {
+    let cost_by_leg = outcome.cost_by_leg;
+    let result = PortfolioResult {
         config: run_config,
         config_hash,
         initial_cash: config.initial_cash,
@@ -939,7 +1137,7 @@ pub fn run_portfolio_observed(
         quote_gap_ms: config.quote_gap_ms,
         universe: config.universe.to_vec(),
         legs: leg_results,
-        warmup_bars,
+        warmup_bars: shared.warmup_bars,
         window_start_ms,
         grid_minutes,
         window_first_open_ms,
@@ -975,7 +1173,8 @@ pub fn run_portfolio_observed(
             partial_days: ranks.partial_days(window_first_open_ms, window_last_open_ms),
         },
         regime,
-    })
+    };
+    Ok((result, cost_by_leg))
 }
 
 /// Totaux accumulés dans l'ordre des trades (boucles `for`, jamais `.sum()`, docs/03 §7.4).

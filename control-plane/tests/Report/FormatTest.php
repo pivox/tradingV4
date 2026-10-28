@@ -52,4 +52,13 @@ final class FormatTest extends TestCase
         self::assertSame('2', $format->scalar(2.0));
         self::assertSame('null', $format->scalar(null));
     }
+
+    public function testYesNo(): void
+    {
+        $format = new Format();
+
+        self::assertSame('oui', $format->yesNo(true));
+        self::assertSame('non', $format->yesNo(false));
+        self::assertSame('—', $format->yesNo(null));
+    }
 }

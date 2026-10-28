@@ -22,6 +22,8 @@ use super::metrics_s9::{ConfigS9, DataS9, MetricsS9};
 pub const SCHEMA: &str = "tv4-manifest-s8";
 /// Identifiant du schéma du mode portefeuille (docs S9 §14.1).
 pub const SCHEMA_S9: &str = "tv4-manifest-s9";
+/// Identifiant du schéma des runs à profils de coûts (docs/specs/s10.md §12.3).
+pub const SCHEMA_S10: &str = "tv4-manifest-s10";
 /// Durée d'une 1m en millisecondes.
 const MINUTE_MS: Ts = 60_000;
 
@@ -221,10 +223,18 @@ impl Manifest {
     }
 }
 
-/// Contenu de `manifest.json` du mode portefeuille (`tv4-manifest-s9`).
+/// `profiles_id` : BLAKE3 hexadécimal de `"{run_id_baseline}|{run_id_adverse}|{run_id_maker}"` (docs/specs/
+/// s10.md §12.4), dans cet ordre. Il identifie le dossier de profils.
+pub fn profiles_id(baseline: &str, adverse: &str, maker: &str) -> String {
+    hash::blake3_hex(format!("{baseline}|{adverse}|{maker}").as_bytes())
+}
+
+/// Contenu de `manifest.json` du mode portefeuille (`tv4-manifest-s9`), et des runs à profils de coûts
+/// (`tv4-manifest-s10`, qui réutilise cette struct, docs/specs/s10.md §12.3).
 ///
 /// Mêmes champs d'identité et de provenance que S8, plus le capital initial (hors du `config_hash`) et
-/// le fichier d'instruments utilisé. Le bloc `data` est celui de `metrics.json`.
+/// le fichier d'instruments utilisé. Le bloc `data` est celui de `metrics.json`. Les six champs de coûts
+/// ne sont écrits qu'en s10 : un manifeste s9 est identique à l'octet à celui d'avant S10.
 #[derive(Clone, Debug, PartialEq, Serialize)]
 pub struct ManifestS9 {
     pub schema: &'static str,
@@ -248,6 +258,37 @@ pub struct ManifestS9 {
     pub outputs: Outputs,
     pub started_at: String,
     pub timings: Timings,
+    /// Nom du profil de coûts (s10) : `baseline`, `adverse` ou `maker`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub profile: Option<&'static str>,
+    /// Chemin du fichier de coûts tel que donné à la CLI (s10).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub costs_file: Option<String>,
+    /// BLAKE3 hexadécimal des octets du fichier de coûts (s10).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub costs_file_hash: Option<String>,
+    /// Chemin du fichier de mesures de coûts tel que donné à la CLI (s10, facultatif).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub cost_measures_file: Option<String>,
+    /// BLAKE3 hexadécimal des octets du fichier de mesures (s10, facultatif).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub cost_measures_hash: Option<String>,
+    /// Identifiant du dossier de profils auquel ce run appartient (s10, [`profiles_id`]).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub profiles_id: Option<String>,
+}
+
+/// Ce que la CLI fournit en plus pour écrire le manifeste d'un profil s10.
+#[derive(Clone, Debug)]
+pub struct ManifestS10Inputs {
+    /// Les entrées communes au manifeste s9.
+    pub base: ManifestS9Inputs,
+    /// Chemin du fichier de coûts tel que donné à la CLI.
+    pub costs_file: String,
+    /// Chemin du fichier de mesures tel que donné, s'il y en a un.
+    pub cost_measures_file: Option<String>,
+    /// [`profiles_id`] du dossier de profils.
+    pub profiles_id: String,
 }
 
 /// Ce que la CLI fournit en plus des métriques pour écrire le manifeste du portefeuille.
@@ -295,7 +336,38 @@ impl ManifestS9 {
             },
             started_at: timestamp(inputs.started_at_ms)?,
             timings: inputs.timings,
+            profile: None,
+            costs_file: None,
+            costs_file_hash: None,
+            cost_measures_file: None,
+            cost_measures_hash: None,
+            profiles_id: None,
         })
+    }
+
+    /// Construit le manifeste d'un profil s10 à partir de ses métriques (`tv4-metrics-s10`).
+    ///
+    /// Le profil et les hashes des fichiers de coûts viennent de `metrics.costs`, pour qu'ils ne puissent
+    /// pas diverger de `metrics.json`. Refuse des métriques qui n'ont pas de bloc `costs`.
+    pub fn new_s10(
+        metrics: &MetricsS9,
+        inputs: ManifestS10Inputs,
+    ) -> Result<ManifestS9, ReportError> {
+        let Some(costs) = metrics.costs.as_ref() else {
+            return Err(ReportError::Series {
+                detail: "les métriques n'ont pas de bloc `costs` : ce n'est pas un run s10"
+                    .to_string(),
+            });
+        };
+        let mut manifest = ManifestS9::new(metrics, inputs.base)?;
+        manifest.schema = SCHEMA_S10;
+        manifest.profile = Some(costs.profile.as_str());
+        manifest.costs_file = Some(inputs.costs_file);
+        manifest.costs_file_hash = Some(costs.costs_file_hash.clone());
+        manifest.cost_measures_file = inputs.cost_measures_file;
+        manifest.cost_measures_hash = costs.cost_measures_hash.clone();
+        manifest.profiles_id = Some(inputs.profiles_id);
+        Ok(manifest)
     }
 }
 
@@ -314,6 +386,16 @@ mod tests {
         );
         assert_ne!(a, run_id_s9("aa", "blake3:bb", 60_000, 120_000, 3_000.0));
         assert_ne!(a, run_id("aa", "blake3:bb", 60_000, 120_000));
+    }
+
+    #[test]
+    fn profiles_id_est_le_blake3_des_trois_run_id() {
+        assert_eq!(
+            profiles_id("aa", "bb", "cc"),
+            hash::blake3_hex(b"aa|bb|cc"),
+            "format documente"
+        );
+        assert_ne!(profiles_id("aa", "bb", "cc"), profiles_id("bb", "aa", "cc"));
     }
 
     #[test]

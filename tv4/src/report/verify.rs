@@ -37,9 +37,23 @@
 //! * entre les deux runs : `initial_cash` égal. Le capital n'est pas dans le `config_hash` du
 //!   portefeuille : deux runs de capitaux différents ont le même hash et ne sont jamais déclarés
 //!   identiques ([`VerifyError::CapitalMismatch`], code 1).
+//!
+//! # Profils de coûts (S10, docs S10 §12.5)
+//!
+//! Un manifeste `tv4-manifest-s10` forme la troisième famille : mêmes contrôles que S9, plus
+//! `metrics.costs.profile` égal au `profile` du manifeste et mêmes hashes de fichiers de coûts dans les
+//! deux. s8, s9 et s10 ne se comparent pas entre eux ([`VerifyError::SchemaMismatch`], code 1).
+//!
+//! Un dossier qui contient `profiles.json` est un **dossier de profils** : `verify` en compare deux, ou
+//! aucun. Un dossier de profils contre un dossier de run, ou l'inverse, est refusé
+//! ([`VerifyError::LayoutMismatch`], code 1). `profiles.json` est relu (schéma, trois profils nommés
+//! baseline, adverse et maker, un `dir` simple pour chacun), chaque sous-dossier est vérifié comme un run
+//! s10 et confronté à `profiles.json` (`run_id`, `config_hash`, `result_hash`, `profiles_id`), puis comparé
+//! à son homologue. `profiles.json` est comparé à l'octet. Un sous-dossier ou un manifeste absent donne
+//! [`VerifyError::ProfilesIncomplete`] (code 1).
 
 use std::fs;
-use std::path::Path;
+use std::path::{Component, Path};
 
 use serde_json::Value;
 use thiserror::Error;
@@ -47,6 +61,8 @@ use thiserror::Error;
 use crate::model::hash;
 
 use super::equity::EQUITY_FILE;
+use super::manifest::profiles_id;
+use super::profiles::{PROFILES_FILE, PROFILES_SCHEMA};
 use super::writers::TRADES_FILE;
 use super::{manifest, metrics, metrics_s9};
 
@@ -103,11 +119,39 @@ pub enum VerifyError {
         expected: &'static str,
     },
 
-    /// Un run S8 et un run S9 : ils ne se comparent pas.
+    /// Deux runs de familles différentes (s8, s9, s10) : ils ne se comparent pas.
     #[error(
         "schémas différents : run A `{a}`, run B `{b}` ; comparer deux runs de la même famille"
     )]
     SchemaMismatch { a: String, b: String },
+
+    /// Un dossier de profils (`profiles.json`) contre un dossier de run : ils ne se comparent pas.
+    #[error(
+        "un dossier de profils ne se compare qu'à un dossier de profils : `{a}` est {a_kind}, `{b}` est {b_kind}"
+    )]
+    LayoutMismatch {
+        a: String,
+        a_kind: &'static str,
+        b: String,
+        b_kind: &'static str,
+    },
+
+    /// Un dossier de profils est incomplet (sous-dossier ou manifeste absent) ou son `profiles.json` ne
+    /// décrit pas trois profils lisibles.
+    #[error("dossier de profils {label} (`{dir}`) incomplet : {detail}")]
+    ProfilesIncomplete {
+        label: &'static str,
+        dir: String,
+        detail: String,
+    },
+
+    /// `profiles.json` ne correspond pas aux runs qu'il résume, ou un profil n'est pas un run s10.
+    #[error("dossier de profils {label} (`{dir}`) incohérent : {detail}")]
+    Profiles {
+        label: &'static str,
+        dir: String,
+        detail: String,
+    },
 
     /// Deux runs S9 de capitaux initiaux différents : le capital n'est pas dans le `config_hash`, ils
     /// ne sont jamais déclarés identiques.
@@ -151,12 +195,13 @@ pub enum VerifyError {
 pub struct VerifyReport {
     /// Lignes du compte rendu, dernière ligne (verdict) comprise.
     pub lines: Vec<String>,
-    /// Nombre de fichiers (parmi les trois comparés) qui diffèrent.
+    /// Nombre de fichiers comparés qui diffèrent : parmi les trois d'un run, ou, pour un dossier de
+    /// profils, la somme sur les trois profils plus `profiles.json`.
     pub different_files: usize,
 }
 
 impl VerifyReport {
-    /// Vrai si les trois fichiers sont identiques à l'octet.
+    /// Vrai si tous les fichiers comparés sont identiques à l'octet.
     pub fn identical(&self) -> bool {
         self.different_files == 0
     }
@@ -167,6 +212,7 @@ impl VerifyReport {
 enum Family {
     S8,
     S9,
+    S10,
 }
 
 impl Family {
@@ -174,6 +220,7 @@ impl Family {
         match schema {
             Some(manifest::SCHEMA) => Some(Family::S8),
             Some(manifest::SCHEMA_S9) => Some(Family::S9),
+            Some(manifest::SCHEMA_S10) => Some(Family::S10),
             _ => None,
         }
     }
@@ -182,12 +229,18 @@ impl Family {
         match self {
             Family::S8 => metrics::SCHEMA,
             Family::S9 => metrics_s9::SCHEMA,
+            Family::S10 => metrics_s9::SCHEMA_S10,
         }
+    }
+
+    /// Vrai pour le mode portefeuille (s9 et s10) : mêmes contrôles d'identités.
+    fn is_portfolio(self) -> bool {
+        matches!(self, Family::S9 | Family::S10)
     }
 }
 
 /// Schémas de manifeste acceptés, pour les messages d'erreur.
-const MANIFEST_SCHEMAS: &str = "`tv4-manifest-s8` ou `tv4-manifest-s9`";
+const MANIFEST_SCHEMAS: &str = "`tv4-manifest-s8`, `tv4-manifest-s9` ou `tv4-manifest-s10`";
 
 /// Un run lu et vérifié en interne.
 struct LoadedRun {
@@ -210,20 +263,22 @@ impl LoadedRun {
     }
 }
 
-/// Compare les runs `dir_a` et `dir_b`.
-///
-/// Rend [`VerifyError`] si l'un des deux est illisible ou incohérent avec son manifeste ; sinon un
-/// compte rendu dont [`VerifyReport::identical`] donne le verdict.
-pub fn verify(dir_a: &Path, dir_b: &Path) -> Result<VerifyReport, VerifyError> {
-    let a = load_run("A", dir_a)?;
-    let b = load_run("B", dir_b)?;
+/// Résultat de la comparaison de deux runs chargés : lignes de compte rendu et fichiers différents.
+struct Comparison {
+    lines: Vec<String>,
+    different_files: usize,
+}
+
+/// Compare deux runs chargés : famille, capital, puis les trois fichiers à l'octet et l'information du
+/// manifeste. Ne produit ni en-tête ni verdict.
+fn compare_runs(a: &LoadedRun, b: &LoadedRun) -> Result<Comparison, VerifyError> {
     if a.family != b.family {
         return Err(VerifyError::SchemaMismatch {
             a: string_at(&a.manifest, &["schema"]).unwrap_or_default(),
             b: string_at(&b.manifest, &["schema"]).unwrap_or_default(),
         });
     }
-    if a.family == Family::S9 {
+    if a.family.is_portfolio() {
         let (cash_a, cash_b) = (
             number_at(&a.manifest, &["initial_cash"]).unwrap_or(f64::NAN),
             number_at(&b.manifest, &["initial_cash"]).unwrap_or(f64::NAN),
@@ -236,10 +291,7 @@ pub fn verify(dir_a: &Path, dir_b: &Path) -> Result<VerifyReport, VerifyError> {
         }
     }
 
-    let mut lines = vec![
-        format!("run A : {}", dir_a.display()),
-        format!("run B : {}", dir_b.display()),
-    ];
+    let mut lines = Vec::new();
     let mut different_files = 0usize;
     for file in COMPARED_FILES {
         let (bytes_a, bytes_b) = (a.bytes(file), b.bytes(file));
@@ -259,7 +311,53 @@ pub fn verify(dir_a: &Path, dir_b: &Path) -> Result<VerifyReport, VerifyError> {
         }
     }
     describe_manifest_info(&a.manifest, &b.manifest, &mut lines);
+    Ok(Comparison {
+        lines,
+        different_files,
+    })
+}
 
+/// Nature d'un dossier pour le message de [`VerifyError::LayoutMismatch`].
+fn layout_kind(is_profiles: bool) -> &'static str {
+    if is_profiles {
+        "un dossier de profils"
+    } else {
+        "un dossier de run"
+    }
+}
+
+/// Compare les dossiers `dir_a` et `dir_b` : deux runs, ou deux dossiers de profils (ceux qui contiennent
+/// `profiles.json`).
+///
+/// Rend [`VerifyError`] si l'un des deux est illisible ou incohérent avec son manifeste, ou si l'un est un
+/// dossier de profils et l'autre non ; sinon un compte rendu dont [`VerifyReport::identical`] donne le
+/// verdict.
+pub fn verify(dir_a: &Path, dir_b: &Path) -> Result<VerifyReport, VerifyError> {
+    let profiles_a = dir_a.join(PROFILES_FILE).exists();
+    let profiles_b = dir_b.join(PROFILES_FILE).exists();
+    match (profiles_a, profiles_b) {
+        (true, true) => verify_profiles(dir_a, dir_b),
+        (false, false) => verify_runs(dir_a, dir_b),
+        _ => Err(VerifyError::LayoutMismatch {
+            a: dir_a.display().to_string(),
+            a_kind: layout_kind(profiles_a),
+            b: dir_b.display().to_string(),
+            b_kind: layout_kind(profiles_b),
+        }),
+    }
+}
+
+/// Compare deux dossiers de run.
+fn verify_runs(dir_a: &Path, dir_b: &Path) -> Result<VerifyReport, VerifyError> {
+    let a = load_run("A", dir_a)?;
+    let b = load_run("B", dir_b)?;
+    let mut comparison = compare_runs(&a, &b)?;
+    let mut lines = vec![
+        format!("run A : {}", dir_a.display()),
+        format!("run B : {}", dir_b.display()),
+    ];
+    lines.append(&mut comparison.lines);
+    let different_files = comparison.different_files;
     if different_files == 0 {
         let result_hash = string_at(&a.manifest, &["result_hash"]).unwrap_or_default();
         lines.push(format!(
@@ -268,6 +366,195 @@ pub fn verify(dir_a: &Path, dir_b: &Path) -> Result<VerifyReport, VerifyError> {
     } else {
         lines.push(format!(
             "verdict : DIFFÉRENTS ({different_files} fichier(s))"
+        ));
+    }
+    Ok(VerifyReport {
+        lines,
+        different_files,
+    })
+}
+
+/// Les trois profils d'un dossier de profils, chargés et confrontés à `profiles.json`.
+struct LoadedProfiles {
+    bytes: Vec<u8>,
+    value: Value,
+    runs: Vec<(&'static str, LoadedRun)>,
+}
+
+/// Noms des profils, dans l'ordre fixe de `profiles.json`.
+const PROFILE_NAMES: [&str; 3] = ["baseline", "adverse", "maker"];
+
+/// Vrai si `dir` est un nom de sous-dossier simple : un seul composant normal, sans séparateur.
+fn is_plain_dir_name(dir: &str) -> bool {
+    let mut components = Path::new(dir).components();
+    matches!(
+        (components.next(), components.next()),
+        (Some(Component::Normal(name)), None) if name == dir
+    )
+}
+
+/// Lit `profiles.json` et les trois sous-dossiers d'un dossier de profils.
+fn load_profiles(label: &'static str, dir: &Path) -> Result<LoadedProfiles, VerifyError> {
+    let shown_dir = dir.display().to_string();
+    let incomplete = |detail: String| VerifyError::ProfilesIncomplete {
+        label,
+        dir: shown_dir.clone(),
+        detail,
+    };
+    let incoherent = |detail: String| VerifyError::Profiles {
+        label,
+        dir: shown_dir.clone(),
+        detail,
+    };
+    let bytes = fs::read(dir.join(PROFILES_FILE)).map_err(|source| VerifyError::Read {
+        label,
+        dir: shown_dir.clone(),
+        file: PROFILES_FILE,
+        source,
+    })?;
+    let value: Value = serde_json::from_slice(&bytes).map_err(|source| VerifyError::Json {
+        label,
+        dir: shown_dir.clone(),
+        file: PROFILES_FILE,
+        source,
+    })?;
+    let found = value.get("schema").and_then(Value::as_str);
+    if found != Some(PROFILES_SCHEMA) {
+        return Err(VerifyError::Schema {
+            label,
+            dir: shown_dir.clone(),
+            file: PROFILES_FILE,
+            found: found.map_or_else(|| "absent".to_string(), |s| format!("`{s}`")),
+            expected: PROFILES_SCHEMA,
+        });
+    }
+    let entries = value
+        .get("profiles")
+        .and_then(Value::as_array)
+        .filter(|entries| entries.len() == PROFILE_NAMES.len())
+        .ok_or_else(|| incomplete("`profiles.json` ne décrit pas trois profils".to_string()))?;
+
+    let mut runs = Vec::with_capacity(PROFILE_NAMES.len());
+    for (name, entry) in PROFILE_NAMES.iter().zip(entries) {
+        let entry_name = entry.get("name").and_then(Value::as_str);
+        if entry_name != Some(name) {
+            return Err(incomplete(format!(
+                "le profil attendu est `{name}`, `profiles.json` porte {entry_name:?}"
+            )));
+        }
+        let sub = entry
+            .get("dir")
+            .and_then(Value::as_str)
+            .filter(|sub| is_plain_dir_name(sub))
+            .ok_or_else(|| incomplete(format!("le profil `{name}` n'a pas de `dir` simple")))?;
+        let sub_dir = dir.join(sub);
+        if !sub_dir.join(MANIFEST_FILE).is_file() {
+            return Err(incomplete(format!(
+                "sous-dossier `{sub}` ou son manifeste absent (profil `{name}`)"
+            )));
+        }
+        let run = load_run(label, &sub_dir)?;
+        if run.family != Family::S10 {
+            return Err(incoherent(format!(
+                "le profil `{name}` n'est pas un run s10 (schéma {})",
+                shown(&run.manifest, &["schema"])
+            )));
+        }
+        // `profiles.json` doit décrire exactement ce run.
+        for key in ["run_id", "config_hash", "result_hash"] {
+            let (wanted, found) = (string_at(entry, &[key]), string_at(&run.manifest, &[key]));
+            if wanted.is_none() || wanted != found {
+                return Err(incoherent(format!(
+                    "profil `{name}` : `{key}` vaut {} dans profiles.json et {} dans le manifeste",
+                    wanted.unwrap_or_else(|| "(absent)".to_string()),
+                    found.unwrap_or_else(|| "(absent)".to_string())
+                )));
+            }
+        }
+        if string_at(&run.manifest, &["profile"]).as_deref() != Some(name) {
+            return Err(incoherent(format!(
+                "le manifeste du sous-dossier `{sub}` n'est pas celui du profil `{name}`"
+            )));
+        }
+        runs.push((*name, run));
+    }
+
+    let ids: Vec<String> = runs
+        .iter()
+        .map(|(_, run)| string_at(&run.manifest, &["run_id"]).unwrap_or_default())
+        .collect();
+    let expected_id = match ids.as_slice() {
+        [baseline, adverse, maker] => profiles_id(baseline, adverse, maker),
+        _ => {
+            return Err(incomplete(
+                "`profiles.json` ne décrit pas trois profils".to_string(),
+            ));
+        }
+    };
+    if string_at(&value, &["profiles_id"]).as_deref() != Some(expected_id.as_str()) {
+        return Err(incoherent(format!(
+            "profiles_id {} pour {expected_id} recalculé depuis les trois run_id",
+            shown(&value, &["profiles_id"])
+        )));
+    }
+    for (name, run) in &runs {
+        if string_at(&run.manifest, &["profiles_id"]).as_deref() != Some(expected_id.as_str()) {
+            return Err(incoherent(format!(
+                "le manifeste du profil `{name}` porte profiles_id {} pour {expected_id}",
+                shown(&run.manifest, &["profiles_id"])
+            )));
+        }
+    }
+    Ok(LoadedProfiles { bytes, value, runs })
+}
+
+/// Compare deux dossiers de profils : chaque profil à son homologue, puis `profiles.json` à l'octet.
+fn verify_profiles(dir_a: &Path, dir_b: &Path) -> Result<VerifyReport, VerifyError> {
+    let a = load_profiles("A", dir_a)?;
+    let b = load_profiles("B", dir_b)?;
+    let mut lines = vec![
+        format!("profils A : {}", dir_a.display()),
+        format!("profils B : {}", dir_b.display()),
+    ];
+    let mut different_files = 0usize;
+    let mut different_profiles = Vec::new();
+    for ((name, run_a), (_, run_b)) in a.runs.iter().zip(&b.runs) {
+        let comparison = compare_runs(run_a, run_b)?;
+        let verdict = if comparison.different_files == 0 {
+            "identique".to_string()
+        } else {
+            different_profiles.push(*name);
+            format!("DIFFÉRENT ({} fichier(s))", comparison.different_files)
+        };
+        lines.push(format!("profil {name} : {verdict}"));
+        for line in comparison.lines {
+            lines.push(format!("  {line}"));
+        }
+        different_files += comparison.different_files;
+    }
+    if a.bytes == b.bytes {
+        lines.push(format!(
+            "{PROFILES_FILE} : identique ({})",
+            hash::blake3_prefixed(&a.bytes)
+        ));
+    } else {
+        different_files += 1;
+        lines.push(format!("{PROFILES_FILE} : DIFFÉRENT"));
+        describe_json_diff(&a.value, &b.value, &mut lines);
+    }
+    if different_files == 0 {
+        lines.push(format!(
+            "verdict : dossiers de profils identiques à l'octet (profiles_id {})",
+            shown(&a.value, &["profiles_id"])
+        ));
+    } else {
+        let detail = if different_profiles.is_empty() {
+            String::new()
+        } else {
+            format!(" ; profils en écart : {}", different_profiles.join(", "))
+        };
+        lines.push(format!(
+            "verdict : DIFFÉRENTS ({different_files} fichier(s){detail})"
         ));
     }
     Ok(VerifyReport {
@@ -363,13 +650,20 @@ fn load_run(label: &'static str, dir: &Path) -> Result<LoadedRun, VerifyError> {
     if result_hash != trades_hash {
         return Err(inconsistent("result_hash", &result_hash, &trades_hash));
     }
-    if family == Family::S9 {
+    if family.is_portfolio() {
         check_portfolio(&metrics, &manifest, &trades_bytes).map_err(|detail| {
             VerifyError::Portfolio {
                 label,
                 dir: shown.clone(),
                 detail,
             }
+        })?;
+    }
+    if family == Family::S10 {
+        check_costs(&metrics, &manifest).map_err(|detail| VerifyError::Portfolio {
+            label,
+            dir: shown.clone(),
+            detail,
         })?;
     }
     Ok(LoadedRun {
@@ -621,6 +915,43 @@ fn check_portfolio(metrics: &Value, manifest: &Value, trades_bytes: &[u8]) -> Re
                 "trades.csv a {count} lignes pour `{name}`, funnel_by_pair en annonce {expected}"
             ));
         }
+    }
+    Ok(())
+}
+
+/// Contrôles propres à un run s10 : le profil et les hashes des fichiers de coûts sont les mêmes dans
+/// `metrics.json` et dans le manifeste, et les trois blocs de coûts sont présents.
+fn check_costs(metrics: &Value, manifest: &Value) -> Result<(), String> {
+    let missing = |path: &str| format!("champ `{path}` absent ou mal typé");
+    for block in ["costs", "cost_arithmetic", "cost_counters"] {
+        if !metrics.get(block).is_some_and(Value::is_object) {
+            return Err(missing(block));
+        }
+    }
+    let profile_metrics =
+        string_at(metrics, &["costs", "profile"]).ok_or_else(|| missing("costs.profile"))?;
+    let profile_manifest = string_at(manifest, &["profile"]).ok_or_else(|| missing("profile"))?;
+    if profile_metrics != profile_manifest {
+        return Err(format!(
+            "profil `{profile_metrics}` dans metrics.json et `{profile_manifest}` dans le manifeste"
+        ));
+    }
+    let hash_metrics = string_at(metrics, &["costs", "costs_file_hash"])
+        .ok_or_else(|| missing("costs.costs_file_hash"))?;
+    let hash_manifest =
+        string_at(manifest, &["costs_file_hash"]).ok_or_else(|| missing("costs_file_hash"))?;
+    if hash_metrics != hash_manifest {
+        return Err(format!(
+            "costs_file_hash {hash_metrics} dans metrics.json et {hash_manifest} dans le manifeste"
+        ));
+    }
+    // Le fichier de mesures est facultatif : `null` dans les métriques, absent du manifeste.
+    let measures_metrics = string_at(metrics, &["costs", "cost_measures_hash"]);
+    let measures_manifest = string_at(manifest, &["cost_measures_hash"]);
+    if measures_metrics != measures_manifest {
+        return Err(format!(
+            "cost_measures_hash {measures_metrics:?} dans metrics.json et {measures_manifest:?} dans le manifeste"
+        ));
     }
     Ok(())
 }

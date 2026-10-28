@@ -37,14 +37,16 @@
 use serde::Serialize;
 
 use crate::engine::{
-    EngineFunnel, LegResult, PortfolioResult, PortfolioRunConfig, SignalRejections,
+    EngineFunnel, LegResult, PortfolioResult, PortfolioRunConfig, ProfileRun, SignalRejections,
 };
-use crate::model::{ExchangeId, Timeframe, Ts};
-use crate::sim::{SimCounters, SimDetail, SizingMode, Trade};
+use crate::model::costs::{CostMeasures, CostProfileName, CostsFile, LegCostRecord, ValueSource};
+use crate::model::{ExchangeId, FeeGridId, Timeframe, Ts};
+use crate::sim::{CostCounters, SimCounters, SimDetail, SizingMode, Trade};
 use crate::store::time::format_rfc3339_utc;
 
 use super::ReportError;
 use super::approx::{self, Approx};
+use super::cost_arithmetic::{self, CostArithmetic, CostArithmeticInput};
 use super::distribution::{self, Distribution};
 use super::drawdown::max_drawdown;
 use super::equity::sample_indices;
@@ -59,6 +61,16 @@ use super::writers::{exit_type, holding_ms, r_multiple};
 
 /// Identifiant du schéma.
 pub const SCHEMA: &str = "tv4-metrics-s9";
+/// Identifiant du schéma des runs à profils de coûts (docs/specs/s10.md §12.1).
+pub const SCHEMA_S10: &str = "tv4-metrics-s10";
+/// Écart de S9 que la loi de stop de s10 remplace.
+const STOP_SLIPPAGE_FIXED: &str = "stop_slippage_fixed";
+/// Écart de S9 que le profil maker remplace par un tirage de fill.
+const NO_MAKER_FILL_PROBABILITY: &str = "no_maker_fill_probability";
+/// Écart s10 : la probabilité de stress est la valeur provisoire, pas une mesure.
+const STOP_STRESS_UNCALIBRATED: &str = "stop_stress_uncalibrated";
+/// Écart s10 : une jambe au moins garde un défaut de classe (aucune mesure de carnet).
+const COST_DEFAULTS_UNMEASURED: &str = "cost_defaults_unmeasured";
 /// Durée d'une 1m en millisecondes.
 const MINUTE_MS: Ts = 60_000;
 /// Écart de S8 remplacé quand les minimums viennent d'un fichier d'instruments OKX.
@@ -397,6 +409,104 @@ pub struct MetricsS9 {
     pub instruments: InstrumentsInfo,
     pub executability: Executability,
     pub g1_executable: G1Executable,
+    /// Profil de coûts du run (s10) ; absent en s9.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub costs: Option<CostsBlock>,
+    /// Arithmétique de docs/04 §3.3 (s10) ; absent en s9.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub cost_arithmetic: Option<CostArithmetic>,
+    /// Compteurs de coûts sommés sur les jambes, avec le détail par paire (s10) ; absent en s9.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub cost_counters: Option<CostCountersReport>,
+}
+
+/// Bloc `costs` de `metrics.json` s10 (docs/specs/s10.md §12.1).
+#[derive(Clone, Debug, PartialEq, Serialize)]
+pub struct CostsBlock {
+    pub profile: CostProfileName,
+    /// `true` pour baseline et adverse, `false` pour maker (informatif, docs/04 §3).
+    pub gates_profile: bool,
+    pub rules_version: &'static str,
+    pub fee_grid: FeeGridId,
+    pub seed: u64,
+    /// Étiquette du fichier de coûts, telle que la CLI la donne : jamais un chemin absolu propre à une
+    /// machine, puisque `metrics.json` est comparé à l'octet.
+    pub costs_file: String,
+    pub costs_file_hash: String,
+    pub cost_measures_file: Option<String>,
+    pub cost_measures_hash: Option<String>,
+    pub stress_calibrated: bool,
+    pub stress_calibration_ref: Option<String>,
+    /// Valeurs résolues et sources de chaque jambe, dans l'ordre de l'univers.
+    pub legs: Vec<LegCostRecord>,
+}
+
+/// Part des entrées converties remplies en maker : `filled_maker / (filled_maker + taken_at_arrival)`,
+/// `None` si le dénominateur est nul (docs/specs/s10.md §6.5). Calculée ici et non par le simulateur.
+pub fn maker_entry_maker_share(counters: &CostCounters) -> Option<f64> {
+    let filled = counters.maker_entries_filled_maker;
+    let denominator = filled + counters.maker_entries_taken_at_arrival;
+    (denominator > 0).then(|| filled as f64 / denominator as f64)
+}
+
+/// Compteurs de coûts d'une paire et part maker.
+#[derive(Clone, Debug, PartialEq, Serialize)]
+pub struct CostCountersPair {
+    pub symbol: String,
+    #[serde(flatten)]
+    pub counters: CostCounters,
+    pub maker_entry_maker_share: Option<f64>,
+}
+
+/// Bloc `cost_counters` : la somme des compteurs des jambes (dans l'ordre de l'univers), la part maker
+/// dérivée et le détail par paire.
+#[derive(Clone, Debug, PartialEq, Serialize)]
+pub struct CostCountersReport {
+    #[serde(flatten)]
+    pub total: CostCounters,
+    pub maker_entry_maker_share: Option<f64>,
+    pub by_pair: Vec<CostCountersPair>,
+}
+
+impl CostCountersReport {
+    /// Somme les compteurs des jambes ; `symbols` et `by_leg` ont la même longueur.
+    pub fn new(symbols: &[String], by_leg: &[CostCounters]) -> CostCountersReport {
+        let mut total = CostCounters::default();
+        let mut by_pair = Vec::with_capacity(by_leg.len());
+        for (symbol, c) in symbols.iter().zip(by_leg) {
+            total.stop_fills_drawn += c.stop_fills_drawn;
+            total.stop_stress_fills += c.stop_stress_fills;
+            total.maker_entries_converted += c.maker_entries_converted;
+            total.maker_entries_taken_at_arrival += c.maker_entries_taken_at_arrival;
+            total.maker_fill_draws += c.maker_fill_draws;
+            total.maker_fills += c.maker_fills;
+            total.maker_fill_missed += c.maker_fill_missed;
+            total.maker_entries_filled_maker += c.maker_entries_filled_maker;
+            total.spread_cost_total += c.spread_cost_total;
+            total.adverse_selection_total += c.adverse_selection_total;
+            by_pair.push(CostCountersPair {
+                symbol: symbol.clone(),
+                counters: *c,
+                maker_entry_maker_share: maker_entry_maker_share(c),
+            });
+        }
+        CostCountersReport {
+            maker_entry_maker_share: maker_entry_maker_share(&total),
+            total,
+            by_pair,
+        }
+    }
+}
+
+/// Fichiers de coûts d'un run s10, tels que la CLI les a lus.
+#[derive(Clone, Copy, Debug)]
+pub struct CostsInputs<'a> {
+    pub file: &'a CostsFile,
+    /// Étiquette du fichier de coûts écrite dans `metrics.costs.costs_file` (voir [`CostsBlock`]).
+    pub file_label: &'a str,
+    pub measures: Option<&'a CostMeasures>,
+    /// Étiquette du fichier de mesures ; `None` si et seulement si `measures` l'est.
+    pub measures_label: Option<&'a str>,
 }
 
 fn inconsistent(detail: String) -> ReportError {
@@ -879,7 +989,113 @@ impl MetricsS9 {
             instruments: inputs.instruments,
             executability,
             g1_executable,
+            costs: None,
+            cost_arithmetic: None,
+            cost_counters: None,
         })
+    }
+
+    /// Construit `metrics.json` d'un profil de coûts s10 (docs/specs/s10.md §12.1).
+    ///
+    /// Le corps est celui de [`MetricsS9::new`] sur `run.result` (même entonnoir, mêmes identités), puis
+    /// le schéma devient `tv4-metrics-s10`, `sim_deviations` suit §12.1 et les trois blocs `costs`,
+    /// `cost_arithmetic` et `cost_counters` sont remplis. Refuse un run qui n'a pas de bloc `costs`
+    /// haché, un profil qui ne correspond pas à celui du hash, ou des jambes dont les valeurs résolues ne
+    /// suivent pas l'univers.
+    pub fn new_s10(
+        run: &ProfileRun,
+        inputs: MetricsS9Inputs<'_>,
+        costs: CostsInputs<'_>,
+    ) -> Result<MetricsS9, ReportError> {
+        let result = &run.result;
+        let Some(hashed) = result.config.costs.as_ref() else {
+            return Err(ReportError::Series {
+                detail:
+                    "le run n'a pas de bloc `costs` dans son objet haché : ce n'est pas un run s10"
+                        .to_string(),
+            });
+        };
+        if hashed.profile != run.profile {
+            return Err(ReportError::Series {
+                detail: format!(
+                    "profil `{}` joué pour un objet haché de profil `{}`",
+                    run.profile, hashed.profile
+                ),
+            });
+        }
+        let legs = result.legs.len();
+        let symbols_match = run.legs.len() == legs
+            && run.cost_by_leg.len() == legs
+            && run
+                .legs
+                .iter()
+                .zip(&result.universe)
+                .all(|(record, symbol)| &record.symbol == symbol);
+        if !symbols_match {
+            return Err(ReportError::Series {
+                detail: format!(
+                    "{} jambes résolues et {} compteurs de coûts pour {legs} paires de l'univers",
+                    run.legs.len(),
+                    run.cost_by_leg.len()
+                ),
+            });
+        }
+        if costs.measures.is_some() != costs.measures_label.is_some() {
+            return Err(ReportError::Series {
+                detail: "le fichier de mesures et son étiquette vont ensemble".to_string(),
+            });
+        }
+        let decision_tf = run
+            .legs
+            .first()
+            .map(|record| record.decision_tf)
+            .ok_or_else(|| ReportError::Series {
+                detail: "aucune jambe résolue".to_string(),
+            })?;
+
+        let mut metrics = MetricsS9::new(result, inputs)?;
+        let arithmetic = cost_arithmetic::compute(&CostArithmeticInput {
+            trades: &result.trades,
+            profile: run.profile,
+            decision_tf,
+            span_ms: metrics.span_ms(),
+            grid_open_ms: &result.grid_open_ms,
+            equity: &result.equity,
+        })?;
+        let defaults_unmeasured = run.legs.iter().any(|record| {
+            record.spread_source == ValueSource::Default
+                || record.slippage_source == ValueSource::Default
+        });
+        let stress_calibrated = costs.file.stress_calibrated;
+        metrics.sim_deviations = metrics
+            .sim_deviations
+            .iter()
+            .copied()
+            .filter(|&d| {
+                d != STOP_SLIPPAGE_FIXED
+                    && !(run.profile == CostProfileName::Maker && d == NO_MAKER_FILL_PROBABILITY)
+            })
+            .chain((!stress_calibrated).then_some(STOP_STRESS_UNCALIBRATED))
+            .chain(defaults_unmeasured.then_some(COST_DEFAULTS_UNMEASURED))
+            .collect();
+        metrics.schema = SCHEMA_S10;
+        metrics.costs = Some(CostsBlock {
+            profile: run.profile,
+            gates_profile: run.profile.gates(),
+            rules_version: hashed.rules_version,
+            fee_grid: hashed.fee_grid.grid,
+            seed: hashed.seed,
+            costs_file: costs.file_label.to_string(),
+            costs_file_hash: costs.file.file_hash().to_string(),
+            cost_measures_file: costs.measures_label.map(str::to_string),
+            cost_measures_hash: costs.measures.map(|m| m.file_hash().to_string()),
+            stress_calibrated,
+            stress_calibration_ref: costs.file.calibration_ref().map(str::to_string),
+            legs: run.legs.clone(),
+        });
+        metrics.cost_arithmetic = Some(arithmetic);
+        metrics.cost_counters = Some(CostCountersReport::new(&result.universe, &run.cost_by_leg));
+        Ok(metrics)
     }
 
     /// Durée de la fenêtre jouée : `dernière ouverture + 60 000 − première ouverture`.

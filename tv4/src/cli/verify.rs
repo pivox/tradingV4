@@ -1,4 +1,5 @@
-//! Sous-commande `tv4 verify` (S8) : compare deux dossiers de run à l'octet.
+//! Sous-commande `tv4 verify` (S8) : compare deux dossiers de run à l'octet. Depuis S10, deux dossiers de
+//! profils de coûts (`profiles.json` et trois sous-dossiers) se comparent profil par profil.
 //!
 //! Le compte rendu vient de [`crate::report::verify`] ; la CLI l'imprime sur la sortie standard et
 //! traduit le verdict en code de sortie : 0 identiques, 3 différents ([`CliError::VerifyMismatch`]),
@@ -14,10 +15,10 @@ use crate::report::verify;
 /// Arguments de `tv4 verify`.
 #[derive(Debug, Args)]
 pub struct VerifyArgs {
-    /// Premier dossier de run (celui de `tv4 backtest --out`).
+    /// Premier dossier de run ou de profils de coûts (celui de `tv4 backtest --out`).
     #[arg(value_name = "RUN_A")]
     pub run_a: PathBuf,
-    /// Second dossier de run.
+    /// Second dossier, de la même famille que le premier (run s8, s9, s10, ou dossier de profils).
     #[arg(value_name = "RUN_B")]
     pub run_b: PathBuf,
 }

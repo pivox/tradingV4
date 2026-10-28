@@ -43,6 +43,16 @@
 //!    de régime BTC 1d / SMA200 exposée aux stratégies par `BarContext::regime`.
 //! 4. `run_cell` refuse une stratégie qui lit le régime ([`EngineError::RegimeNeedsPortfolio`]).
 //!
+//! Ajouts de S10 (profils de coûts, docs S10 §9 et §10) :
+//!
+//! 1. [`run_portfolio_profiles`] joue baseline, adverse et maker sur une préparation construite une fois
+//!    (bougies, `Mtf`, colonnes d'indicateurs, série de régime, rang), chaque profil ayant son `Book`, ses
+//!    stratégies et son curseur de régime. [`PrepStats`] est compté par l'appelant de la préparation.
+//! 2. [`PortfolioRunConfig`] porte une seconde génération (`tv4-portfolio-config-v2`, bloc `costs`) ; le
+//!    JSON v1 du chemin hérité est inchangé à l'octet.
+//! 3. `Strategy::decision_tf()` (défaut : le plus grand TF déclaré) fixe le TTL maker et entre dans le hash
+//!    v2 seulement.
+//!
 //! Écarts d'implémentation (S6) à S3 :
 //!
 //! 1. Le `CellConfig` porte l'`InstrumentRules` (tick, lot, minimums), qui entre dans le `config_hash`
@@ -76,21 +86,26 @@ pub mod config;
 mod portfolio;
 pub mod portfolio_config;
 pub mod priority;
+pub mod profiles;
 mod regime;
 mod run;
 pub mod signals;
 
 pub use config::{CellConfig, DEFAULT_MIN_TRADES, RunConfig, StrategyRecord};
 pub use portfolio::{
-    LegResult, PortfolioInputs, PortfolioResult, PriorityStats, RegimeStats, run_portfolio,
-    run_portfolio_observed,
+    LegResult, PortfolioInputs, PortfolioResult, PrepStats, PriorityStats, RegimeStats,
+    run_portfolio, run_portfolio_counted, run_portfolio_observed,
 };
 pub use portfolio_config::{
-    DEFAULT_MAX_POSITIONS, DEFAULT_QUOTE_GAP_MS, LIQUIDITY_WINDOW_DAYS, MAX_POSITIONS_LIMIT,
-    MinOrderBump, PORTFOLIO_SCHEMA, PRIORITY_RULE, PortfolioBlock, PortfolioConfig,
-    PortfolioRunConfig, RegimeRecord,
+    CostsHashed, DEFAULT_MAX_POSITIONS, DEFAULT_QUOTE_GAP_MS, FeeGridHashed, LIQUIDITY_WINDOW_DAYS,
+    MAX_POSITIONS_LIMIT, MinOrderBump, PORTFOLIO_SCHEMA, PORTFOLIO_SCHEMA_V2, PRIORITY_RULE,
+    PortfolioBlock, PortfolioConfig, PortfolioRunConfig, RegimeRecord,
 };
 pub use priority::RankTable;
+pub use profiles::{
+    CostSetup, ProfileInputs, ProfileRun, ProfilesInputs, ProfilesResult, run_portfolio_profile,
+    run_portfolio_profiles,
+};
 pub use run::{CellResult, run_cell, run_cell_mtf, run_cell_observed};
 pub use signals::{EngineFunnel, SignalClass, SignalRejections, StrategyFunnelCounts};
 
@@ -210,6 +225,32 @@ pub enum EngineError {
         warmup_bars: usize,
         bars: usize,
     },
+
+    // --- Profils de coûts (S10) ---
+    #[error(
+        "slippage scalaire non nul ({bps} bp) avec des profils de coûts : le slippage market vit dans le profil de chaque jambe, `PortfolioConfig::slippage` doit valoir zéro"
+    )]
+    ScalarSlippageWithCosts { bps: f64 },
+
+    #[error(
+        "`stop_stress_bps` vaut {stop_stress_bps} avec des profils de coûts : le stress vit dans le profil (`config/costs.toml`), `SimRules::stop_stress_bps` doit valoir zéro"
+    )]
+    StopStressWithCosts { stop_stress_bps: f64 },
+
+    #[error(
+        "la grille de frais du lieu `{exchange}` n'a pas de nom de grille : un run s10 exige une grille nommée (okx_regular ou bitvavo_usdc)"
+    )]
+    NoFeeGrid { exchange: crate::model::ExchangeId },
+
+    #[error(
+        "le timeframe de décision {tf} de la stratégie `{id}` n'est pas dans ses timeframes déclarés"
+    )]
+    DecisionTfNotDeclared { id: &'static str, tf: Timeframe },
+
+    #[error(
+        "les trois jeux de stratégies des profils diffèrent (identifiant, version, paramètres, indicateurs, timeframes, timeframe de décision, régime ou warmup) : les colonnes d'indicateurs sont calculées une fois, sur le jeu du profil baseline"
+    )]
+    ProfileStrategiesDiffer,
 }
 
 /// Crochet appelé exactement deux fois par run, juste avant et juste après la boucle 1m. Il permet

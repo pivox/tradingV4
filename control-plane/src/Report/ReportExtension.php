@@ -25,6 +25,7 @@ final class ReportExtension extends AbstractExtension
             new TwigFilter('datetime', $this->format->dateTime(...)),
             new TwigFilter('duration', $this->format->duration(...)),
             new TwigFilter('scalar', $this->format->scalar(...)),
+            new TwigFilter('yesno', $this->format->yesNo(...)),
         ];
     }
 }

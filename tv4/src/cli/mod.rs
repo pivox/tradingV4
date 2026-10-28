@@ -3,11 +3,13 @@
 //!
 //! `backtest` existe depuis S3 (fixture CSV 1m), `ingest csv` et `dataset build` depuis S4, `ingest
 //! kraken` depuis S5, `ingest okx` et `compare-sources` depuis S7, `verify` et `bench` depuis S8,
-//! `instruments fetch` depuis S9. `grid` arrive au jalon 1.5.
+//! `instruments fetch` depuis S9, `backtest --costs` (profils de coûts) et `costs calibrate-stress` depuis
+//! S10. `grid` arrive au jalon 1.5.
 //!
 //! Codes de sortie ([`CliError::exit_code`]) : 0 succès, 1 erreur applicative, 2 erreur d'usage (clap)
 //! ou clé OKX refusée par `tv4 instruments fetch` (permission autre que lecture, fichier de clé non
-//! sûr), 3 `tv4 verify` a trouvé deux runs différents.
+//! sûr) ou usage refusé par la CLI de S10 (`--costs` sans `--symbols` ou avec `--slippage-bps`, dataset
+//! absent ou paramètre invalide de `costs calibrate-stress`), 3 `tv4 verify` a trouvé deux runs différents.
 //!
 //! La CLI est le seul module qui lit l'horloge système ([`now_ms`]) : le store reçoit l'instant en
 //! paramètre (docs/03 §5.3, écart 5 de S4).
@@ -18,7 +20,7 @@ use clap::{Parser, Subcommand};
 
 use crate::model::Ts;
 
-pub use backtest::{BacktestArgs, RunInputArgs};
+pub use backtest::{BacktestArgs, CostArgs, RunInputArgs};
 pub use bench::BenchArgs;
 pub use compare_sources::{
     BarReport, COMPARE_LOCK_TIMEOUT, CompareReport, CompareSourcesArgs, CompareSourcesOptions,
@@ -26,6 +28,7 @@ pub use compare_sources::{
     MEDIAN_ABS_DELTA_4H_MAX, MinuteCounts, RangeReport, ShareReport, SourceReport,
     ThresholdsReport, Verdict, WICK_THRESHOLDS, WickReport, WickSide, compare_sources,
 };
+pub use costs::{CalibrateStressArgs, CostsAction};
 pub use dataset::DatasetBuildArgs;
 pub use ingest::{IngestCsvArgs, IngestKrakenArgs, IngestSummary, ingest_kraken};
 pub use ingest_okx::{
@@ -38,6 +41,7 @@ pub use verify::VerifyArgs;
 mod backtest;
 mod bench;
 mod compare_sources;
+mod costs;
 mod dataset;
 mod ingest;
 mod ingest_okx;
@@ -80,6 +84,9 @@ pub enum CliError {
 
     #[error(transparent)]
     Store(#[from] crate::store::StoreError),
+
+    #[error(transparent)]
+    Stress(#[from] crate::research::stress::StressError),
 
     #[error(transparent)]
     KrakenZip(#[from] crate::marketdata::kraken_zip::KrakenZipError),
@@ -189,6 +196,21 @@ pub enum CliError {
     #[error("option {option} : {detail}")]
     PortfolioOption { option: String, detail: String },
 
+    /// `--costs` (profils de coûts de S10) sans `--symbols` : les profils jouent un portefeuille.
+    #[error("--costs n'a de sens qu'avec --symbols (mode portefeuille)")]
+    CostsWithoutSymbols,
+
+    /// `--costs` avec `--slippage-bps` : le slippage vient du profil de coûts, il ne se double pas d'un
+    /// slippage scalaire.
+    #[error(
+        "--slippage-bps est refusé avec --costs : le slippage vient du profil de coûts (config/costs.toml)"
+    )]
+    CostsWithScalarSlippage,
+
+    /// `costs calibrate-stress` : le manifeste de dataset demandé n'existe pas.
+    #[error("dataset `{dataset}` introuvable : manifeste `{path}` absent")]
+    DatasetNotFound { dataset: String, path: String },
+
     /// Une jambe du portefeuille n'a pas d'instrument dans le fichier d'instruments OKX.
     #[error("instrument OKX `{inst_id}` absent du fichier d'instruments")]
     InstrumentNotListed { inst_id: String },
@@ -200,13 +222,18 @@ pub enum CliError {
 
 impl CliError {
     /// Code de sortie du processus : 3 pour deux runs différents (`tv4 verify`), 2 pour une clé OKX
-    /// refusée (fichier de clé non sûr, permission autre que lecture), 1 pour toute autre erreur
-    /// applicative ; clap utilise aussi 2 pour une erreur d'usage.
+    /// refusée (fichier de clé non sûr, permission autre que lecture) ou un usage refusé par la CLI de S10
+    /// (`--costs` mal combiné, dataset absent, paramètre de calibration invalide), 1 pour toute autre
+    /// erreur applicative ; clap utilise aussi 2 pour une erreur d'usage.
     pub fn exit_code(&self) -> u8 {
         match self {
             CliError::VerifyMismatch { .. } => 3,
             CliError::Credentials(error) if error.is_unsafe_file() => 2,
             CliError::PrivateApi(error) if error.is_key_refused() => 2,
+            CliError::CostsWithoutSymbols
+            | CliError::CostsWithScalarSlippage
+            | CliError::DatasetNotFound { .. }
+            | CliError::Stress(crate::research::stress::StressError::InvalidParams { .. }) => 2,
             _ => 1,
         }
     }
@@ -250,7 +277,9 @@ pub enum Command {
         action: DatasetAction,
     },
     /// Lance un backtest sur une fixture CSV Kraken 1m (S3) ou un dataset figé (S4).
-    Backtest(BacktestArgs),
+    ///
+    /// Boîte : avec les options des profils de coûts (S10), la variante dépasse de loin les autres.
+    Backtest(Box<BacktestArgs>),
     /// Mesure le biais de lieu Kraken / OKX sur leur recouvrement (clôtures 4h et 1d, mèches 1m).
     CompareSources(CompareSourcesArgs),
     /// Compare deux runs à l'octet (S8) : code 0 identiques, 3 différents, 1 erreur ou run incohérent.
@@ -262,6 +291,12 @@ pub enum Command {
         /// Opération demandée.
         #[command(subcommand)]
         action: InstrumentsAction,
+    },
+    /// Profils de coûts : calibration de la composante de stress des stops (S10).
+    Costs {
+        /// Opération demandée.
+        #[command(subcommand)]
+        action: CostsAction,
     },
 }
 
@@ -300,6 +335,9 @@ pub fn run(command: &Command) -> Result<(), CliError> {
         Command::Bench(args) => bench::run(args),
         Command::Instruments { action } => match action {
             InstrumentsAction::Fetch(args) => instruments::fetch(args),
+        },
+        Command::Costs { action } => match action {
+            CostsAction::CalibrateStress(args) => costs::calibrate_stress(args),
         },
     }
 }
@@ -394,8 +432,10 @@ mod tests {
         assert_eq!(args.inputs.fixture, Some(std::path::PathBuf::from("f.csv")));
         assert!(args.inputs.dataset.is_none());
         assert_eq!(args.inputs.root, std::path::PathBuf::from("."));
-        assert_eq!(args.inputs.fees, crate::model::ExchangeId::Okx);
-        assert_eq!(args.inputs.slippage_bps.bps(), 5.0);
+        assert_eq!(args.inputs.fees, crate::model::FeeGridId::OkxRegular);
+        assert!(args.inputs.slippage_bps.is_none());
+        assert_eq!(args.inputs.legacy_slippage().expect("défaut").bps(), 5.0);
+        assert!(args.costs.costs.is_none());
         assert_eq!(args.inputs.capital, 300.0);
         assert_eq!(
             args.inputs.fees_file,
@@ -850,6 +890,179 @@ mod tests {
             reason: "délai dépassé".to_string(),
         });
         assert_eq!(reseau.exit_code(), 1);
+    }
+
+    #[test]
+    fn les_options_de_couts_se_parsent_et_se_refusent_sans_costs() {
+        let base = [
+            "tv4",
+            "backtest",
+            "--dataset",
+            "d",
+            "--strategy",
+            "s",
+            "--params",
+            "p",
+            "--symbols",
+            "BTC-USD",
+        ];
+        let avec = |extra: &[&str]| {
+            let mut args = base.to_vec();
+            args.extend_from_slice(extra);
+            Cli::try_parse_from(args)
+        };
+        let Command::Backtest(args) = avec(&[
+            "--costs",
+            "c.toml",
+            "--cost-measures",
+            "m.json",
+            "--cost-seed",
+            "7",
+        ])
+        .expect("options de coûts valides")
+        .command
+        else {
+            panic!("sous-commande attendue : backtest");
+        };
+        assert_eq!(args.costs.costs, Some(std::path::PathBuf::from("c.toml")));
+        assert_eq!(
+            args.costs.cost_measures,
+            Some(std::path::PathBuf::from("m.json"))
+        );
+        assert_eq!(args.costs.cost_seed, Some(7));
+        // `--cost-measures` et `--cost-seed` exigent `--costs` (code 2 : clap).
+        assert!(avec(&["--cost-measures", "m.json"]).is_err());
+        assert!(avec(&["--cost-seed", "7"]).is_err());
+        // Graine : [0, 2^53[.
+        assert!(avec(&["--costs", "c", "--cost-seed", "9007199254740991"]).is_ok());
+        assert!(avec(&["--costs", "c", "--cost-seed", "9007199254740992"]).is_err());
+        assert!(avec(&["--costs", "c", "--cost-seed", "-1"]).is_err());
+        // Grilles de frais : alias `okx`, refus de `kraken` et de `okx_xperps` à l'analyse (code 2).
+        let Command::Backtest(args) = avec(&["--fees", "okx"]).expect("alias").command else {
+            panic!("sous-commande attendue : backtest");
+        };
+        assert_eq!(args.inputs.fees, crate::model::FeeGridId::OkxRegular);
+        assert!(avec(&["--fees", "okx_regular"]).is_ok());
+        assert!(avec(&["--fees", "bitvavo_usdc"]).is_ok());
+        assert!(avec(&["--fees", "kraken"]).is_err());
+        assert!(avec(&["--fees", "okx_xperps"]).is_err());
+    }
+
+    #[test]
+    fn la_verification_des_couts_refuse_sans_symbols_et_avec_slippage() {
+        let costs = CostArgs {
+            costs: Some(std::path::PathBuf::from("c.toml")),
+            ..CostArgs::default()
+        };
+        let parse = |extra: &[&str]| -> BacktestArgs {
+            let mut args = vec!["tv4", "backtest", "--dataset", "d", "--strategy", "s"];
+            args.extend(["--params", "p"]);
+            args.extend_from_slice(extra);
+            let Command::Backtest(args) = Cli::try_parse_from(args).expect("valide").command else {
+                panic!("sous-commande attendue : backtest");
+            };
+            *args
+        };
+        let sans_symbols = parse(&[]);
+        let erreur = costs
+            .check(&sans_symbols.portfolio, &sans_symbols.inputs)
+            .unwrap_err();
+        assert!(matches!(erreur, CliError::CostsWithoutSymbols), "{erreur}");
+        assert_eq!(erreur.exit_code(), 2);
+        let avec_slippage = parse(&["--symbols", "BTC-USD", "--slippage-bps", "0"]);
+        let erreur = costs
+            .check(&avec_slippage.portfolio, &avec_slippage.inputs)
+            .unwrap_err();
+        assert!(
+            matches!(erreur, CliError::CostsWithScalarSlippage),
+            "{erreur}"
+        );
+        assert_eq!(erreur.exit_code(), 2);
+        let valide = parse(&["--symbols", "BTC-USD"]);
+        assert!(costs.check(&valide.portfolio, &valide.inputs).is_ok());
+        // Sans --costs, rien n'est refusé ici.
+        assert!(
+            CostArgs::default()
+                .check(&sans_symbols.portfolio, &sans_symbols.inputs)
+                .is_ok()
+        );
+    }
+
+    #[test]
+    fn calibrate_stress_se_parse_avec_ses_defauts_et_refuse_les_valeurs_invalides() {
+        let base = ["tv4", "costs", "calibrate-stress", "--dataset", "d"];
+        let avec = |extra: &[&str]| {
+            let mut args = base.to_vec();
+            args.extend_from_slice(extra);
+            Cli::try_parse_from(args)
+        };
+        let Command::Costs {
+            action: CostsAction::CalibrateStress(args),
+        } = avec(&[]).expect("un dataset suffit").command
+        else {
+            panic!("sous-commande attendue : costs calibrate-stress");
+        };
+        assert_eq!(args.costs, std::path::PathBuf::from("config/costs.toml"));
+        assert_eq!(args.root, std::path::PathBuf::from("."));
+        assert!(args.tf.is_empty() && args.k.is_empty() && args.out.is_none());
+        assert_eq!(
+            args.params(),
+            crate::research::stress::StressParams::default()
+        );
+        let Command::Costs {
+            action: CostsAction::CalibrateStress(args),
+        } = avec(&[
+            "--tf",
+            "4h",
+            "--k",
+            "2",
+            "--k",
+            "2.5",
+            "--horizon-bars",
+            "10",
+            "--range-mult",
+            "4",
+            "--dataset",
+            "e",
+        ])
+        .expect("options valides")
+        .command
+        else {
+            panic!("sous-commande attendue : costs calibrate-stress");
+        };
+        let params = args.params();
+        assert_eq!(params.tfs, [crate::model::Timeframe::H4]);
+        assert_eq!(params.k, [2.0, 2.5]);
+        assert_eq!((params.horizon_bars, params.range_mult), (10, 4.0));
+        assert_eq!(args.dataset.len(), 2);
+        // Dataset obligatoire ; TF inconnu, k <= 0, horizon 0, range <= 0 : erreurs d'usage.
+        assert!(Cli::try_parse_from(["tv4", "costs", "calibrate-stress"]).is_err());
+        for extra in [
+            ["--tf", "3h"],
+            ["--k", "0"],
+            ["--k", "-1"],
+            ["--k", "nan"],
+            ["--horizon-bars", "0"],
+            ["--range-mult", "0"],
+        ] {
+            assert!(avec(&extra).is_err(), "{extra:?}");
+        }
+    }
+
+    #[test]
+    fn un_parametre_de_calibration_invalide_sort_en_code_2() {
+        let erreur = CliError::Stress(crate::research::stress::StressError::InvalidParams {
+            field: "tfs",
+            reason: "1m".to_string(),
+        });
+        assert_eq!(erreur.exit_code(), 2);
+        let erreur = CliError::Stress(crate::research::stress::StressError::NoSeries);
+        assert_eq!(erreur.exit_code(), 1);
+        let absent = CliError::DatasetNotFound {
+            dataset: "d".to_string(),
+            path: "p".to_string(),
+        };
+        assert_eq!(absent.exit_code(), 2);
     }
 
     #[test]

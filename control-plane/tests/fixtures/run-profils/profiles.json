@@ -1,0 +1,94 @@
+{
+    "cost_measures_hash": null,
+    "costs_file_hash": "blake3:c057f11ec057f11ec057f11ec057f11ec057f11ec057f11ec057f11ec057f11e",
+    "dataset_hash": "blake3:da7a9001da7a9001da7a9001da7a9001da7a9001da7a9001da7a9001da7a9001",
+    "fee_grid": "okx_regular",
+    "gates": {
+        "both_gate_profiles_positive": false,
+        "cost_r": {
+            "adverse": false,
+            "baseline": false
+        },
+        "cost_third": {
+            "adverse": false,
+            "baseline": false
+        },
+        "gross_median_vs_2x_baseline_cost": false
+    },
+    "initial_cash": 300.0,
+    "label": "fill_dependent",
+    "label_fr": "dépend du fill",
+    "maker": {
+        "entries_converted": 10,
+        "entries_filled_maker": 7,
+        "entries_taken_at_arrival": 3,
+        "expectancy_net": 0.031385833,
+        "maker_entry_maker_share": 0.7,
+        "min_maker_entry_share": 0.5,
+        "n_trades": 10,
+        "status": "positive"
+    },
+    "profiles": [
+        {
+            "config_hash": "ba5e0001ba5e0001ba5e0001ba5e0001ba5e0001ba5e0001ba5e0001ba5e0001",
+            "cost_r_mean": 0.6446891473,
+            "cost_r_pass": false,
+            "cost_third_pass": false,
+            "dir": "baseline",
+            "expectancy_net": -0.274773785,
+            "expectancy_r": -0.2195117733,
+            "gross_median_rate": 0.0109492544,
+            "n_trades": 10,
+            "name": "baseline",
+            "pnl_net": -2.74773785,
+            "positive": false,
+            "result_hash": "blake3:7e5a00017e5a00017e5a00017e5a00017e5a00017e5a00017e5a00017e5a0001",
+            "role": "gate",
+            "round_trip_cost_rate_mean": 0.0079922723,
+            "run_id": "5e7fba5e5e7fba5e5e7fba5e5e7fba5e5e7fba5e5e7fba5e5e7fba5e5e7fba5e",
+            "verdict": "rejected_negative_expectancy"
+        },
+        {
+            "config_hash": "ad7e0002ad7e0002ad7e0002ad7e0002ad7e0002ad7e0002ad7e0002ad7e0002",
+            "cost_r_mean": 0.9834078561,
+            "cost_r_pass": false,
+            "cost_third_pass": false,
+            "dir": "adverse",
+            "expectancy_net": -1.348320826,
+            "expectancy_r": -0.2195117733,
+            "gross_median_rate": 0.0108992544,
+            "n_trades": 10,
+            "name": "adverse",
+            "pnl_net": -13.48320826,
+            "positive": false,
+            "result_hash": "blake3:7e5a00027e5a00027e5a00027e5a00027e5a00027e5a00027e5a00027e5a0002",
+            "role": "gate",
+            "round_trip_cost_rate_mean": 0.0118534541,
+            "run_id": "5e7fad7e5e7fad7e5e7fad7e5e7fad7e5e7fad7e5e7fad7e5e7fad7e5e7fad7e",
+            "verdict": "rejected_negative_expectancy"
+        },
+        {
+            "config_hash": "3a4e00033a4e00033a4e00033a4e00033a4e00033a4e00033a4e00033a4e0003",
+            "cost_r_mean": 0.564655403,
+            "cost_r_pass": false,
+            "cost_third_pass": false,
+            "dir": "maker",
+            "expectancy_net": 0.031385833,
+            "expectancy_r": -0.2195117733,
+            "gross_median_rate": 0.0109992698,
+            "n_trades": 10,
+            "name": "maker",
+            "pnl_net": 0.31385833,
+            "positive": true,
+            "result_hash": "blake3:7e5a00037e5a00037e5a00037e5a00037e5a00037e5a00037e5a00037e5a0003",
+            "role": "informative",
+            "round_trip_cost_rate_mean": 0.0069418272,
+            "run_id": "5e7f3a4e5e7f3a4e5e7f3a4e5e7f3a4e5e7f3a4e5e7f3a4e5e7f3a4e5e7f3a4e",
+            "verdict": "ok"
+        }
+    ],
+    "profiles_id": "9f0f1e509f0f1e509f0f1e509f0f1e509f0f1e509f0f1e509f0f1e509f0f1e50",
+    "schema": "tv4-profiles-v1",
+    "seed": 1,
+    "stress_calibrated": false
+}
