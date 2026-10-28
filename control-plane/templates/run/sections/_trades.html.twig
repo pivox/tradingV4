@@ -16,7 +16,7 @@
   <table class="data">
     <thead>
       <tr>
-        <th scope="col">Lot</th><th scope="col">Entrée</th><th scope="col">Sortie</th>
+        <th scope="col">Lot</th>{% if metrics.isPortfolio %}<th scope="col">Paire</th>{% endif %}<th scope="col">Entrée</th><th scope="col">Sortie</th>
         <th scope="col" class="num">Prix d'entrée</th><th scope="col" class="num">Prix de sortie</th>
         <th scope="col" class="num">Durée</th><th scope="col" class="num">Frais</th><th scope="col" class="num">Slippage</th>
         <th scope="col" class="num">PnL net</th><th scope="col" class="num">R</th>
@@ -28,7 +28,7 @@
     {% for t in shownTrades %}
       <tr>
         <td class="num">{{ t.lotId }}</td>
-        <td>{{ t.entryMs|datetime }}</td>
+        {% if metrics.isPortfolio %}<td><code>{{ t.symbol }}</code></td>{% endif %}<td>{{ t.entryMs|datetime }}</td>
         <td>{{ t.exitMs|datetime }}</td>
         <td class="num">{{ t.entryPrice|money }}</td>
         <td class="num">{{ t.exitPrice|money }}</td>

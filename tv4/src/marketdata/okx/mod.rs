@@ -6,6 +6,13 @@
 //! l'écriture Parquet par lots de pages, la reprise et `compare-sources` relèvent de `store` et de `cli`.
 //! Le module ne dépend que de `model`.
 //!
+//! # Partie privée (S9)
+//!
+//! [`sign`] (HMAC-SHA256, Base64, horodatage ISO 8601, signature `OK-ACCESS-SIGN`), [`private`] (clé en
+//! lecture seule, client des trois requêtes de `tv4 instruments fetch`) et [`instruments`] (fichier
+//! `tv4-instruments-v1`, règles de simulation). Le client public ci-dessous n'est pas touché. Voir
+//! docs/specs/s9.md §8.
+//!
 //! # Requête
 //!
 //! ```text
@@ -47,6 +54,9 @@
 
 mod bucket;
 mod client;
+pub mod instruments;
+pub mod private;
+pub mod sign;
 
 use serde_json::Value;
 use thiserror::Error;

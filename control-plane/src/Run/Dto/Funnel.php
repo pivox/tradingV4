@@ -4,7 +4,10 @@ declare(strict_types=1);
 
 namespace App\Run\Dto;
 
-/** Entonnoir des signaux (`metrics.funnel`). */
+/**
+ * Entonnoir des signaux (`metrics.funnel`). `entryRejectedMaxPositions` n'existe qu'en s9 (refus du plafond de
+ * positions, hors des motifs de `entryRejectedByReason`) : null pour un run s8.
+ */
 final readonly class Funnel
 {
     /**
@@ -28,6 +31,7 @@ final readonly class Funnel
         public int $otherSignals,
         public int $otherAccepted,
         public array $exitsByType,
+        public ?int $entryRejectedMaxPositions = null,
     ) {
     }
 }

@@ -28,11 +28,17 @@ final class TradesCsvReader
     public const LIQUIDITIES = ['maker', 'taker'];
 
     /** @var list<string> */
-    public const EXIT_REASONS = ['signal', 'limit_sell', 'stop', 'take_profit', 'forced_close'];
+    public const EXIT_REASONS = ['signal', 'limit_sell', 'stop', 'take_profit', 'forced_close', 'quote_gap'];
 
-    /** Vocabulaire de `exit_type` écrit au jalon 1. @var list<string> */
+    /**
+     * Vocabulaire de `exit_type` : celui du jalon 1, plus `gap_forced_exit` (sortie forcée sur un trou de
+     * cotation, `exit_reason = quote_gap`), écrit par le mode portefeuille (s9).
+     *
+     * @var list<string>
+     */
     public const EXIT_TYPES = [
         'strategy_exit', 'time_stop', 'limit_sell', 'stop_loss', 'trailing_stop', 'take_profit', 'end_of_window',
+        'gap_forced_exit',
     ];
 
     /** Colonnes dont la valeur peut être vide. @var list<string> */

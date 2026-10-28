@@ -16,13 +16,13 @@
 use std::fs;
 use std::path::Path;
 
-use crate::model::{Candle, Timeframe, Ts};
+use crate::model::{Candle, ExchangeId, Timeframe, Ts};
 
 use super::StoreError;
 use super::columns::Columns;
 use super::dsh::{self, HASH_FORMAT};
 use super::durable::{io_error, write_bytes_durable};
-use super::layout::{GapsPolicy, Partition, Period, Window, resolve_rel};
+use super::layout::{GapsPolicy, Partition, Period, Symbol, Window, resolve_rel};
 use super::lock::{DatasetLock, PartitionLock};
 use super::manifest::{
     DatasetFile, DatasetManifest, FileManifest, read_dataset_manifest, read_file_manifest,
@@ -45,6 +45,21 @@ pub struct BuildRequest<'a> {
     /// `[a-z0-9_]{1,64}` : le manifeste est écrit dans `datasets/<nom>.json`.
     pub name: &'a str,
     pub partition: Partition,
+    /// Fenêtre `[début, fin)`, bornes alignées sur le timeframe.
+    pub window: Window,
+    pub gaps_policy: GapsPolicy,
+}
+
+/// Demande de construction d'un dataset multi-séries (S9) : un même exchange, timeframe, fenêtre et
+/// `gaps_policy` pour tous les symboles.
+#[derive(Clone, Debug)]
+pub struct MultiBuildRequest<'a> {
+    /// `[a-z0-9_]{1,64}` : le manifeste est écrit dans `datasets/<nom>.json`.
+    pub name: &'a str,
+    pub exchange: ExchangeId,
+    /// Au moins un symbole, sans doublon. L'ordre est sans effet : le manifeste les trie.
+    pub symbols: &'a [Symbol],
+    pub tf: Timeframe,
     /// Fenêtre `[début, fin)`, bornes alignées sur le timeframe.
     pub window: Window,
     pub gaps_policy: GapsPolicy,
@@ -75,6 +90,15 @@ pub struct LoadedDataset {
     pub manifest: DatasetManifest,
     /// Lignes de la fenêtre, après `gaps_policy` (masque `synthetic` rempli).
     pub columns: Columns,
+}
+
+/// Dataset multi-séries chargé, après vérification des hashes et `gaps_policy` série par série.
+#[derive(Clone, Debug)]
+pub struct MultiDataset {
+    pub manifest: DatasetManifest,
+    /// Une série par symbole, dans l'ordre du manifeste (ordre d'octets des symboles) : lignes de la
+    /// fenêtre, après `gaps_policy` (masque `synthetic` rempli).
+    pub series: Vec<(String, Columns)>,
 }
 
 fn check_name(name: &str) -> Result<(), StoreError> {
@@ -162,42 +186,23 @@ struct Kept {
     manifest: FileManifest,
 }
 
-/// Construit un dataset figé : manifeste `datasets/<nom>.json` et snapshots des fichiers non clos.
-///
-/// Étapes, dans l'ordre :
-///
-/// - nom et fenêtre contrôlés, puis verrou du nom (`datasets/<nom>.json` est commun à toutes les
-///   partitions : sans lui, deux builds de même nom sur deux partitions se dépassent et le second
-///   écrase le premier) et verrou de partition (une ingestion ne peut pas réécrire un mois pendant
-///   qu'on le copie) ;
-/// - filtre de fichiers par période (`Period::covering`) : un fichier absent avec son manifeste est un
-///   trou de données ;
-/// - relecture complète et vérification du `content_hash` de chaque fichier, puis `dataset_hash` sur
-///   la concaténation ;
-/// - immutabilité du manifeste (même hash : rien à faire ; autre hash : [`StoreError::DatasetExists`]) ;
-/// - snapshots sous `datasets/snapshots/<dataset_hash>/`, puis écriture du manifeste.
-pub fn build_dataset(
-    root: &Path,
-    request: &BuildRequest<'_>,
-    now_ms: Ts,
-) -> Result<BuildOutcome, StoreError> {
-    check_name(request.name)?;
-    let partition = &request.partition;
-    let window = request.window;
-    window.check_aligned(partition.tf)?;
-    let window_text = [
-        format_rfc3339_utc(window.start_ms())?,
-        format_rfc3339_utc(window.end_ms())?,
-    ];
-    let built_at = format_rfc3339_utc(now_ms)?;
-    let periods = Period::covering(partition.tf, window)?;
-    let _verrou_nom = DatasetLock::acquire(root, request.name)?;
-    let _verrou = PartitionLock::acquire(root, partition)?;
+/// Résultat de la lecture d'une série pour un build : fichiers retenus et lignes concaténées.
+struct SeriesRead {
+    kept: Vec<Kept>,
+    columns: Columns,
+}
 
-    // Étapes 3 et 4 : fichiers présents, vérifiés, avec au moins une ligne dans la fenêtre.
+/// Lit, vérifie et retient les fichiers d'une partition qui touchent la fenêtre (étapes 3 et 4 de
+/// [`build_dataset`]). Les verrous sont déjà pris par l'appelant.
+fn read_series(
+    root: &Path,
+    partition: &Partition,
+    periods: &[Period],
+    window: Window,
+) -> Result<SeriesRead, StoreError> {
     let mut kept: Vec<Kept> = Vec::new();
     let mut all: Option<Columns> = None;
-    for period in periods {
+    for &period in periods {
         let file_rel = partition.file_rel(period);
         let manifest_rel = partition.manifest_rel(period);
         let parquet_path = resolve_rel(root, &file_rel)?;
@@ -238,16 +243,132 @@ pub fn build_dataset(
             });
         }
     }
+    Ok(SeriesRead {
+        kept,
+        columns: all.unwrap_or_else(|| Columns::with_capacity(0)),
+    })
+}
+
+/// Construit un dataset figé : manifeste `datasets/<nom>.json` et snapshots des fichiers non clos.
+///
+/// Étapes, dans l'ordre :
+///
+/// - nom et fenêtre contrôlés, puis verrou du nom (`datasets/<nom>.json` est commun à toutes les
+///   partitions : sans lui, deux builds de même nom sur deux partitions se dépassent et le second
+///   écrase le premier) et verrou de partition (une ingestion ne peut pas réécrire un mois pendant
+///   qu'on le copie) ;
+/// - filtre de fichiers par période (`Period::covering`) : un fichier absent avec son manifeste est un
+///   trou de données ;
+/// - relecture complète et vérification du `content_hash` de chaque fichier, puis `dataset_hash` sur
+///   la concaténation ;
+/// - immutabilité du manifeste (même hash : rien à faire ; autre hash : [`StoreError::DatasetExists`]) ;
+/// - snapshots sous `datasets/snapshots/<dataset_hash>/`, puis écriture du manifeste.
+pub fn build_dataset(
+    root: &Path,
+    request: &BuildRequest<'_>,
+    now_ms: Ts,
+) -> Result<BuildOutcome, StoreError> {
+    build_partitions(
+        root,
+        request.name,
+        std::slice::from_ref(&request.partition),
+        request.window,
+        request.gaps_policy,
+        now_ms,
+    )
+}
+
+/// Construit un dataset figé multi-séries : une série par symbole, même exchange, même timeframe,
+/// même fenêtre et même `gaps_policy` (S9, docs/specs/s9.md §12).
+///
+/// Mêmes étapes que [`build_dataset`], avec trois différences :
+///
+/// - les symboles sont triés en ordre d'octets : l'ordre de la demande n'a aucun effet sur le
+///   manifeste ni sur le `dataset_hash` ;
+/// - les verrous de partition sont pris dans cet ordre trié, ce qui exclut l'interblocage entre deux
+///   builds qui partagent des symboles ;
+/// - un symbole sans aucune ligne dans la fenêtre est une erreur ([`StoreError::SymbolWithoutData`]) :
+///   une série vide ne doit pas passer inaperçue dans un univers.
+///
+/// Avec un seul symbole, le résultat est identique à celui de [`build_dataset`] à l'octet.
+pub fn build_dataset_multi(
+    root: &Path,
+    request: &MultiBuildRequest<'_>,
+    now_ms: Ts,
+) -> Result<BuildOutcome, StoreError> {
+    if request.symbols.is_empty() {
+        return Err(StoreError::NoSymbols);
+    }
+    let mut symbols: Vec<&Symbol> = request.symbols.iter().collect();
+    symbols.sort();
+    if let Some(pair) = symbols.windows(2).find(|p| p[0] == p[1]) {
+        return Err(StoreError::DuplicateSymbol {
+            symbol: pair[0].as_str().to_string(),
+        });
+    }
+    let partitions: Vec<Partition> = symbols
+        .into_iter()
+        .map(|symbol| Partition::new(request.exchange, symbol.clone(), request.tf))
+        .collect();
+    build_partitions(
+        root,
+        request.name,
+        &partitions,
+        request.window,
+        request.gaps_policy,
+        now_ms,
+    )
+}
+
+/// Cœur commun des builds mono et multi-séries. `partitions` est non vide, trié par symbole, sans
+/// doublon, et partage exchange et timeframe (garanti par les deux appelants).
+fn build_partitions(
+    root: &Path,
+    name: &str,
+    partitions: &[Partition],
+    window: Window,
+    gaps_policy: GapsPolicy,
+    now_ms: Ts,
+) -> Result<BuildOutcome, StoreError> {
+    check_name(name)?;
+    let Some(first) = partitions.first() else {
+        return Err(StoreError::NoSymbols);
+    };
+    let (exchange, tf) = (first.exchange, first.tf);
+    window.check_aligned(tf)?;
+    let window_text = [
+        format_rfc3339_utc(window.start_ms())?,
+        format_rfc3339_utc(window.end_ms())?,
+    ];
+    let built_at = format_rfc3339_utc(now_ms)?;
+    let periods = Period::covering(tf, window)?;
+    let _verrou_nom = DatasetLock::acquire(root, name)?;
+    let _verrous = partitions
+        .iter()
+        .map(|partition| PartitionLock::acquire(root, partition))
+        .collect::<Result<Vec<_>, _>>()?;
+
+    // Étapes 3 et 4 : fichiers présents, vérifiés, avec au moins une ligne dans la fenêtre.
+    let mut series: Vec<SeriesRead> = Vec::with_capacity(partitions.len());
+    for partition in partitions {
+        let read = read_series(root, partition, &periods, window)?;
+        if partitions.len() > 1 && read.kept.is_empty() {
+            return Err(StoreError::SymbolWithoutData {
+                symbol: partition.symbol.as_str().to_string(),
+                start_ms: window.start_ms(),
+                end_ms: window.end_ms(),
+            });
+        }
+        series.push(read);
+    }
 
     // Étape 5 : dataset_hash.
-    let all = all.unwrap_or_else(|| Columns::with_capacity(0));
-    let symbol = partition.symbol.as_str();
-    let (hex, rows) = dsh::dataset_hash(
-        partition.exchange.as_str(),
-        window,
-        request.gaps_policy,
-        &[(symbol, partition.tf, &all)],
-    )?;
+    let refs: Vec<(&str, Timeframe, &Columns)> = partitions
+        .iter()
+        .zip(&series)
+        .map(|(partition, read)| (partition.symbol.as_str(), tf, &read.columns))
+        .collect();
+    let (hex, rows) = dsh::dataset_hash(exchange.as_str(), window, gaps_policy, &refs)?;
     if rows == 0 {
         return Err(StoreError::EmptyDataset {
             start_ms: window.start_ms(),
@@ -257,8 +378,8 @@ pub fn build_dataset(
     let dataset_hash = dsh::prefixed(&hex);
 
     // Étape 6 : immutabilité du manifeste de dataset.
-    let manifest_rel = format!("datasets/{}.json", request.name);
-    let manifest_path = root.join("datasets").join(format!("{}.json", request.name));
+    let manifest_rel = format!("datasets/{name}.json");
+    let manifest_path = root.join("datasets").join(format!("{name}.json"));
     if manifest_path.is_file() {
         let existing = read_dataset_manifest(&manifest_path)?;
         if existing.dataset_hash == dataset_hash && existing.hash_format == HASH_FORMAT {
@@ -277,36 +398,38 @@ pub fn build_dataset(
         });
     }
 
-    // Étape 7 : snapshots des fichiers non clos.
-    let mut files = Vec::with_capacity(kept.len());
-    for item in &kept {
-        let (path, snapshot) = if item.manifest.closed {
-            (item.file_rel.clone(), false)
-        } else {
-            let rel = format!("datasets/snapshots/{hex}/{}", item.file_rel);
-            snapshot_file(root, partition, item, &rel)?;
-            (rel, true)
-        };
-        files.push(DatasetFile {
-            path,
-            symbol: partition.symbol.clone(),
-            tf: partition.tf,
-            period: item.period.label(),
-            content_hash: item.manifest.content_hash.clone(),
-            row_count: item.manifest.row_count,
-            snapshot,
-        });
+    // Étape 7 : snapshots des fichiers non clos, série par série dans l'ordre des symboles.
+    let mut files = Vec::new();
+    for (partition, read) in partitions.iter().zip(&series) {
+        for item in &read.kept {
+            let (path, snapshot) = if item.manifest.closed {
+                (item.file_rel.clone(), false)
+            } else {
+                let rel = format!("datasets/snapshots/{hex}/{}", item.file_rel);
+                snapshot_file(root, partition, item, &rel)?;
+                (rel, true)
+            };
+            files.push(DatasetFile {
+                path,
+                symbol: partition.symbol.clone(),
+                tf,
+                period: item.period.label(),
+                content_hash: item.manifest.content_hash.clone(),
+                row_count: item.manifest.row_count,
+                snapshot,
+            });
+        }
     }
     let snapshots = files.iter().filter(|f| f.snapshot).count();
 
     // Étape 8 : manifeste.
     let manifest = DatasetManifest {
-        name: request.name.to_string(),
-        exchange: partition.exchange,
-        symbols: vec![partition.symbol.clone()],
-        tfs: vec![partition.tf],
+        name: name.to_string(),
+        exchange,
+        symbols: partitions.iter().map(|p| p.symbol.clone()).collect(),
+        tfs: vec![tf],
         window: window_text,
-        gaps_policy: request.gaps_policy,
+        gaps_policy,
         files,
         row_count: rows,
         dataset_hash,
@@ -393,9 +516,39 @@ pub fn load_dataset(root: &Path, manifest_path: &Path) -> Result<LoadedDataset, 
     let expected_hex = dsh::strip_prefix(&shown, &manifest.dataset_hash)?;
     let partition = Partition::new(manifest.exchange, symbol.clone(), tf);
 
+    let mut all = read_series_files(root, manifest.files.iter(), &partition)?;
+    all.check_strictly_increasing()?;
+    let (hex, rows) = dsh::dataset_hash(
+        manifest.exchange.as_str(),
+        window,
+        manifest.gaps_policy,
+        &[(symbol.as_str(), tf, &all)],
+    )?;
+    if hex != expected_hex {
+        return Err(StoreError::DatasetHashMismatch {
+            path: shown,
+            expected: manifest.dataset_hash,
+            actual: dsh::prefixed(&hex),
+        });
+    }
+    check_field(&shown, "row_count", manifest.row_count, rows)?;
+    all.retain_window(window);
+    let columns = fill_gaps(all, tf, manifest.gaps_policy)?;
+    Ok(LoadedDataset { manifest, columns })
+}
+
+/// Lit les fichiers listés d'une série (tous de la partition donnée), dans l'ordre du manifeste, avec
+/// les contrôles de symbole, de timeframe, de période strictement croissante, de `content_hash` et de
+/// `row_count`. Rend les lignes concaténées (vides si `files` est vide).
+fn read_series_files<'a>(
+    root: &Path,
+    files: impl Iterator<Item = &'a DatasetFile>,
+    partition: &Partition,
+) -> Result<Columns, StoreError> {
+    let (symbol, tf) = (&partition.symbol, partition.tf);
     let mut all: Option<Columns> = None;
     let mut previous: Option<Period> = None;
-    for file in &manifest.files {
+    for file in files {
         check_field(&file.path, "symbol", file.symbol.as_str(), symbol.as_str())?;
         check_field(&file.path, "tf", file.tf, tf)?;
         let period = Period::parse(tf, &file.period)?;
@@ -415,7 +568,7 @@ pub fn load_dataset(root: &Path, manifest_path: &Path) -> Result<LoadedDataset, 
                 path: file.path.clone(),
             });
         }
-        let columns = read_verified(&path, &file.path, &partition, period, &file.content_hash)?;
+        let columns = read_verified(&path, &file.path, partition, period, &file.content_hash)?;
         check_field(
             &file.path,
             "row_count",
@@ -424,13 +577,90 @@ pub fn load_dataset(root: &Path, manifest_path: &Path) -> Result<LoadedDataset, 
         )?;
         append(&mut all, columns)?;
     }
-    let mut all = all.unwrap_or_else(|| Columns::with_capacity(0));
-    all.check_strictly_increasing()?;
+    Ok(all.unwrap_or_else(|| Columns::with_capacity(0)))
+}
+
+/// Charge un dataset figé multi-séries en vérifiant tous ses hashes (S9, docs/specs/s9.md §12).
+///
+/// Un manifeste mono-série se charge aussi : il rend une série. Le manifeste doit lister ses
+/// symboles triés en ordre d'octets, sans doublon, avec un seul timeframe ; ses fichiers sont groupés
+/// par symbole dans cet ordre. Le `content_hash` de chaque fichier puis le `dataset_hash` sur tous les
+/// segments (`dsh-v1` §5.2) sont recalculés ; la politique de trous est appliquée série par série.
+///
+/// [`load_dataset`] garde son refus des datasets multi-séries : le chemin du jalon 1 ne lit jamais
+/// un dataset multi-séries par erreur.
+pub fn load_dataset_multi(root: &Path, manifest_path: &Path) -> Result<MultiDataset, StoreError> {
+    let shown = manifest_path.display().to_string();
+    let manifest = read_dataset_manifest(manifest_path)?;
+    if manifest.hash_format != HASH_FORMAT {
+        return Err(StoreError::UnsupportedHashFormat {
+            path: shown,
+            found: manifest.hash_format,
+        });
+    }
+    let (Some(&tf), 1) = (manifest.tfs.first(), manifest.tfs.len()) else {
+        return Err(StoreError::MultiTimeframeUnsupported {
+            tfs: manifest.tfs.len(),
+        });
+    };
+    if manifest.symbols.is_empty() {
+        return Err(StoreError::NoSymbols);
+    }
+    if let Some(pair) = manifest.symbols.windows(2).find(|p| p[0] >= p[1]) {
+        return Err(StoreError::ManifestMismatch {
+            path: shown,
+            field: "symbols",
+            manifest: format!("{}, {}", pair[0].as_str(), pair[1].as_str()),
+            actual: "symboles triés en ordre d'octets, sans doublon".to_string(),
+        });
+    }
+    let window = Window::new(
+        parse_rfc3339_utc(&manifest.window[0])?,
+        parse_rfc3339_utc(&manifest.window[1])?,
+    )?;
+    let expected_hex = dsh::strip_prefix(&shown, &manifest.dataset_hash)?;
+
+    // Fichiers groupés par symbole : ils doivent suivre l'ordre des symboles du manifeste, et chacun
+    // doit appartenir à l'un d'eux.
+    let mut groups: Vec<Vec<&DatasetFile>> = vec![Vec::new(); manifest.symbols.len()];
+    let mut cursor = 0_usize;
+    for file in &manifest.files {
+        let Some(index) = manifest.symbols.iter().position(|s| *s == file.symbol) else {
+            return Err(StoreError::ManifestMismatch {
+                path: file.path.clone(),
+                field: "symbol",
+                manifest: file.symbol.as_str().to_string(),
+                actual: "symbole absent de `symbols`".to_string(),
+            });
+        };
+        if index < cursor {
+            return Err(StoreError::ManifestMismatch {
+                path: file.path.clone(),
+                field: "symbol",
+                manifest: file.symbol.as_str().to_string(),
+                actual: "fichiers groupés par symbole dans l'ordre de `symbols`".to_string(),
+            });
+        }
+        cursor = index;
+        groups[index].push(file);
+    }
+
+    let mut loaded: Vec<(Symbol, Columns)> = Vec::with_capacity(groups.len());
+    for (symbol, group) in manifest.symbols.iter().zip(&groups) {
+        let partition = Partition::new(manifest.exchange, symbol.clone(), tf);
+        let columns = read_series_files(root, group.iter().copied(), &partition)?;
+        columns.check_strictly_increasing()?;
+        loaded.push((symbol.clone(), columns));
+    }
+    let refs: Vec<(&str, Timeframe, &Columns)> = loaded
+        .iter()
+        .map(|(symbol, columns)| (symbol.as_str(), tf, columns))
+        .collect();
     let (hex, rows) = dsh::dataset_hash(
         manifest.exchange.as_str(),
         window,
         manifest.gaps_policy,
-        &[(symbol.as_str(), tf, &all)],
+        &refs,
     )?;
     if hex != expected_hex {
         return Err(StoreError::DatasetHashMismatch {
@@ -440,9 +670,13 @@ pub fn load_dataset(root: &Path, manifest_path: &Path) -> Result<LoadedDataset, 
         });
     }
     check_field(&shown, "row_count", manifest.row_count, rows)?;
-    all.retain_window(window);
-    let columns = fill_gaps(all, tf, manifest.gaps_policy)?;
-    Ok(LoadedDataset { manifest, columns })
+    let mut series = Vec::with_capacity(loaded.len());
+    for (symbol, mut columns) in loaded {
+        columns.retain_window(window);
+        let filled = fill_gaps(columns, tf, manifest.gaps_policy)?;
+        series.push((symbol.as_str().to_string(), filled));
+    }
+    Ok(MultiDataset { manifest, series })
 }
 
 /// Applique la politique de trous aux lignes réelles d'une fenêtre (strictement croissantes,

@@ -5,6 +5,11 @@
 //! Aucune logique métier ici (docs/03-architecture.md §2) : lecture des fichiers, appel du registre,
 //! de `store`, de `engine::run_cell` et de `report`. Les entrées communes à `backtest` et à `bench`
 //! (S8) sont dans [`RunInputArgs`] et préparées par [`prepare`].
+//!
+//! Avec `--symbols`, la commande bascule en mode portefeuille (S9, module `portfolio`) : plusieurs
+//! paires sur un cash commun, `engine::run_portfolio`, schémas `tv4-metrics-s9` et `tv4-manifest-s9`.
+//! Sans `--symbols`, le chemin de S8 ne change pas, et toute option du portefeuille est refusée
+//! ([`CliError::PortfolioOptionWithoutSymbols`]) pour qu'aucun run S8 ne croie l'appliquer.
 
 use std::fs::{self, File};
 use std::io::Read;
@@ -23,6 +28,9 @@ use crate::report::{self, DataInfo, DatasetRef, EngineInfo, Manifest, Metrics, T
 use crate::sim::SimRules;
 use crate::store::{self, Columns, GapsPolicy, Window, dsh};
 use crate::strategy::{Strategy, registry};
+use portfolio::PortfolioArgs;
+
+mod portfolio;
 
 /// Symbole canonique de la fixture (XBTUSD Kraken, docs/03 §4).
 const FIXTURE_SYMBOL: &str = "BTC-USD";
@@ -105,6 +113,9 @@ pub struct BacktestArgs {
     /// Pas d'échantillonnage de `equity.csv` (1m, 5m, 15m, 30m, 1h, 4h, 12h, 1d).
     #[arg(long, value_name = "TF", default_value = "1h")]
     pub equity_step: Timeframe,
+    /// Options du mode portefeuille (S9) : `--symbols` l'active.
+    #[command(flatten)]
+    pub portfolio: PortfolioArgs,
 }
 
 /// Run préparé : données lues et vérifiées, paramètres lus, tout ce qu'il faut pour rejouer.
@@ -200,6 +211,10 @@ struct Input {
 /// `tv4 backtest` : prépare le run, rejoue la stratégie, écrit `metrics.json`, `trades.csv`,
 /// `equity.csv` puis `manifest.json`.
 pub(super) fn run(args: &BacktestArgs) -> Result<(), CliError> {
+    if args.portfolio.is_portfolio() {
+        return portfolio::run(args);
+    }
+    args.portfolio.reject_without_symbols()?;
     let t0 = Instant::now();
     let started_at_ms = now_ms()?;
 
@@ -386,21 +401,26 @@ fn is_valid_name(name: &str) -> bool {
             .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'_')
 }
 
+/// Chemin du manifeste désigné par `--dataset`. Un nom nu se résout en `<root>/datasets/<nom>.json` ;
+/// sinon un chemin, où un chemin absolu remplace la racine (comportement de `Path::join`).
+fn resolve_dataset_path(root: &Path, dataset: &Path) -> Result<PathBuf, CliError> {
+    let shown = dataset.display().to_string();
+    if is_bare_name(&shown) {
+        if !is_valid_name(&shown) {
+            return Err(store::StoreError::InvalidDatasetName(shown).into());
+        }
+        Ok(root.join("datasets").join(format!("{shown}.json")))
+    } else {
+        Ok(root.join(dataset))
+    }
+}
+
 /// Chemin S4 : dataset figé. Le store recalcule le `content_hash` de chaque fichier listé puis le
 /// `dataset_hash` et refuse de démarrer au moindre écart, en nommant le fichier.
 fn load_dataset(root: &Path, dataset: &Path) -> Result<Input, CliError> {
     // Les messages d'erreur citent le chemin tel que l'utilisateur l'a passé à --dataset.
     let shown = dataset.display().to_string();
-    // Un nom nu se résout en `<root>/datasets/<nom>.json` ; sinon un chemin, où un chemin absolu
-    // remplace la racine (comportement de `Path::join`).
-    let path = if is_bare_name(&shown) {
-        if !is_valid_name(&shown) {
-            return Err(store::StoreError::InvalidDatasetName(shown).into());
-        }
-        root.join("datasets").join(format!("{shown}.json"))
-    } else {
-        root.join(dataset)
-    };
+    let path = resolve_dataset_path(root, dataset)?;
     let manifest = store::read_dataset_manifest(&path)?;
     // Un manifeste sans symbole ou sans timeframe (ou avec plusieurs) n'est pas rejouable : message
     // de série, pas de repli silencieux sur le 1m.

@@ -340,22 +340,24 @@ pub struct Metrics {
     pub approx: Approx,
 }
 
-/// Agrégats parcourus dans l'ordre des trades.
-struct TradeSums {
-    pnl: f64,
-    n_wins: u64,
-    n_losses: u64,
-    gross_profit: f64,
-    gross_loss: f64,
-    holding: i64,
-    mfe: f64,
-    mae: f64,
-    r: f64,
-    n_r: u64,
-    exits: ExitsByType,
+/// Agrégats parcourus dans l'ordre des trades (réutilisés par `metrics_s9`).
+pub(crate) struct TradeSums {
+    pub(crate) pnl: f64,
+    pub(crate) n_wins: u64,
+    pub(crate) n_losses: u64,
+    pub(crate) gross_profit: f64,
+    pub(crate) gross_loss: f64,
+    pub(crate) holding: i64,
+    pub(crate) mfe: f64,
+    pub(crate) mae: f64,
+    pub(crate) r: f64,
+    pub(crate) n_r: u64,
+    /// Les sept types du jalon 1 : un `gap_forced_exit` (S9) n'y a pas de case, `metrics_s9` compte ses
+    /// huit types à part.
+    pub(crate) exits: ExitsByType,
 }
 
-fn sum_trades(trades: &[Trade]) -> Result<TradeSums, ReportError> {
+pub(crate) fn sum_trades(trades: &[Trade]) -> Result<TradeSums, ReportError> {
     let mut s = TradeSums {
         pnl: 0.0,
         n_wins: 0,
@@ -396,7 +398,7 @@ fn sum_trades(trades: &[Trade]) -> Result<TradeSums, ReportError> {
 }
 
 /// `somme / n`, ou `None` si `n = 0`.
-fn mean(sum: f64, n: u64) -> Option<f64> {
+pub(crate) fn mean(sum: f64, n: u64) -> Option<f64> {
     (n > 0).then(|| sum / n as f64)
 }
 

@@ -20,6 +20,14 @@
 //! * `sma_cross_15m_cellule` : `run_cell_observed` complet (MTF, indicateurs, boucle, clôture
 //!   forcée), informatif.
 //!
+//! `engine_portfolio_2y_1m_2legs` (S9, docs/specs/s9.md §16.2) : le moteur portefeuille sur deux séries
+//! synthétiques de 2 ans de 1m (graines 42 et 43, mêmes horodatages, donc une grille de 1 051 200
+//! minutes), `sma_cross` 15m sur chaque jambe, `Book` partagé, rang de liquidité et equity du portefeuille.
+//! **Informatif, sans porte** : l'objectif publié est < 120 ns par minute de la grille pour deux jambes,
+//! à confirmer sur la machine du propriétaire. Seule la boucle est chronométrée (`LoopObserver`) ;
+//! `PortfolioInputs` est reconstruit à chaque itération (stratégies fraîches) et la préparation (MTF,
+//! table de rang) est exclue de la mesure. Le débit est exprimé par minute de la grille.
+//!
 //! Seule la boucle est chronométrée : un `LoopObserver` note l'instant à `loop_started` et à
 //! `loop_finished`, la préparation (indicateurs, `Mtf`) est exclue. Commande :
 //! `cargo bench --locked --bench engine -- engine_loop_2y_1m` (ou `engine_2y_1m`). `cargo test
@@ -31,11 +39,15 @@ mod common;
 use criterion::{Criterion, Throughput, criterion_group, criterion_main};
 use std::hint::black_box;
 use std::time::{Duration, Instant};
-use tv4::engine::{CellConfig, LoopObserver, NoopObserver, run_cell_mtf, run_cell_observed};
+use tv4::engine::{
+    CellConfig, DEFAULT_MAX_POSITIONS, DEFAULT_QUOTE_GAP_MS, LoopObserver, NoopObserver,
+    PortfolioConfig, PortfolioInputs, run_cell_mtf, run_cell_observed, run_portfolio_observed,
+};
 use tv4::indicators::{Atr, Ema, Rsi, Sma, Vwap, batch};
 use tv4::model::{InstrumentRules, Side, Timeframe};
 use tv4::mtf::Mtf;
-use tv4::sim::SimRules;
+use tv4::sim::{SimRules, SizingMode};
+use tv4::store::Columns;
 use tv4::strategy::{BarContext, IndicatorSpec, Signal, Size, Strategy, registry};
 
 /// 2 ans de bougies 1m (docs/03 §8).
@@ -289,5 +301,72 @@ fn engine_2y_1m(c: &mut Criterion) {
     group.finish();
 }
 
-criterion_group!(benches, indicators_1m, engine_loop_2y_1m, engine_2y_1m);
+/// Portefeuille à deux jambes (S9 §16.2) : informatif, sans porte.
+fn engine_portfolio_2y_1m_2legs(c: &mut Criterion) {
+    let n = taille_boucle();
+    let universe = vec!["AAA-USD".to_string(), "BBB-USD".to_string()];
+    let series = vec![
+        (
+            universe[0].clone(),
+            Columns::from_candles(&common::synthetic_candles(n, 42, common::T0, 0.0)),
+        ),
+        (
+            universe[1].clone(),
+            Columns::from_candles(&common::synthetic_candles(n, 43, common::T0, 0.0)),
+        ),
+    ];
+    let instruments =
+        vec![InstrumentRules::new(1e-4, 1e-8, 0.0, 0.0).expect("instrument valide"); 2];
+    let config = || PortfolioConfig {
+        universe: &universe,
+        regime_symbol: "BTC-USD",
+        fees: common::okx_fees(),
+        slippage: common::slippage(5.0),
+        initial_cash: 1.0e6,
+        // Volumes synthétiques minuscules : la règle de part de volume rejetterait tous les achats.
+        sim_rules: SimRules {
+            max_volume_share: 1.0e9,
+            ..SimRules::default()
+        },
+        instruments: &instruments,
+        instruments_hash: None,
+        max_positions: DEFAULT_MAX_POSITIONS,
+        sizing: SizingMode::Research,
+        min_order_bump_max_risk: None,
+        quote_gap_ms: DEFAULT_QUOTE_GAP_MS,
+        min_trades: 30,
+    };
+    let mut group = c.benchmark_group("engine_portfolio_2y_1m_2legs");
+    group.throughput(Throughput::Elements(n as u64));
+    group.sample_size(10);
+    group.bench_function("sma_cross_15m_boucle", |b| {
+        b.iter_custom(|iters| {
+            let mut total = Duration::ZERO;
+            for _ in 0..iters {
+                let mut chrono = Chrono::default();
+                let resultat = run_portfolio_observed(
+                    PortfolioInputs {
+                        series: &series,
+                        strategies: vec![sma_cross_reference(), sma_cross_reference()],
+                        config: config(),
+                    },
+                    &mut chrono,
+                )
+                .expect("run valide");
+                black_box(resultat.trades.len());
+                total += chrono.duree;
+            }
+            total
+        })
+    });
+    group.finish();
+}
+
+criterion_group!(
+    benches,
+    indicators_1m,
+    engine_loop_2y_1m,
+    engine_2y_1m,
+    engine_portfolio_2y_1m_2legs
+);
 criterion_main!(benches);

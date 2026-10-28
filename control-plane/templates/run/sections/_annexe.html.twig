@@ -27,6 +27,7 @@
         {% endfor %}
       </tbody>
     </table>
+    {% if c.instrument is not null -%}
     <table class="kv">
       <caption>Instrument</caption>
       <tbody>
@@ -35,6 +36,30 @@
         {% endfor %}
       </tbody>
     </table>
+    {%- endif %}
+    {%- if c.instruments is not null -%}
+      {% for symbol, rules in c.instruments %}
+    <table class="kv">
+      <caption>Instrument {{ symbol }}</caption>
+      <tbody>
+        {% for name, value in rules %}
+          <tr><th scope="row"><code>{{ name }}</code></th><td class="num">{{ value|scalar }}</td></tr>
+        {% endfor %}
+      </tbody>
+    </table>
+      {% endfor %}
+    {%- endif -%}
+    {%- if c.portfolio is not null -%}
+    <table class="kv">
+      <caption>Portefeuille (haché hors capital initial)</caption>
+      <tbody>
+        {% for name, value in c.portfolio %}
+          <tr><th scope="row"><code>{{ name }}</code></th><td class="num">{{ value|scalar }}</td></tr>
+        {% endfor %}
+      </tbody>
+    </table>
+    {%- endif %}
+
   </div>
   <h3>Écarts connus du simulateur</h3>
   <ul>

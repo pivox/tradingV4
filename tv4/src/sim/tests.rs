@@ -2011,6 +2011,560 @@ fn slot_en_double_panique() {
 }
 
 // ---------------------------------------------------------------------------------------------
+// Portefeuille (S9) : cash étranger, plafond de notional, minimum d'ordre, trou de cotation
+// ---------------------------------------------------------------------------------------------
+
+/// Tick 0,1, lot 1e-8, quantité minimale `min_qty` et notional minimal `min_notional`.
+fn inst_min(min_qty: f64, min_notional: f64) -> InstrumentRules {
+    InstrumentRules::new(0.1, 1e-8, min_qty, min_notional).unwrap()
+}
+
+fn sim_min(min_qty: f64, min_notional: f64, cash: f64) -> Simulator {
+    Simulator::new(
+        okx(),
+        Slippage::ZERO,
+        rules_s3(),
+        inst_min(min_qty, min_notional),
+        cash,
+        8,
+    )
+    .unwrap()
+}
+
+fn enter_risk(pct: f64, stop: f64) -> Instruction {
+    Instruction::Enter {
+        size: SizeSpec::RiskPct(pct),
+        price: OrderPrice::Market,
+        stop: Some(stop),
+        take_profit: None,
+        tag: "risque",
+    }
+}
+
+fn enter_limit(quote: f64, price: f64, stop: Option<f64>) -> Instruction {
+    Instruction::Enter {
+        size: SizeSpec::Quote(quote),
+        price: OrderPrice::Limit { price, ttl_bars: 5 },
+        stop,
+        take_profit: None,
+        tag: "limite",
+    }
+}
+
+#[test]
+fn le_quote_des_autres_jambes_reduit_le_cash_libre() {
+    let mut sim = sim_with(rules_s3(), Slippage::ZERO, 1000.0);
+    sim.foreign_reserved = 400.0;
+    assert_eq!(sim.quote_free(), 600.0);
+    // 700 + frais ne tient pas dans 600 ; 500 tient.
+    assert_eq!(
+        sim.submit(place(Side::Buy, 90.0, 700.0, 1, 100), at(0)),
+        Err(Rejection::InsufficientQuote)
+    );
+    sim.submit(place(Side::Buy, 90.0, 500.0, 1, 100), at(0))
+        .unwrap();
+    let libre = sim.quote_free();
+    assert!((libre - (600.0 - 500.0 * 1.002)).abs() < 1e-4, "{libre}");
+}
+
+#[test]
+fn un_achat_market_est_plafonne_par_le_cash_libre_net_du_quote_etranger() {
+    let mut sim = sim_with(rules_s3(), Slippage::ZERO, 1000.0);
+    sim.on_bar(&flat(0, 100.0)).unwrap();
+    sim.foreign_reserved = 900.0;
+    sim.submit(enter(500.0, None, None), at(0)).unwrap();
+    sim.on_bar(&flat(1, 100.0)).unwrap();
+    assert_eq!(sim.counters().entries_capped_by_cash, 1);
+    assert!(sim.qty() > 0.0 && sim.qty() < 1.0, "{}", sim.qty());
+    assert!(
+        sim.cash() >= 900.0,
+        "le quote étranger reste intact : {}",
+        sim.cash()
+    );
+}
+
+#[test]
+fn un_market_sans_cash_libre_net_du_quote_etranger_est_refuse_au_signal() {
+    let mut sim = sim_with(rules_s3(), Slippage::ZERO, 1000.0);
+    sim.foreign_reserved = 1000.0;
+    assert_eq!(
+        sim.submit(enter(500.0, None, None), at(0)),
+        Err(Rejection::InsufficientQuote)
+    );
+}
+
+#[test]
+fn plafond_de_notional_market_au_fill() {
+    let mut sim = sim_with(rules_s3(), Slippage::ZERO, 1000.0);
+    sim.on_bar(&flat(0, 100.0)).unwrap();
+    sim.submit_capped(enter(500.0, None, None), at(0), Some(200.0))
+        .unwrap();
+    assert_eq!(sim.detail().entries_capped_by_notional, 0, "compté au fill");
+    sim.on_bar(&flat(1, 100.0)).unwrap();
+    assert_eq!(sim.qty(), 2.0);
+    assert_eq!(sim.detail().entries_capped_by_notional, 1);
+    assert_eq!(sim.counters().entries_capped_by_cash, 0);
+    // Un plafond qui ne mord pas ne compte pas, et `None` rend `submit`.
+    let mut sim = sim_with(rules_s3(), Slippage::ZERO, 1000.0);
+    sim.on_bar(&flat(0, 100.0)).unwrap();
+    sim.submit_capped(enter(150.0, None, None), at(0), Some(200.0))
+        .unwrap();
+    sim.on_bar(&flat(1, 100.0)).unwrap();
+    assert_eq!(sim.qty(), 1.5);
+    assert_eq!(sim.detail().entries_capped_by_notional, 0);
+}
+
+#[test]
+fn plafond_de_notional_limit_a_la_soumission() {
+    let mut sim = sim_with(rules_s3(), Slippage::ZERO, 1000.0);
+    sim.on_bar(&flat(0, 100.0)).unwrap();
+    sim.submit_capped(enter_limit(500.0, 100.0, None), at(0), Some(200.0))
+        .unwrap();
+    let vue: Vec<PendingView> = sim.pending().collect();
+    assert_eq!(vue.len(), 1);
+    assert_eq!(vue[0].qty, 2.0, "plafonné avant la réservation");
+    assert_eq!(sim.detail().entries_capped_by_notional, 1);
+    // La réservation suit la quantité plafonnée : 200 + frais maker.
+    let libre = sim.quote_free();
+    assert!((libre - (1000.0 - 200.0 * 1.002)).abs() < 1e-9, "{libre}");
+    // Place d'achat : même plafond.
+    let mut sim = sim_with(rules_s3(), Slippage::ZERO, 1000.0);
+    sim.submit_capped(place(Side::Buy, 100.0, 500.0, 1, 10), at(0), Some(250.0))
+        .unwrap();
+    assert_eq!(sim.pending().next().unwrap().qty, 2.5);
+    assert_eq!(sim.detail().entries_capped_by_notional, 1);
+}
+
+/// Simulateur au pas de quantité 0,01 (`inv_lot = 100`), pour placer le plafond à moins d'un
+/// `STEP_SNAP` de lot sous un nombre entier de lots.
+fn sim_lot_001(cash: f64) -> Simulator {
+    let instrument = InstrumentRules::new(0.1, 0.01, 0.0, 0.0).unwrap();
+    Simulator::new(okx(), Slippage::ZERO, rules_s3(), instrument, cash, 8).unwrap()
+}
+
+/// Plafond de 200 moins 5e-7 : à 100, `cap_q` = 199,9999995 lots, que `floor_steps` accroche à 200 lots
+/// (`+ STEP_SNAP`). Le notional du fill dépasse alors le plafond de 5e-7, soit 2,5e-9 en relatif, bien
+/// au-delà du `1e-12` littéral de docs S9 §7.4.
+const CAP_SOUS_UN_LOT: f64 = 200.0 - 5e-7;
+
+#[test]
+fn plafond_de_notional_au_fill_ne_panique_pas_a_l_accrochage_d_un_lot() {
+    // Achat market plafonné : 2 unités remplies pour un plafond de 199,9999995.
+    let mut sim = sim_lot_001(1000.0);
+    sim.on_bar(&flat(0, 100.0)).unwrap();
+    sim.submit_capped(enter(500.0, None, None), at(0), Some(CAP_SOUS_UN_LOT))
+        .unwrap();
+    sim.on_bar(&flat(1, 100.0)).unwrap();
+    assert_eq!(sim.qty(), 2.0);
+    assert!(sim.qty() * 100.0 > CAP_SOUS_UN_LOT * (1.0 + 1e-12));
+    // Limit d'entrée au repos : même arrondi à la soumission, même tolérance au fill.
+    let mut sim = sim_lot_001(1000.0);
+    sim.on_bar(&flat(0, 100.0)).unwrap();
+    sim.submit_capped(
+        enter_limit(500.0, 100.0, None),
+        at(0),
+        Some(CAP_SOUS_UN_LOT),
+    )
+    .unwrap();
+    sim.on_bar(&bar(1, 100.0, 100.0, 99.0, 99.5)).unwrap();
+    assert_eq!(sim.qty(), 2.0);
+    // `Place` d'achat au repos : le plafond est lui aussi porté par l'ordre.
+    let mut sim = sim_lot_001(1000.0);
+    sim.on_bar(&flat(0, 100.0)).unwrap();
+    sim.submit_capped(
+        place(Side::Buy, 100.0, 500.0, 1, 10),
+        at(0),
+        Some(CAP_SOUS_UN_LOT),
+    )
+    .unwrap();
+    sim.on_bar(&bar(1, 100.0, 100.0, 99.0, 99.5)).unwrap();
+    assert_eq!(sim.qty(), 2.0);
+}
+
+#[cfg(debug_assertions)]
+#[test]
+#[should_panic(expected = "plafond de notional")]
+fn plafond_de_notional_depasse_au_fill_panique() {
+    // Une limit de 2 unités à 100 est acceptée sous un plafond de 200, puis son plafond est ramené à 100
+    // dans la file : au fill, le notional (200) dépasse le plafond.
+    let mut sim = sim_with(rules_s3(), Slippage::ZERO, 1000.0);
+    sim.on_bar(&flat(0, 100.0)).unwrap();
+    sim.submit_capped(enter_limit(500.0, 100.0, None), at(0), Some(200.0))
+        .unwrap();
+    assert_eq!(sim.pending().next().unwrap().qty, 2.0);
+    sim.pending[0].max_notional = Some(100.0);
+    let _ = sim.on_bar(&bar(1, 100.0, 100.0, 99.0, 99.5));
+}
+
+#[test]
+fn le_plafond_de_notional_ne_touche_pas_les_ventes() {
+    let mut sim = long_one();
+    sim.submit_capped(exit_market(), at(2), Some(1.0)).unwrap();
+    sim.on_bar(&flat(3, 100.0)).unwrap();
+    sim.on_bar(&flat(4, 100.0)).unwrap();
+    assert_eq!(sim.qty(), 0.0);
+    assert_eq!(sim.detail().entries_capped_by_notional, 0);
+}
+
+#[test]
+fn les_refus_sous_le_minimum_sont_decomposes() {
+    // minSz 0,01 : 0,5 de quote à 100 donne 0,005, un nombre entier de lots mais sous le minimum.
+    let mut sim = sim_min(0.01, 0.0, 1000.0);
+    assert_eq!(
+        sim.submit(enter_limit(0.5, 100.0, None), at(0)),
+        Err(Rejection::BelowMinimum)
+    );
+    assert_eq!(sim.detail().below_min_min_qty, 1);
+    // Quantité sous un lot : zéro lot.
+    assert_eq!(
+        sim.submit(enter_limit(1e-9, 100.0, None), at(0)),
+        Err(Rejection::BelowMinimum)
+    );
+    assert_eq!(sim.detail().below_min_zero_lot, 1);
+    // Place d'achat.
+    assert_eq!(
+        sim.submit(place(Side::Buy, 100.0, 0.5, 1, 5), at(0)),
+        Err(Rejection::BelowMinimum)
+    );
+    assert_eq!(sim.detail().below_min_min_qty, 2);
+    // Achat market refusé au fill : les deux compteurs bougent.
+    sim.on_bar(&flat(0, 100.0)).unwrap();
+    sim.submit(enter(0.5, None, None), at(0)).unwrap();
+    sim.on_bar(&flat(1, 100.0)).unwrap();
+    assert_eq!(sim.counters().buys_rejected_below_minimum, 1);
+    assert_eq!(sim.detail().below_min_min_qty, 3);
+    // Notional minimal : 5 de quote sous un minimum de 10.
+    let mut sim = sim_min(0.0, 10.0, 1000.0);
+    assert_eq!(
+        sim.submit(enter_limit(5.0, 100.0, None), at(0)),
+        Err(Rejection::BelowMinimum)
+    );
+    assert_eq!(sim.detail().below_min_notional, 1);
+    assert_eq!(sim.detail().below_min_exits, 0);
+}
+
+#[test]
+fn un_refus_de_vente_sous_le_minimum_va_dans_les_sorties() {
+    // Position de 0,011 ; une vente limit libre de 0,011 passe, une vente limit partielle de 0,005 non.
+    let mut sim = sim_min(0.01, 0.0, 1000.0);
+    sim.on_bar(&flat(0, 100.0)).unwrap();
+    sim.submit(enter(1.1, None, None), at(0)).unwrap();
+    sim.on_bar(&flat(1, 100.0)).unwrap();
+    assert!(sim.qty() > 0.0);
+    assert_eq!(
+        sim.submit(place(Side::Sell, 110.0, 0.5, 1, 5), at(1)),
+        Err(Rejection::BelowMinimum)
+    );
+    assert_eq!(sim.detail().below_min_exits, 1);
+    assert_eq!(sim.detail().below_min_min_qty, 0, "les achats sont à part");
+}
+
+#[test]
+fn montee_au_minimum_d_ordre_market() {
+    // Risque 0,01 % de 1000 = 0,1 entre 100 et 98 : 0,05 unité, sous le minimum de 0,1.
+    let mut sim = sim_min(0.1, 0.0, 1000.0);
+    sim.bump_max_risk_pct = Some(0.015);
+    sim.on_bar(&flat(0, 100.0)).unwrap();
+    sim.submit(enter_risk(0.0001, 98.0), at(0)).unwrap();
+    sim.on_bar(&flat(1, 100.0)).unwrap();
+    assert_eq!(sim.qty(), 0.1, "portée à minSz");
+    assert_eq!(sim.detail().entries_bumped_to_min, 1);
+    assert_eq!(sim.counters().buys_rejected_below_minimum, 0);
+    // Risque effectif 0,1 × 2 = 0,2 ≤ 1,5 % de 1000 : accepté. Avec une base de 10, la borne tombe à
+    // 0,15 et la montée est refusée.
+    let mut sim = sim_min(0.1, 0.0, 1000.0);
+    sim.bump_max_risk_pct = Some(0.015);
+    sim.on_bar(&flat(0, 100.0)).unwrap();
+    let ctx = SubmitContext {
+        equity: 10.0,
+        ..at(0)
+    };
+    sim.submit(enter_risk(0.0001, 98.0), ctx).unwrap();
+    sim.on_bar(&flat(1, 100.0)).unwrap();
+    assert_eq!(sim.qty(), 0.0);
+    assert_eq!(sim.detail().entries_bumped_to_min, 0);
+    assert_eq!(sim.counters().buys_rejected_below_minimum, 1);
+    assert_eq!(
+        sim.detail().below_min_zero_lot + sim.detail().below_min_min_qty,
+        1
+    );
+}
+
+#[test]
+fn montee_au_minimum_d_ordre_limit_et_garde_fous() {
+    let mut sim = sim_min(0.1, 0.0, 1000.0);
+    sim.bump_max_risk_pct = Some(0.015);
+    let limite = Instruction::Enter {
+        size: SizeSpec::RiskPct(0.0001),
+        price: OrderPrice::Limit {
+            price: 100.0,
+            ttl_bars: 5,
+        },
+        stop: Some(98.0),
+        take_profit: None,
+        tag: "l",
+    };
+    sim.submit(limite, at(0)).unwrap();
+    assert_eq!(sim.pending().next().unwrap().qty, 0.1);
+    assert_eq!(sim.detail().entries_bumped_to_min, 1);
+    // Sans règle : refus.
+    let mut sim = sim_min(0.1, 0.0, 1000.0);
+    assert_eq!(sim.submit(limite, at(0)), Err(Rejection::BelowMinimum));
+    // Sans stop, pas de risque calculable : refus (la taille en quote donne 0,05 < minSz).
+    let mut sim = sim_min(0.1, 0.0, 1000.0);
+    sim.bump_max_risk_pct = Some(0.015);
+    assert_eq!(
+        sim.submit(enter_limit(5.0, 100.0, None), at(0)),
+        Err(Rejection::BelowMinimum)
+    );
+    // Le cash libre ne couvre pas le minimum (10 de cash, minimum 0,1 à 100 = 10 + frais) : pas de montée.
+    let mut sim = sim_min(0.1, 0.0, 10.0);
+    sim.bump_max_risk_pct = Some(0.5);
+    assert!(sim.submit(limite, at(0)).is_err());
+    assert_eq!(sim.detail().entries_bumped_to_min, 0);
+    // Un plafond de notional sous le minimum d'ordre interdit aussi la montée.
+    let mut sim = sim_min(0.1, 0.0, 1000.0);
+    sim.bump_max_risk_pct = Some(0.015);
+    assert_eq!(
+        sim.submit_capped(limite, at(0), Some(5.0)),
+        Err(Rejection::BelowMinimum)
+    );
+    assert_eq!(sim.detail().entries_bumped_to_min, 0);
+}
+
+/// Position longue d'une unité avec slippage de 10 bps, un stop à 90 et un take-profit à 120.
+fn long_with_orders() -> Simulator {
+    let mut sim = sim_with(rules_s3(), bps(10.0), 1000.0);
+    sim.on_bar(&flat(0, 100.0)).unwrap();
+    sim.submit(enter(100.1, Some(90.0), Some(120.0)), at(0))
+        .unwrap();
+    sim.on_bar(&flat(1, 100.0)).unwrap();
+    assert_eq!(sim.qty(), 1.0);
+    sim.submit(place(Side::Sell, 130.0, 50.0, 1, 1000), at(1))
+        .unwrap();
+    sim
+}
+
+#[test]
+fn sortie_forcee_pour_trou_de_cotation() {
+    let mut sim = long_with_orders();
+    sim.on_bar(&flat(2, 101.0)).unwrap();
+    assert_eq!(sim.pending_len(), 1);
+    // Un `MoveStop` pas encore effectif est abandonné avec la position.
+    sim.submit(Instruction::MoveStop { stop: 95.0 }, at(5))
+        .unwrap();
+    let exit_ms = T0 + 10_000 * 60_000;
+    assert!(sim.force_exit_quote_gap(exit_ms).unwrap());
+    assert_eq!(sim.qty(), 0.0);
+    assert!(sim.position().is_none());
+    assert_eq!(sim.pending_len(), 0);
+    assert_eq!(sim.quote_free(), sim.cash());
+    assert_eq!(sim.counters().sells_cancelled_by_exit, 1);
+    assert_eq!(sim.detail().quote_gap_exits, 1);
+    // Idempotent : à plat, plus rien.
+    assert!(!sim.force_exit_quote_gap(exit_ms).unwrap());
+    assert_eq!(sim.detail().quote_gap_exits, 1);
+    let out = sim.finish(&flat(2, 101.0)).unwrap();
+    assert_eq!(out.trades.len(), 1);
+    let t = out.trades[0];
+    assert_eq!(t.exit_reason, ExitReason::QuoteGap);
+    assert!(!t.forced_close, "pas une clôture de fin de fenêtre");
+    assert_eq!(t.exit_ms, exit_ms);
+    assert_eq!(t.exit_signal_ms, exit_ms);
+    assert_eq!(t.exit_order_ms, exit_ms);
+    assert_eq!(t.exit_ref_price, 101.0, "dernier close");
+    assert_eq!(t.exit_price, 101.0 * (1.0 - bps(10.0).rate()));
+    assert_eq!(t.exit_liquidity, Liquidity::Taker);
+    close_to(t.exit_fee, t.exit_price * 0.0035);
+    close_to(t.exit_slippage, 101.0 - t.exit_price);
+    assert_eq!(t.exit_tag, "quote_gap");
+    assert_eq!(
+        t.stop_at_exit,
+        Some(90.0),
+        "le MoveStop en attente est abandonné"
+    );
+    assert!(!t.stop_moved);
+    // PnL réalisé : produit net moins coût net.
+    close_to(
+        t.pnl_net,
+        (t.exit_price - t.exit_fee) - (t.entry_price + t.entry_fee),
+    );
+    assert!(!out.forced_close);
+}
+
+#[test]
+fn sortie_forcee_sans_position_laisse_les_entrees_en_attente() {
+    let mut sim = sim_with(rules_s3(), Slippage::ZERO, 1000.0);
+    sim.on_bar(&flat(0, 100.0)).unwrap();
+    sim.submit(enter_limit(100.0, 90.0, None), at(0)).unwrap();
+    assert!(!sim.force_exit_quote_gap(T0 + 99 * 60_000).unwrap());
+    assert_eq!(sim.pending_len(), 1, "l'entrée expirera par son TTL");
+    assert_eq!(sim.detail().quote_gap_exits, 0);
+}
+
+#[test]
+fn sortie_forcee_annule_aussi_les_achats_limit_en_attente() {
+    let mut sim = long_one();
+    sim.submit(place(Side::Buy, 80.0, 100.0, 1, 1000), at(2))
+        .unwrap();
+    sim.submit(place(Side::Sell, 150.0, 20.0, 2, 1000), at(2))
+        .unwrap();
+    assert!(sim.quote_free() < sim.cash());
+    assert!(sim.force_exit_quote_gap(T0 + 50 * 60_000).unwrap());
+    assert_eq!(sim.pending_len(), 0);
+    assert_eq!(sim.counters().orders_cancelled, 1);
+    assert_eq!(sim.counters().sells_cancelled_by_exit, 1);
+    assert_eq!(sim.quote_free(), sim.cash());
+}
+
+#[test]
+fn close_at_end_est_la_partie_de_finish_qui_solde() {
+    let mut a = long_with_orders();
+    a.on_bar(&flat(2, 101.0)).unwrap();
+    let mut b = long_with_orders();
+    b.on_bar(&flat(2, 101.0)).unwrap();
+    let out = a.finish(&flat(2, 101.0)).unwrap();
+    assert!(b.close_at_end(&flat(2, 101.0)).unwrap());
+    assert!(!b.close_at_end(&flat(2, 101.0)).unwrap(), "rien à solder");
+    assert_eq!(out.trades, b.trades);
+    assert_eq!(out.cash.to_bits(), b.cash().to_bits());
+    assert_eq!(out.counters, *b.counters());
+    assert_eq!(out.trades[0].exit_reason, ExitReason::ForcedClose);
+    assert_eq!(b.counters().orders_unfilled_at_end, 1);
+    assert_eq!(b.pending_len(), 0);
+}
+
+// ---------------------------------------------------------------------------------------------
+// Un `Book` à une jambe rejoue le simulateur au bit
+// ---------------------------------------------------------------------------------------------
+
+/// Exécute la suite d'opérations sur un `Simulator` et sur un `Book` à une jambe (mode capitalisé),
+/// en parallèle, et exige des états identiques au bit après chaque opération.
+fn comparer_book_et_simulateur(
+    operations: &[Op],
+    fees: FeeSchedule,
+    rules: SimRules,
+    cash: f64,
+    slippage: f64,
+) -> Result<(), TestCaseError> {
+    let mut sim = Simulator::new(fees, bps(slippage), rules, inst(), cash, 8).unwrap();
+    let config = BookConfig {
+        fees,
+        slippage: bps(slippage),
+        rules,
+        initial_cash: cash,
+        max_positions: 1,
+        mode: SizingMode::Compounding,
+        min_order_bump_max_risk: None,
+        trades_capacity: 8,
+    };
+    let mut book = Book::new(config, &[inst()]).unwrap();
+    let mut index = 0i64;
+    let mut last = flat(0, 100.0);
+    for op in operations {
+        match op {
+            Op::Bar {
+                open,
+                up,
+                down,
+                close,
+                volume,
+            } => {
+                let high = open * (1.0 + up);
+                let low = open * (1.0 - down);
+                let close = low + (high - low) * close;
+                last = bar_v(index, *open, high, low, close, *volume);
+                index += 1;
+                prop_assert_eq!(
+                    sim.on_bar(&last).map_err(|e| e.to_string()),
+                    book.on_bar(0, &last).map_err(|e| e.to_string())
+                );
+                prop_assert_eq!(sim.cash().to_bits(), book.cash().to_bits());
+                prop_assert_eq!(sim.equity_at(last.close).to_bits(), book.equity().to_bits());
+                prop_assert_eq!(sim.quote_free().to_bits(), book.quote_free().to_bits());
+                prop_assert_eq!(
+                    sim.qty().to_bits(),
+                    book.position(0).map_or(0.0, |p| p.qty).to_bits()
+                );
+                prop_assert_eq!(sim.qty_free().to_bits(), book.qty_free(0).to_bits());
+                prop_assert_eq!(sim.pending_len(), book.pending_len(0));
+                prop_assert!(book.pending(0).eq(sim.pending()));
+                book.check_invariants();
+            }
+            other => {
+                let ctx = SubmitContext {
+                    signal_ms: T0 + index * 60_000,
+                    equity: sim.equity_at(last.close),
+                    ref_price: last.close,
+                };
+                let instruction = match other.clone() {
+                    Op::Enter {
+                        size,
+                        amount,
+                        limit,
+                        stop,
+                        tp,
+                    } => {
+                        let size = match size {
+                            0 => SizeSpec::Quote(amount),
+                            1 => SizeSpec::PctEquity((amount / 1e5).clamp(1e-6, 1.0)),
+                            _ => SizeSpec::RiskPct((amount / 1e5).clamp(1e-6, 1.0)),
+                        };
+                        Instruction::Enter {
+                            size,
+                            price: limit.map_or(OrderPrice::Market, |(price, ttl_bars)| {
+                                OrderPrice::Limit { price, ttl_bars }
+                            }),
+                            stop,
+                            take_profit: tp,
+                            tag: "e",
+                        }
+                    }
+                    Op::Exit(limit) => Instruction::Exit {
+                        price: limit.map_or(OrderPrice::Market, |(price, ttl_bars)| {
+                            OrderPrice::Limit { price, ttl_bars }
+                        }),
+                        tag: "x",
+                    },
+                    Op::Place {
+                        buy,
+                        price,
+                        amount,
+                        slot,
+                        ttl,
+                    } => Instruction::Place {
+                        side: if buy { Side::Buy } else { Side::Sell },
+                        price,
+                        size: SizeSpec::Quote(amount),
+                        ttl_bars: ttl,
+                        slot,
+                        tag: "p",
+                    },
+                    Op::CancelSlot(slot) => Instruction::CancelSlot { slot },
+                    Op::CancelAll => Instruction::CancelAll,
+                    Op::MoveStop(stop) => Instruction::MoveStop { stop },
+                    Op::Bar { .. } => continue,
+                };
+                let a = sim.submit(instruction, ctx);
+                let b = book.submit(0, instruction, ctx, None);
+                prop_assert_eq!(a.map_err(BookRejection::Sim), b);
+            }
+        }
+    }
+    let out = sim.finish(&last).unwrap();
+    book.close_all_at_end(&[Some(last)]).unwrap();
+    let book_out = book.into_outcome();
+    prop_assert_eq!(out.cash.to_bits(), book_out.cash.to_bits());
+    prop_assert_eq!(&out.trades, &book_out.trades);
+    prop_assert!(book_out.trade_legs.iter().all(|&leg| leg == 0));
+    prop_assert_eq!(book_out.trade_legs.len(), out.trades.len());
+    prop_assert_eq!(out.counters, book_out.counters[0]);
+    prop_assert_eq!(out.forced_close, book_out.forced_close);
+    prop_assert_eq!(book_out.max_positions_rejected[0], 0);
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------------------------
 // Propriétés
 // ---------------------------------------------------------------------------------------------
 
@@ -2230,5 +2784,32 @@ proptest! {
             prop_assert_eq!(x, y);
         }
         prop_assert_eq!(a.counters, b.counters);
+    }
+}
+
+proptest! {
+    #![proptest_config(ProptestConfig::with_cases(400))]
+
+    /// Un portefeuille à une jambe en mode capitalisé ne change pas l'arithmétique : mêmes trades, même
+    /// cash, même equity, mêmes compteurs, au bit (docs S9 §2.3).
+    #[test]
+    fn un_book_a_une_jambe_rejoue_le_simulateur_au_bit(
+        taker in 0u32..=500,
+        maker in 0u32..=500,
+        slippage in 0.0f64..200.0,
+        cash in 1.0f64..1e7,
+        delay in 0u32..=3,
+        cross in 0u32..=3,
+        tp_first in any::<bool>(),
+        operations in ops(),
+    ) {
+        let rules = SimRules {
+            activation_delay_bars: delay,
+            limit_cross_ticks: cross,
+            intrabar: if tp_first { IntrabarRule::TpFirst } else { IntrabarRule::StopFirst },
+            ..SimRules::default()
+        };
+        let fees = FeeSchedule::new(ExchangeId::Okx, maker, taker).unwrap();
+        comparer_book_et_simulateur(&operations, fees, rules, cash, slippage)?;
     }
 }

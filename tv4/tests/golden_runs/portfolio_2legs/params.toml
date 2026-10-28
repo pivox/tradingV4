@@ -1,0 +1,9 @@
+# Paramètres du golden de run du portefeuille (tests/golden_run_portfolio.rs) : sma_cross 15m 5/20 sur
+# deux paires synthétiques, N = 1, sizing compounding, instruments OKX de test. Ce n'est pas une
+# hypothèse de recherche : aucune fiche H-NNN, aucun run sur DEV (docs/04-protocole-recherche.md §4.3).
+# Modifier ce fichier change le golden : le régénérer avec
+# TV4_GOLDEN_UPDATE=1 cargo test --test golden_run_portfolio.
+tf = "15m"
+fast = 5
+slow = 20
+stop_atr_mult = 2.0

@@ -127,6 +127,77 @@ impl std::fmt::Debug for TfView<'_> {
     }
 }
 
+/// Timeframe de la série de régime (docs/04 §4.2 : « BTC clôture 1d > SMA200 »).
+pub const REGIME_TF: Timeframe = Timeframe::D1;
+
+/// Période de la SMA du filtre de régime, en bougies de [`REGIME_TF`].
+pub const REGIME_SMA_PERIOD: usize = 200;
+
+/// Vue du filtre de régime : bougies 1d CLÔTURÉES de la paire de régime et leur SMA200.
+///
+/// Le moteur la construit sur des tranches déjà tronquées au nombre de bougies 1d closes à `now_ms`
+/// (les champs sont privés, il n'existe aucune voie vers la bougie en cours ni vers le futur). La
+/// garde anti look-ahead est celle des vues : [`BarContext::with_regime`] refuse une vue dont la
+/// dernière bougie n'est pas close à l'instant du contexte.
+#[derive(Clone, Copy)]
+pub struct RegimeView<'a> {
+    candles: &'a [Candle],
+    sma: &'a [f64],
+}
+
+impl<'a> RegimeView<'a> {
+    /// `candles` : bougies 1d closes, chronologiques. `sma` : la SMA200 de leurs clôtures, une valeur
+    /// par bougie (NaN en warmup), donc de même longueur.
+    pub fn new(candles: &'a [Candle], sma: &'a [f64]) -> Result<Self, StrategyError> {
+        if candles.len() != sma.len() {
+            return Err(StrategyError::RegimeLength {
+                candles: candles.len(),
+                sma: sma.len(),
+            });
+        }
+        Ok(RegimeView { candles, sma })
+    }
+
+    /// Bougies 1d closes de la paire de régime, la plus récente en fin de tranche.
+    pub fn closed(&self) -> &'a [Candle] {
+        self.candles
+    }
+
+    /// SMA200 des clôtures à la dernière bougie close. `None` tant que moins de
+    /// [`REGIME_SMA_PERIOD`] bougies sont closes, ou si la valeur n'est pas finie.
+    pub fn sma(&self) -> Option<f64> {
+        if self.candles.len() < REGIME_SMA_PERIOD {
+            return None;
+        }
+        self.sma.last().copied().filter(|value| value.is_finite())
+    }
+
+    /// `Some(close > sma)` à la dernière bougie close, avec un `>` STRICT (close = SMA donne `false`).
+    /// `None` quand la SMA ou la bougie manque.
+    pub fn bull(&self) -> Option<bool> {
+        let sma = self.sma()?;
+        let close = self.candles.last()?.close;
+        if !close.is_finite() {
+            return None;
+        }
+        Some(close > sma)
+    }
+}
+
+/// `Debug` borné : longueurs et dernière bougie visible, jamais la série entière.
+impl std::fmt::Debug for RegimeView<'_> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("RegimeView")
+            .field("closed", &self.candles.len())
+            .field(
+                "last_open_time_ms",
+                &self.candles.last().map(|c| c.open_time_ms),
+            )
+            .field("sma", &self.sma())
+            .finish()
+    }
+}
+
 /// Vue en lecture seule construite par le moteur pour chaque bougie 1m.
 ///
 /// Toutes les tranches s'arrêtent à la dernière bougie CLÔTURÉE du timeframe demandé à l'instant
@@ -140,6 +211,7 @@ pub struct BarContext<'a> {
     pending: &'a [PendingOrder],
     views: &'a [TfView<'a>],
     just_closed: u8,
+    regime: Option<RegimeView<'a>>,
 }
 
 impl<'a> BarContext<'a> {
@@ -190,7 +262,31 @@ impl<'a> BarContext<'a> {
             pending,
             views,
             just_closed,
+            regime: None,
         })
+    }
+
+    /// Joint la vue du filtre de régime (`None` la retire). Même garde anti look-ahead que
+    /// [`BarContext::new`] : la dernière bougie 1d exposée doit être close à `now_ms`
+    /// (`open + 1d <= now_ms`), sinon [`StrategyError::LookAhead`]. Une vue vide est toujours permise.
+    pub fn with_regime(mut self, regime: Option<RegimeView<'a>>) -> Result<Self, StrategyError> {
+        if let Some(last) = regime.as_ref().and_then(|view| view.candles.last())
+            && last.open_time_ms.saturating_add(REGIME_TF.ms()) > self.state.now_ms
+        {
+            return Err(StrategyError::LookAhead {
+                tf: REGIME_TF,
+                open_time_ms: last.open_time_ms,
+                now_ms: self.state.now_ms,
+            });
+        }
+        self.regime = regime;
+        Ok(self)
+    }
+
+    /// Filtre de régime, `None` si le moteur n'en fournit pas (stratégie sans
+    /// [`Strategy::uses_regime`](super::Strategy::uses_regime)).
+    pub fn regime(&self) -> Option<&RegimeView<'a>> {
+        self.regime.as_ref()
     }
 
     pub fn now_ms(&self) -> Ts {

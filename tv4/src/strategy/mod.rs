@@ -34,6 +34,12 @@
 //!     l'entonnoir de `metrics.json`.
 //! 13. Tag de sortie réservé [`TIME_STOP_TAG`] : une stratégie qui sort sur un délai l'utilise pour que
 //!     `trades.csv` écrive `exit_type = time_stop` (sinon `strategy_exit`).
+//!
+//! Ajouts de S9 :
+//!
+//! 14. [`RegimeView`], [`BarContext::with_regime`] et [`BarContext::regime`] : les bougies 1d closes de
+//!     la paire de régime, leur SMA200 et l'aide `bull()` (`>` strict), avec la garde anti look-ahead
+//!     des vues. [`Strategy::uses_regime`] (défaut `false`) déclare le besoin.
 
 #![forbid(unsafe_code)]
 
@@ -127,6 +133,11 @@ pub enum StrategyError {
         open_time_ms: Ts,
         now_ms: Ts,
     },
+
+    #[error(
+        "vue de régime : {candles} bougies pour {sma} valeurs de SMA, une valeur par bougie attendue"
+    )]
+    RegimeLength { candles: usize, sma: usize },
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -240,7 +251,7 @@ pub struct PendingOrder {
 // ---------------------------------------------------------------------------------------------
 
 mod context;
-pub use context::{BarContext, BarState, TfView};
+pub use context::{BarContext, BarState, REGIME_SMA_PERIOD, REGIME_TF, RegimeView, TfView};
 
 // ---------------------------------------------------------------------------------------------
 // Trait Strategy
@@ -290,6 +301,14 @@ pub trait Strategy: Send {
     /// déclare rien.
     fn funnel(&self) -> Option<StrategyFunnel> {
         None
+    }
+
+    /// Vrai si la stratégie lit [`BarContext::regime`] (filtre BTC 1d / SMA200, docs/04 §4.2). Le
+    /// moteur portefeuille ne charge alors la série de régime que pour elle, l'inscrit dans le
+    /// `config_hash` et refuse un dataset qui n'en a pas. Défaut `false` : aucune stratégie du
+    /// jalon 1 n'en a besoin.
+    fn uses_regime(&self) -> bool {
+        false
     }
 }
 

@@ -20,14 +20,19 @@ use super::layout::Partition;
 /// Verrou exclusif d'une partition : `std::fs::File::try_lock` (Rust 1.89), non bloquant, un verrou
 /// déjà pris est une erreur immédiate.
 ///
-/// Libéré au drop ou à la mort du processus (verrou consultatif `flock` sous Linux, sur la
-/// description de fichier ouverte : deux `open` du même fichier dans un même processus s'excluent
-/// aussi, ce que les tests utilisent). Le fichier de verrou n'est jamais supprimé (supprimer un
+/// Libéré au drop par un `unlock` explicite, ou à la mort du processus (verrou consultatif `flock`
+/// sous Linux, sur la description de fichier ouverte : deux `open` du même fichier dans un même
+/// processus s'excluent aussi, ce que les tests utilisent). Le `unlock` explicite ne se réduit pas à
+/// la fermeture du descripteur : un `flock` appartient à la description de fichier ouverte, qui reste
+/// tenue tant qu'une copie du descripteur existe. Un enfant lancé par un autre thread (`fork` ou
+/// `posix_spawn`) en détient une copie entre le clone et l'exec (`O_CLOEXEC` ne la ferme qu'à
+/// l'exec) ; sans `unlock`, un verrou relâché puis repris aussitôt serait refusé à tort
+/// ([`StoreError::LockBusy`]). Le fichier de verrou n'est jamais supprimé (supprimer un
 /// fichier de verrou ouvre une course). Valable sur un système de fichiers local seulement, et
 /// seulement contre les processus qui prennent ce même verrou.
 #[derive(Debug)]
 pub struct PartitionLock {
-    _file: File,
+    file: File,
     path: PathBuf,
 }
 
@@ -61,7 +66,7 @@ impl PartitionLock {
     pub fn acquire(root: &Path, partition: &Partition) -> Result<PartitionLock, StoreError> {
         let rel = partition.lock_rel();
         match take(root, &rel)? {
-            Some((file, path)) => Ok(PartitionLock { _file: file, path }),
+            Some((file, path)) => Ok(PartitionLock { file, path }),
             None => Err(StoreError::LockBusy {
                 partition: partition.label(),
                 path: rel,
@@ -95,6 +100,15 @@ impl PartitionLock {
     }
 }
 
+impl Drop for PartitionLock {
+    fn drop(&mut self) {
+        // `flock(LOCK_UN)` agit sur la description de fichier ouverte : une copie du descripteur
+        // héritée par un enfant entre clone et exec ne garde plus le verrou. L'erreur éventuelle est
+        // ignorée : le descripteur est de toute façon fermé juste après.
+        let _ = self.file.unlock();
+    }
+}
+
 /// Intervalle de sondage de [`PartitionLock::acquire_wait`].
 const LOCK_POLL: Duration = Duration::from_millis(5);
 
@@ -103,7 +117,7 @@ const LOCK_POLL: Duration = Duration::from_millis(5);
 /// ne peut pas heurter un verrou de partition : aucun exchange ne s'appelle `datasets`.
 #[derive(Debug)]
 pub struct DatasetLock {
-    _file: File,
+    file: File,
     path: PathBuf,
 }
 
@@ -114,7 +128,7 @@ impl DatasetLock {
     pub fn acquire(root: &Path, name: &str) -> Result<DatasetLock, StoreError> {
         let rel = format!("state/locks/datasets/{name}.lock");
         match take(root, &rel)? {
-            Some((file, path)) => Ok(DatasetLock { _file: file, path }),
+            Some((file, path)) => Ok(DatasetLock { file, path }),
             None => Err(StoreError::DatasetBusy {
                 name: name.to_string(),
                 path: rel,
@@ -125,6 +139,14 @@ impl DatasetLock {
     /// Chemin du fichier de verrou.
     pub fn path(&self) -> &Path {
         &self.path
+    }
+}
+
+impl Drop for DatasetLock {
+    fn drop(&mut self) {
+        // Même raison que pour [`PartitionLock`] : relâcher le verrou même si un enfant a hérité
+        // d'une copie du descripteur.
+        let _ = self.file.unlock();
     }
 }
 
@@ -224,5 +246,44 @@ mod tests {
         let chemin = verrou.path().to_path_buf();
         drop(verrou);
         assert!(chemin.is_file());
+    }
+
+    /// Régression : un autre thread lance des enfants en boucle. Chaque enfant hérite, entre le clone
+    /// et l'exec, d'une copie des descripteurs ouverts, dont celui du verrou ; sans `unlock`
+    /// explicite au drop, la reprise immédiate du verrou échouait (`LockBusy` / `DatasetBusy`).
+    #[cfg(unix)]
+    #[test]
+    fn verrou_repris_aussitot_malgre_des_enfants_lances_par_un_autre_thread() {
+        use std::process::Command;
+        use std::sync::Arc;
+        use std::sync::atomic::{AtomicBool, Ordering};
+
+        let dir = tempfile::tempdir().unwrap();
+        let p = partition("BTC-USD", Timeframe::M1);
+        let arret = Arc::new(AtomicBool::new(false));
+        let enfants = {
+            let arret = Arc::clone(&arret);
+            thread::spawn(move || {
+                while !arret.load(Ordering::Relaxed) {
+                    Command::new("true").output().unwrap();
+                }
+            })
+        };
+        let mut partition_refusee = 0_u32;
+        let mut dataset_refuse = 0_u32;
+        for _ in 0..2_000 {
+            match PartitionLock::acquire(dir.path(), &p) {
+                Ok(verrou) => drop(verrou),
+                Err(_) => partition_refusee += 1,
+            }
+            match DatasetLock::acquire(dir.path(), "ref") {
+                Ok(verrou) => drop(verrou),
+                Err(_) => dataset_refuse += 1,
+            }
+        }
+        arret.store(true, Ordering::Relaxed);
+        enfants.join().unwrap();
+        assert_eq!(partition_refusee, 0, "PartitionLock refusé à tort");
+        assert_eq!(dataset_refuse, 0, "DatasetLock refusé à tort");
     }
 }
