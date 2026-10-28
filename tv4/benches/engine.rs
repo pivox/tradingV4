@@ -28,6 +28,15 @@
 //! `PortfolioInputs` est reconstruit à chaque itération (stratégies fraîches) et la préparation (MTF,
 //! table de rang) est exclue de la mesure. Le débit est exprimé par minute de la grille.
 //!
+//! `engine_portfolio_profiles_2y_1m_2legs` (S10, docs/specs/s10.md §15.2) : les mêmes deux séries et la
+//! même `sma_cross` 15m, jouées par `run_portfolio_profiles` (baseline, adverse, maker, une seule
+//! préparation partagée, graine 1, `config/costs.toml`). **Informatif, sans porte** : aucun seuil n'est
+//! publié, et la porte criterion de la CI reste celle de `engine_2y_1m`. Les trois boucles sont
+//! chronométrées et additionnées (`ChronoCumul`), la préparation (`load` et `share`) est exclue de la
+//! mesure, et le débit est exprimé par minute de la grille et par profil (trois fois la grille). Les
+//! symboles `AAA-USD` et `BBB-USD` ne sont dans aucune liste de `config/costs.toml` : ils prennent la
+//! classe `beyond` par repli, ce qui ne change rien au temps mesuré.
+//!
 //! Seule la boucle est chronométrée : un `LoopObserver` note l'instant à `loop_started` et à
 //! `loop_finished`, la préparation (indicateurs, `Mtf`) est exclue. Commande :
 //! `cargo bench --locked --bench engine -- engine_loop_2y_1m` (ou `engine_2y_1m`). `cargo test
@@ -40,11 +49,13 @@ use criterion::{Criterion, Throughput, criterion_group, criterion_main};
 use std::hint::black_box;
 use std::time::{Duration, Instant};
 use tv4::engine::{
-    CellConfig, DEFAULT_MAX_POSITIONS, DEFAULT_QUOTE_GAP_MS, LoopObserver, NoopObserver,
-    PortfolioConfig, PortfolioInputs, run_cell_mtf, run_cell_observed, run_portfolio_observed,
+    CellConfig, CostSetup, DEFAULT_MAX_POSITIONS, DEFAULT_QUOTE_GAP_MS, LoopObserver, NoopObserver,
+    PortfolioConfig, PortfolioInputs, ProfilesInputs, run_cell_mtf, run_cell_observed,
+    run_portfolio_observed, run_portfolio_profiles,
 };
 use tv4::indicators::{Atr, Ema, Rsi, Sma, Vwap, batch};
-use tv4::model::{InstrumentRules, Side, Timeframe};
+use tv4::model::costs::CostsFile;
+use tv4::model::{InstrumentRules, Side, Slippage, Timeframe};
 use tv4::mtf::Mtf;
 use tv4::sim::{SimRules, SizingMode};
 use tv4::store::Columns;
@@ -126,6 +137,25 @@ impl LoopObserver for Chrono {
     fn loop_finished(&mut self) {
         if let Some(debut) = self.debut.take() {
             self.duree = debut.elapsed();
+        }
+    }
+}
+
+/// Chronomètre cumulé : somme des durées de toutes les boucles d'un appel (trois pour les profils).
+#[derive(Default)]
+struct ChronoCumul {
+    debut: Option<Instant>,
+    duree: Duration,
+}
+
+impl LoopObserver for ChronoCumul {
+    fn loop_started(&mut self) {
+        self.debut = Some(Instant::now());
+    }
+
+    fn loop_finished(&mut self) {
+        if let Some(debut) = self.debut.take() {
+            self.duree += debut.elapsed();
         }
     }
 }
@@ -362,11 +392,83 @@ fn engine_portfolio_2y_1m_2legs(c: &mut Criterion) {
     group.finish();
 }
 
+/// Trois profils de coûts sur deux jambes (S10 §15.2) : informatif, sans porte.
+fn engine_portfolio_profiles_2y_1m_2legs(c: &mut Criterion) {
+    let n = taille_boucle();
+    let universe = vec!["AAA-USD".to_string(), "BBB-USD".to_string()];
+    let series = vec![
+        (
+            universe[0].clone(),
+            Columns::from_candles(&common::synthetic_candles(n, 42, common::T0, 0.0)),
+        ),
+        (
+            universe[1].clone(),
+            Columns::from_candles(&common::synthetic_candles(n, 43, common::T0, 0.0)),
+        ),
+    ];
+    let instruments =
+        vec![InstrumentRules::new(1e-4, 1e-8, 0.0, 0.0).expect("instrument valide"); 2];
+    let costs = CostsFile::from_toml_str(include_str!("../../config/costs.toml"))
+        .expect("config/costs.toml valide");
+    let config = || PortfolioConfig {
+        universe: &universe,
+        regime_symbol: "BTC-USD",
+        fees: common::okx_fees(),
+        // Le slippage scalaire est refusé avec les profils : le slippage vient du fichier de coûts.
+        slippage: Slippage::ZERO,
+        initial_cash: 1.0e6,
+        // Volumes synthétiques minuscules : la règle de part de volume rejetterait tous les achats.
+        sim_rules: SimRules {
+            max_volume_share: 1.0e9,
+            ..SimRules::default()
+        },
+        instruments: &instruments,
+        instruments_hash: None,
+        max_positions: DEFAULT_MAX_POSITIONS,
+        sizing: SizingMode::Research,
+        min_order_bump_max_risk: None,
+        quote_gap_ms: DEFAULT_QUOTE_GAP_MS,
+        min_trades: 30,
+    };
+    let jeu = || vec![sma_cross_reference(), sma_cross_reference()];
+    let mut group = c.benchmark_group("engine_portfolio_profiles_2y_1m_2legs");
+    // Trois boucles par appel : le débit est rapporté par minute de la grille et par profil.
+    group.throughput(Throughput::Elements(3 * n as u64));
+    group.sample_size(10);
+    group.bench_function("sma_cross_15m_boucles", |b| {
+        b.iter_custom(|iters| {
+            let mut total = Duration::ZERO;
+            for _ in 0..iters {
+                let mut chrono = ChronoCumul::default();
+                let resultat = run_portfolio_profiles(
+                    ProfilesInputs {
+                        series: &series,
+                        strategies: [jeu(), jeu(), jeu()],
+                        config: config(),
+                        costs: CostSetup {
+                            file: &costs,
+                            measures: None,
+                            seed: 1,
+                        },
+                    },
+                    &mut chrono,
+                )
+                .expect("run valide");
+                black_box(resultat.runs[0].result.trades.len());
+                total += chrono.duree;
+            }
+            total
+        })
+    });
+    group.finish();
+}
+
 criterion_group!(
     benches,
     indicators_1m,
     engine_loop_2y_1m,
     engine_2y_1m,
-    engine_portfolio_2y_1m_2legs
+    engine_portfolio_2y_1m_2legs,
+    engine_portfolio_profiles_2y_1m_2legs
 );
 criterion_main!(benches);

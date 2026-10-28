@@ -1,9 +1,10 @@
 # CI tradingV4 (docs/03-architecture.md §3 ligne Qualité, §4 et §11 S1).
 # Sans filtrage par chemin : chaque push et chaque pull request passe tout le contrôle.
-# Jobs : `qualite` (format, clippy, tests, doubles runs de fumée avec `tv4 verify` pour le chemin mono-paire
-# et pour le portefeuille, couverture), `bench` (criterion `engine_2y_1m` et sa porte ; le groupe informatif
-# `engine_portfolio_2y_1m_2legs` n'est pas lancé ici), `control-plane` (PHP : composer, phpcs, phpstan,
-# phpunit) et `rapport-bout-en-bout` (rend avec le control plane les runs écrits par `tv4`).
+# Jobs : `qualite` (format, clippy, tests, doubles runs de fumée avec `tv4 verify` pour le chemin mono-paire,
+# pour le portefeuille et pour les profils de coûts s10, fumée de `tv4 costs calibrate-stress`, couverture),
+# `bench` (criterion `engine_2y_1m` et sa porte ; les groupes informatifs `engine_portfolio_2y_1m_2legs` et
+# `engine_portfolio_profiles_2y_1m_2legs` ne sont pas lancés ici), `control-plane` (PHP : composer, phpcs,
+# phpstan, phpunit) et `rapport-bout-en-bout` (rend avec le control plane les runs écrits par `tv4`).
 name: CI
 
 on:
@@ -94,6 +95,46 @@ jobs:
               --instruments-okx tv4/tests/fixtures/okx_instruments_spot.json --out runs/portefeuille-$r
           done
           ./target/debug/tv4 verify runs/portefeuille-a runs/portefeuille-b
+
+      # Profils de coûts (docs/specs/s10.md §14 et §17, lot H) : même dataset `fumee_duo` que l'étape
+      # précédente (même job, même racine `smoke-s9`), `--costs config/costs.toml`, deux process, puis
+      # `tv4 verify` sur les deux dossiers de profils (trois runs et `profiles.json`). Un troisième run avec
+      # `--fees okx_regular` doit écrire le même `profiles.json` que `--fees okx` : `okx` est l'alias
+      # d'analyse de `okx_regular`, et le nom de grille haché est le même. Même réserve que pour le
+      # portefeuille : marché de la fixture réelle sur deux symboles, donc un test de chaîne et de
+      # déterminisme, sans résultat (verdict attendu `rejected_too_few_trades`, étiquette indéterminée).
+      - name: Backtest de fumée des profils de coûts, deux process, et tv4 verify
+        run: |
+          set -euo pipefail
+          for r in a b; do
+            ./target/debug/tv4 backtest --root smoke-s9 --dataset fumee_duo --strategy sma_cross \
+              --params config/strategies/sma_cross.toml --fees okx --symbols BTC-USD,ETH-USD \
+              --max-positions 8 --sizing research --capital 300 \
+              --instruments-okx tv4/tests/fixtures/okx_instruments_spot.json \
+              --costs config/costs.toml --out runs/profils-$r
+          done
+          ./target/debug/tv4 verify runs/profils-a runs/profils-b
+          ./target/debug/tv4 backtest --root smoke-s9 --dataset fumee_duo --strategy sma_cross \
+            --params config/strategies/sma_cross.toml --fees okx_regular --symbols BTC-USD,ETH-USD \
+            --max-positions 8 --sizing research --capital 300 \
+            --instruments-okx tv4/tests/fixtures/okx_instruments_spot.json \
+            --costs config/costs.toml --out runs/profils-regular
+          cmp runs/profils-a/profiles.json runs/profils-regular/profiles.json
+
+      # Calibration du stress (docs/specs/s10.md §11 et §14.2) sur le dataset de la fumée : sept jours de
+      # 1m, donc des TF 1h et 4h (le 1d n'a pas les 14 bougies de l'ATR). C'est un contrôle de plomberie,
+      # pas une mesure : le fichier est écrit au schéma, et deux runs sur les mêmes données donnent le même
+      # `measurement_hash` (`created_at` et `commit` n'y entrent pas). Chaque run a son `--out`, car la
+      # commande n'écrase jamais un fichier existant.
+      - name: Fumée de tv4 costs calibrate-stress
+        run: |
+          set -euo pipefail
+          for r in a b; do
+            ./target/debug/tv4 costs calibrate-stress --root smoke-s9 --dataset fumee_duo \
+              --tf 1h --tf 4h --out runs/calibration/stress-$r.json
+          done
+          test "$(jq -r .schema runs/calibration/stress-a.json)" = "tv4-stress-calibration-v1"
+          test "$(jq -r .measurement_hash runs/calibration/stress-a.json)" = "$(jq -r .measurement_hash runs/calibration/stress-b.json)"
 
       - name: Publier les runs de fumée
         uses: actions/upload-artifact@v4
@@ -199,9 +240,10 @@ jobs:
         continue-on-error: true
 
   # Conformité entre la vraie sortie de `tv4` et les DTO PHP (la fixture du control plane est écrite à la
-  # main) : les runs de fumée A (mono-paire s8) et du portefeuille (s9) sont rendus en HTML, et le rendu du
-  # portefeuille échoue si un bloc obligatoire de s9 y est déclaré absent. Le test PHPUnit
-  # `GoldenPortfolioRunTest` fait le même contrôle sur le golden `portfolio_2legs`.
+  # main) : les runs de fumée A (mono-paire s8), du portefeuille (s9) et des profils de coûts (s10) sont
+  # rendus en HTML. Le rendu du portefeuille échoue si un bloc obligatoire de s9 y est déclaré absent, celui
+  # des profils si une section de s10 manque. Les tests PHPUnit `GoldenPortfolioRunTest` et
+  # `GoldenProfilesRunTest` font le même contrôle sur les goldens `portfolio_2legs` et `portfolio_profiles`.
   rapport-bout-en-bout:
     name: Rapport HTML d'un vrai run
     needs: [qualite, control-plane]
@@ -249,6 +291,31 @@ jobs:
           done
           exit "$statut"
 
+      # Dossier de profils (s10) : `profiles.json` fait rendre la section « Profils de coûts » puis la fiche
+      # du profil baseline, qui porte la section « Coûts ». En s10 le lecteur lève une erreur (code de sortie
+      # non nul) quand `costs`, `cost_arithmetic` ou `cost_counters` manque ; le contrôle ci-dessous garde
+      # aussi le motif « Ce run ne porte pas de bloc » du lecteur s9, et vérifie la présence des deux sections.
+      - name: Rendre le rapport du dossier de profils
+        working-directory: control-plane
+        run: php bin/console tv4:report ../runs/profils-a --output ../rapport-profils.html
+
+      - name: Contrôler les blocs et les sections s10 du rapport des profils
+        run: |
+          statut=0
+          for bloc in costs cost_arithmetic cost_counters profils; do
+            if grep -qF "Ce run ne porte pas de bloc <code>${bloc}</code>" rapport-profils.html; then
+              echo "::error::le rapport du dossier de profils ne porte pas le bloc ${bloc}"
+              statut=1
+            fi
+          done
+          for ancre in profils-titre couts-titre; do
+            if ! grep -qF "id=\"${ancre}\"" rapport-profils.html; then
+              echo "::error::le rapport du dossier de profils n'a pas la section ${ancre}"
+              statut=1
+            fi
+          done
+          exit "$statut"
+
       - name: Publier les rapports
         uses: actions/upload-artifact@v4
         with:
@@ -256,4 +323,5 @@ jobs:
           path: |
             rapport-fumee.html
             rapport-portefeuille.html
+            rapport-profils.html
           if-no-files-found: error
