@@ -48,6 +48,7 @@ Plateforme de trading crypto **spot** sur OKX : moteur de backtest, de paper tra
   - `min_order_bump` en S9, désactivé par défaut ;
   - G0 au notional tiré des entrées du run, plafonné à 300 €, avec les minutes absentes à 0 dans la médiane de volume.
 - Mode portefeuille (S9) : capital initial hors du `config_hash`. Un même hash doit donner les mêmes trades à 300 € et à 3 000 € (04 §4.2). Le capital est écrit dans `metrics.json` et dans le manifeste, et `tv4 verify` refuse deux runs de capitaux différents (décision du 28/10 (13:52 UTC), carte « Hors du hash »).
+- Repli S33 (conditionnel : seulement si le cycle 1 ne sort aucun candidat validé) : setups déclaratifs en TOML assemblant des briques Rust typées, bornés par le validateur aux limites de 04 §4.2, sans aucun scripting ; TOML acté le 14/10 (08:10), dérogation à « écrite en code typé » actée le 28/10 (21:08 UTC), `docs/04-protocole-recherche.md` §4.2 et §10 décision 10, `docs/03-architecture.md` §6 et §13, `docs/notes/declarative-setup-toml.md`.
 
 ## Code (moteur Rust `tv4`)
 
@@ -64,6 +65,7 @@ Plateforme de trading crypto **spot** sur OKX : moteur de backtest, de paper tra
 
 - Documentation, commits et échanges en français.
 - Jamais de secret dans le dépôt (clés API, fichiers `.env`) ; la clé OKX n'a jamais le droit de retrait, et le moteur passe `tdMode = cash` sans jamais activer l'emprunt (OKX Europe propose la marge spot jusqu'à 10×).
+- Fichiers de clés du propriétaire : `~/.kraken`, sur son Ubuntu, ne se lit jamais et son contenu ne s'affiche jamais (ni `cat`, ni `grep` qui imprime, ni ouverture par un outil ou un agent). Le code et les commandes qu'on lui donne en extraient seulement `KRAKEN_API_KEY` et `KRAKEN_SECRET_KEY`, chargées dans l'environnement du process sans être écrites ni journalisées (règle du propriétaire du 28/10, 21:31 UTC). Une clé ne passe jamais par un fil de discussion.
 - Toute hypothèse de recherche passe par une fiche pré-enregistrée et commitée avant tout run sur DEV (`docs/04-protocole-recherche.md` §4.3), puis par les portes G0 à G7.
 - Un résultat de backtest n'est valide qu'avec son `config_hash`, son `dataset_hash` et le commit du moteur ; en mode portefeuille (S9), le capital initial, sorti du `config_hash` comme le veut 04 §4.2, s'y ajoute (décision du 28/10 (13:52 UTC)).
 - Pas de score composite ni d'empilement multi-timeframe à score : abandonnés après tradingV3.
