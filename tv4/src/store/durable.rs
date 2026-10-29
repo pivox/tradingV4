@@ -45,7 +45,12 @@ pub(crate) fn write_durable(
     path: &Path,
     write: impl FnOnce(&mut File) -> Result<(), StoreError>,
 ) -> Result<(), StoreError> {
-    let dir = path.parent().unwrap_or_else(|| Path::new("."));
+    // Un nom nu (`okx.json`) a pour parent `Some("")`, pas `None` : le dossier est alors le dossier
+    // courant, et `""` ne peut ni être créé ni être synchronisé.
+    let dir = match path.parent() {
+        Some(parent) if !parent.as_os_str().is_empty() => parent,
+        _ => Path::new("."),
+    };
     fs::create_dir_all(dir).map_err(|source| io_error(dir, source))?;
     let tmp = tmp_path(path);
     let ecrit = (|| {

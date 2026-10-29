@@ -8,8 +8,10 @@ use App\Report\Chart\DrawdownChart;
 use App\Report\Chart\HistogramChart;
 use App\Report\Chart\LineChart;
 use App\Report\Chart\ScatterChart;
+use App\Run\Dto\LinesReport;
 use App\Run\Dto\ProfilesReport;
 use App\Run\Dto\RunReport;
+use App\Run\Dto\TradeRow;
 use Twig\Environment;
 
 /**
@@ -46,6 +48,23 @@ final class ReportRenderer
     }
 
     /**
+     * Rapport d'un dossier de lignes (docs/specs/s11.md §9.3) : la section « Deux lignes », puis la fiche complète de la
+     * ligne `full` (celle de son profil baseline quand les lignes sont des dossiers de profils, précédée de la section
+     * « Profils de coûts »). La fiche de la ligne `okx_usdc` se rend depuis son sous-dossier.
+     */
+    public function renderLines(LinesReport $lines): string
+    {
+        $full = $lines->full();
+        $profiles = $full->profiles;
+        $context = $this->context($full->referenceRun()) + ['lines' => $lines];
+        if (null !== $profiles) {
+            $context += ['profiles' => $profiles];
+        }
+
+        return $this->twig->render('report/standalone.html.twig', $context);
+    }
+
+    /**
      * @return array<string, mixed>
      */
     private function context(RunReport $run): array
@@ -64,12 +83,30 @@ final class ReportRenderer
                 fn (float $v): string => $this->format->money($v),
             ),
             'drawdownChart' => $this->drawdownChart->build($equity->timesMs, $equity->drawdown),
-            'scatterChart' => $this->scatterChart->build($run->trades),
+            'scatterChart' => $this->scatterChart->build($this->keptTrades($run)),
             'histogramChart' => null === $histogram ? null : $this->histogramChart->build($histogram),
             'shownTrades' => $shown,
             'hiddenTrades' => count($run->trades) - count($shown),
             'windowStart' => $this->format->dateTime($run->manifest->window->startMs),
             'windowEnd' => $this->format->dateTime($run->manifest->window->endMs),
         ];
+    }
+
+    /**
+     * Trades sur lesquels portent `mfe_mean`, `mae_mean` et la distribution : en mode recherche, les trades purgés
+     * (sortie `end_of_window`) restent dans `trades.csv` mais sont écartés du nuage (docs/specs/s11.md §9.2).
+     *
+     * @return list<TradeRow>
+     */
+    private function keptTrades(RunReport $run): array
+    {
+        if (!$run->metrics->isResearch()) {
+            return $run->trades;
+        }
+
+        return array_values(array_filter(
+            $run->trades,
+            static fn (TradeRow $t): bool => 'end_of_window' !== $t->exitType,
+        ));
     }
 }

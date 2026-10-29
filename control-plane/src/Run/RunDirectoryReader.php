@@ -32,10 +32,20 @@ use App\Run\Dto\PairStat;
 use App\Run\Dto\PnlWithoutBest;
 use App\Run\Dto\PortfolioInfo;
 use App\Run\Dto\PriorityInfo;
+use App\Run\Dto\QualityExclusion;
 use App\Run\Dto\RegimeInfo;
+use App\Run\Dto\ResearchFunnel;
+use App\Run\Dto\ResearchIdentity;
+use App\Run\Dto\ResearchInfo;
+use App\Run\Dto\ResearchLeg;
+use App\Run\Dto\ResearchPurge;
+use App\Run\Dto\ResearchQuarter;
+use App\Run\Dto\ResearchSubset;
+use App\Run\Dto\ResearchUniverse;
 use App\Run\Dto\RunReport;
 use App\Run\Dto\RunWindow;
 use App\Run\Dto\Timings;
+use App\Run\Dto\TradeRow;
 use App\Run\Dto\UpcomingChange;
 use App\Run\Dto\YearStat;
 use App\Run\Json\JsonObject;
@@ -44,11 +54,13 @@ use App\Run\Json\JsonObject;
  * Lit les quatre fichiers d'un run (`manifest.json`, `metrics.json`, `trades.csv`, `equity.csv`) et
  * les valide. Aucun hash ni aucune métrique n'est recalculé : `tv4` reste la source de vérité.
  *
- * Trois générations de schémas sont acceptées, chacune en comparaison stricte de valeur : s8 (une paire),
- * s9 (portefeuille) et s10 (portefeuille joué avec un profil de coûts). Le manifeste et les métriques d'un même
- * run doivent être de la même génération. Les blocs propres à s9 sont lus s'ils sont présents ; un run s8 se
- * lit exactement comme avant. En s10, les blocs `costs`, `cost_arithmetic` et `cost_counters` sont obligatoires,
- * `fees` et `slippage_bps` n'existent plus et la grille de frais se lit dans `costs.fee_grid` de la config.
+ * Quatre générations de schémas sont acceptées, chacune en comparaison stricte de valeur : s8 (une paire),
+ * s9 (portefeuille), s10 (portefeuille joué avec un profil de coûts) et s11 (portefeuille joué sur un dataset de
+ * recherche par bloc). Le manifeste et les métriques d'un même run doivent être de la même génération. Les blocs
+ * propres à s9 sont lus s'ils sont présents ; un run s8 se lit exactement comme avant. En s10, les blocs `costs`,
+ * `cost_arithmetic` et `cost_counters` sont obligatoires, `fees` et `slippage_bps` n'existent plus et la grille de
+ * frais se lit dans `costs.fee_grid` de la config. En s11, le bloc `research` est obligatoire (docs/specs/s11.md
+ * §9.2) et les blocs de coûts de s10 sont lus si et seulement si `metrics.json` porte `costs`.
  */
 final class RunDirectoryReader
 {
@@ -60,6 +72,8 @@ final class RunDirectoryReader
     public const METRICS_SCHEMA_S9 = 'tv4-metrics-s9';
     public const MANIFEST_SCHEMA_S10 = 'tv4-manifest-s10';
     public const METRICS_SCHEMA_S10 = 'tv4-metrics-s10';
+    public const MANIFEST_SCHEMA_S11 = 'tv4-manifest-s11';
+    public const METRICS_SCHEMA_S11 = 'tv4-metrics-s11';
 
     public function __construct(
         private readonly TradesCsvReader $tradesReader,
@@ -82,12 +96,22 @@ final class RunDirectoryReader
             }
         }
 
-        $manifestSchemas = [self::MANIFEST_SCHEMA_S8, self::MANIFEST_SCHEMA_S9, self::MANIFEST_SCHEMA_S10];
-        $metricsSchemas = [self::METRICS_SCHEMA_S8, self::METRICS_SCHEMA_S9, self::METRICS_SCHEMA_S10];
+        $manifestSchemas = [
+            self::MANIFEST_SCHEMA_S8,
+            self::MANIFEST_SCHEMA_S9,
+            self::MANIFEST_SCHEMA_S10,
+            self::MANIFEST_SCHEMA_S11,
+        ];
+        $metricsSchemas = [
+            self::METRICS_SCHEMA_S8,
+            self::METRICS_SCHEMA_S9,
+            self::METRICS_SCHEMA_S10,
+            self::METRICS_SCHEMA_S11,
+        ];
         $manifestJson = $this->json($dir, self::MANIFEST_FILE, $manifestSchemas);
         $metricsJson = $this->json($dir, self::METRICS_FILE, $metricsSchemas);
         $generation = self::generation($manifestJson->string('schema'));
-        $costs = 10 === $generation;
+        $costs = 10 === $generation || (11 === $generation && $metricsJson->has('costs') && !$metricsJson->isNull('costs'));
         $portfolio = $generation >= 9;
         if ($generation !== self::generation($metricsJson->string('schema'))) {
             throw InvalidRunException::invalidValue(
@@ -101,8 +125,9 @@ final class RunDirectoryReader
             );
         }
 
-        $manifest = $this->manifest($manifestJson, $portfolio, $costs);
-        $metrics = $this->metrics($metricsJson, $portfolio, $costs);
+        $research = 11 === $generation;
+        $manifest = $this->manifest($manifestJson, $portfolio, $costs, $research);
+        $metrics = $this->metrics($metricsJson, $portfolio, $costs, $research);
 
         if ($manifest->configHash !== $metrics->configHash) {
             throw InvalidRunException::invalidValue(self::METRICS_FILE, 'config_hash', 'différent de celui du manifeste');
@@ -117,18 +142,24 @@ final class RunDirectoryReader
 
         $this->checkCostsConsistency($manifest, $metrics);
 
+        $trades = $this->tradesReader->read($dir . '/' . TradesCsvReader::FILE);
+        if (null !== $metrics->research) {
+            $this->checkResearchConsistency($manifest, $metrics, $metrics->research, $trades);
+        }
+
         return new RunReport(
             $manifest,
             $metrics,
-            $this->tradesReader->read($dir . '/' . TradesCsvReader::FILE),
+            $trades,
             $this->equityReader->read($dir . '/' . EquityCsvReader::FILE),
         );
     }
 
-    /** Génération d'un nom de schéma accepté : 8, 9 ou 10 (suffixe `-s8`, `-s9`, `-s10`). */
+    /** Génération d'un nom de schéma accepté : 8, 9, 10 ou 11 (suffixe `-s8`, `-s9`, `-s10`, `-s11`). */
     private static function generation(string $schema): int
     {
         return match (true) {
+            str_ends_with($schema, '-s11') => 11,
             str_ends_with($schema, '-s10') => 10,
             str_ends_with($schema, '-s9') => 9,
             default => 8,
@@ -171,7 +202,7 @@ final class RunDirectoryReader
         return $json;
     }
 
-    private function manifest(JsonObject $j, bool $portfolio, bool $costs): Manifest
+    private function manifest(JsonObject $j, bool $portfolio, bool $costs, bool $research): Manifest
     {
         $data = $j->object('data');
         // s9 : le bloc `data` reprend la fenêtre, le hash et son format ; le haut du manifeste reste prioritaire.
@@ -194,8 +225,8 @@ final class RunDirectoryReader
             hashFormat: $portfolio && !$j->has('hash_format') ? $data->string('hash_format') : $j->string('hash_format'),
             resultHash: $j->string('result_hash'),
             verdict: $j->string('verdict'),
-            config: $this->config($j->object('config'), $portfolio, $costs),
-            data: $portfolio ? $this->portfolioData($data) : new ManifestData(
+            config: $this->config($j->object('config'), $portfolio, $costs, $research),
+            data: $portfolio ? $this->portfolioData($data, $research) : new ManifestData(
                 source: $data->string('source'),
                 dataset: $data->nullableString('dataset'),
                 fixtureBlake3: $data->nullableString('fixture_blake3'),
@@ -241,11 +272,14 @@ final class RunDirectoryReader
             costMeasuresFile: $costs ? $this->optionalString($j, 'cost_measures_file') : null,
             costMeasuresHash: $costs ? $this->optionalString($j, 'cost_measures_hash') : null,
             profilesId: $costs ? $this->optionalString($j, 'profiles_id') : null,
+            researchInputs: $research && $j->has('research_inputs') && !$j->isNull('research_inputs')
+                ? $j->scalarMap('research_inputs')
+                : null,
         );
     }
 
     /** `manifest.data` d'un run s9 : univers, paire de régime et segments chargés ; le reste est facultatif. */
-    private function portfolioData(JsonObject $data): ManifestData
+    private function portfolioData(JsonObject $data, bool $research): ManifestData
     {
         $series = [];
         if ($data->has('series')) {
@@ -273,6 +307,10 @@ final class RunDirectoryReader
             lastOpenTimeMs: $this->optionalInt($data, 'last_open_time_ms'),
             regimeSymbol: $this->optionalString($data, 'regime_symbol'),
             series: $series,
+            block: $research ? $this->optionalString($data, 'block') : null,
+            decisionWindow: $research && $data->has('decision_window') && !$data->isNull('decision_window')
+                ? $this->window($data->object('decision_window'))
+                : null,
         );
     }
 
@@ -304,7 +342,7 @@ final class RunDirectoryReader
     }
 
     /** En s10, la grille se lit dans `costs.fee_grid` et le slippage scalaire n'existe plus. */
-    private function config(JsonObject $c, bool $portfolio, bool $costs): ConfigInfo
+    private function config(JsonObject $c, bool $portfolio, bool $costs, bool $research): ConfigInfo
     {
         $fees = $costs ? 'costs.fee_grid' : 'fees';
 
@@ -324,6 +362,7 @@ final class RunDirectoryReader
             instrument: $portfolio ? null : $c->scalarMap('instrument'),
             instruments: $portfolio && $this->hasBlock($c, 'instruments') ? $this->instrumentRules($c) : null,
             portfolio: $portfolio && $this->hasBlock($c, 'portfolio') ? $c->scalarMap('portfolio') : null,
+            research: $research && $this->hasBlock($c, 'research') ? $c->scalarMap('research') : null,
         );
     }
 
@@ -340,7 +379,7 @@ final class RunDirectoryReader
         return $rules;
     }
 
-    private function metrics(JsonObject $j, bool $portfolio, bool $costs): Metrics
+    private function metrics(JsonObject $j, bool $portfolio, bool $costs, bool $research): Metrics
     {
         $signals = $j->object('signals');
 
@@ -405,7 +444,218 @@ final class RunDirectoryReader
             costs: $costs ? $this->costs($j->object('costs')) : null,
             costArithmetic: $costs ? $this->costArithmetic($j->object('cost_arithmetic')) : null,
             costCounters: $costs ? $this->costCounters($j->object('cost_counters'), true) : null,
+            research: $research ? $this->research($j->object('research')) : null,
         );
+    }
+
+    /** Fenêtre `{start, end, start_ms, end_ms}` d'un objet. */
+    private function window(JsonObject $w): RunWindow
+    {
+        return new RunWindow(
+            start: $w->string('start'),
+            end: $w->string('end'),
+            startMs: $w->int('start_ms'),
+            endMs: $w->int('end_ms'),
+        );
+    }
+
+    /**
+     * Bloc `research` d'un run s11 (docs/specs/s11.md §9.2). Les clés du bloc sont obligatoires ; seules celles de
+     * l'univers trimestriel (`rules_hash`, `window_hash`, `decision_tf`, `quarters`) peuvent manquer en mode `fixed`.
+     */
+    private function research(JsonObject $r): ResearchInfo
+    {
+        $identity = $r->object('identity');
+        $purge = $r->object('purge');
+        $exclusions = [];
+        foreach ($r->keys('quality_exclusions') as $symbol) {
+            $exclusions[$symbol] = array_map(
+                static fn (JsonObject $o): QualityExclusion => new QualityExclusion($o->string('quarter'), $o->stringList('tfs')),
+                $r->objectList('quality_exclusions.' . $symbol),
+            );
+        }
+
+        return new ResearchInfo(
+            block: $this->oneOf($r, 'block', ResearchInfo::BLOCKS, 'research.block'),
+            blocksVersion: $r->string('blocks_version'),
+            guard: $this->oneOf($r, 'guard', ResearchInfo::GUARDS, 'research.guard'),
+            decisionWindow: $this->window($r->object('decision_window')),
+            warmupStart: $r->string('warmup_start'),
+            universe: $this->researchUniverse($r->object('universe')),
+            line: $this->oneOf($r, 'line', ResearchInfo::LINES, 'research.line'),
+            subset: $r->isNull('subset') ? null : $this->researchSubset($r->object('subset')),
+            regimeUsed: $r->bool('regime_used'),
+            identity: new ResearchIdentity(
+                block: $this->oneOf($identity, 'block', ResearchInfo::BLOCKS, 'research.identity.block'),
+                decisionStartMs: $identity->int('decision_start_ms'),
+                decisionEndMs: $identity->int('decision_end_ms'),
+                universeWindowHash: $identity->nullableString('universe_window_hash'),
+                qualityHash: $identity->string('quality_hash'),
+                line: $this->oneOf($identity, 'line', ResearchInfo::LINES, 'research.identity.line'),
+                subsetHash: $identity->nullableString('subset_hash'),
+                legsHash: $identity->string('legs_hash'),
+            ),
+            identityHash: $r->string('identity_hash'),
+            qualityExclusions: $exclusions,
+            purge: new ResearchPurge(
+                rule: $purge->string('rule'),
+                tradesKept: $purge->int('trades_kept'),
+                tradesPurged: $purge->int('trades_purged'),
+                pnlNetPurged: $purge->float('pnl_net_purged'),
+            ),
+            metricsBasis: $r->string('metrics_basis'),
+            funnel: $this->researchFunnel($r->object('funnel')),
+            legs: array_map(
+                fn (JsonObject $o): ResearchLeg => new ResearchLeg(
+                    symbol: $o->string('symbol'),
+                    liveFrom: $o->nullableString('live_from'),
+                    funnel: $this->researchFunnel($o),
+                ),
+                $r->objectList('legs'),
+            ),
+        );
+    }
+
+    private function researchUniverse(JsonObject $u): ResearchUniverse
+    {
+        $mode = $this->oneOf($u, 'mode', ResearchUniverse::MODES, 'research.universe.mode');
+        $quarterly = ResearchUniverse::MODE_QUARTERLY === $mode;
+        $quarters = [];
+        if ($quarterly || $u->has('quarters')) {
+            foreach ($u->objectList('quarters') as $q) {
+                $quarters[] = new ResearchQuarter(
+                    quarter: $q->string('quarter'),
+                    members: $q->int('members'),
+                    eligibleLegs: $q->int('eligible_legs'),
+                    excludedQuality: $q->stringList('excluded_quality'),
+                );
+            }
+        }
+
+        return new ResearchUniverse(
+            mode: $mode,
+            rulesHash: $quarterly ? $u->string('rules_hash') : $this->optionalString($u, 'rules_hash'),
+            windowHash: $quarterly ? $u->string('window_hash') : $this->optionalString($u, 'window_hash'),
+            decisionTf: $quarterly ? $u->string('decision_tf') : $this->optionalString($u, 'decision_tf'),
+            quarters: $quarters,
+        );
+    }
+
+    private function researchSubset(JsonObject $o): ResearchSubset
+    {
+        return new ResearchSubset(
+            kind: $o->string('kind'),
+            subsetHash: $o->string('subset_hash'),
+            legsExcluded: $o->stringList('legs_excluded'),
+        );
+    }
+
+    /** Les quatre compteurs de refus d'entrée de la recherche (docs/specs/s11.md §8.3), au total ou par jambe. */
+    private function researchFunnel(JsonObject $o): ResearchFunnel
+    {
+        return new ResearchFunnel(
+            entriesOutsideDecisionWindow: $o->int('entries_outside_decision_window'),
+            entriesNotInUniverse: $o->int('entries_not_in_universe'),
+            entriesExcludedQuality: $o->int('entries_excluded_quality'),
+            entriesCancelledUniverse: $o->int('entries_cancelled_universe'),
+        );
+    }
+
+    /**
+     * Valeur d'une énumération fermée (bloc, ligne, garde, mode).
+     *
+     * @param list<string> $allowed
+     * @param string       $display chemin complet affiché dans l'erreur
+     */
+    private function oneOf(JsonObject $o, string $path, array $allowed, string $display): string
+    {
+        $value = $o->string($path);
+        if (!in_array($value, $allowed, true)) {
+            throw InvalidRunException::invalidValue(
+                self::METRICS_FILE,
+                $display,
+                sprintf('valeur inconnue "%s" (attendu : %s)', $value, implode(', ', $allowed)),
+            );
+        }
+
+        return $value;
+    }
+
+    /**
+     * Recoupe le bloc `research` avec le reste du run (docs/specs/s11.md §9.2) : l'identité répète la fenêtre, le bloc
+     * et la ligne ; les métriques de trades portent sur les trades conservés ; `trades.csv` garde tous les trades, et
+     * un trade purgé se reconnaît à `exit_type = end_of_window`.
+     *
+     * @param list<TradeRow> $trades
+     */
+    private function checkResearchConsistency(Manifest $manifest, Metrics $metrics, ResearchInfo $research, array $trades): void
+    {
+        $fail = static fn (string $path, string $reason): InvalidRunException => InvalidRunException::invalidValue(
+            self::METRICS_FILE,
+            $path,
+            $reason,
+        );
+        $window = $research->decisionWindow;
+        $identity = $research->identity;
+        if ($window->startMs >= $window->endMs) {
+            throw $fail('research.decision_window', 'le début doit précéder la fin');
+        }
+        $pairs = [
+            ['research.identity.block', $identity->block, $research->block],
+            ['research.identity.line', $identity->line, $research->line],
+            ['research.identity.decision_start_ms', $identity->decisionStartMs, $window->startMs],
+            ['research.identity.decision_end_ms', $identity->decisionEndMs, $window->endMs],
+            ['research.identity.subset_hash', $identity->subsetHash, $research->subset?->subsetHash],
+            ['research.identity.universe_window_hash', $identity->universeWindowHash, $research->universe->windowHash],
+        ];
+        foreach ($pairs as [$path, $found, $expected]) {
+            if ($found !== $expected) {
+                throw $fail($path, 'différent de celui du bloc research');
+            }
+        }
+        if ('okx_usdc' === $research->line && null === $research->subset) {
+            throw $fail('research.subset', 'la ligne okx_usdc exige un sous-ensemble');
+        }
+        if ('full' === $research->line && null !== $research->subset) {
+            throw $fail('research.subset', 'la ligne full ne porte pas de sous-ensemble');
+        }
+
+        if ($research->purge->tradesKept !== $metrics->nTrades) {
+            throw $fail('research.purge.trades_kept', 'différent de n_trades : les métriques de trades portent sur les trades conservés');
+        }
+        if (count($trades) !== $research->purge->tradesKept + $research->purge->tradesPurged) {
+            throw InvalidRunException::invalidValue(
+                TradesCsvReader::FILE,
+                'lignes',
+                sprintf(
+                    '%d trades pour %d conservés et %d purgés : trades.csv garde tous les trades, purgés compris',
+                    count($trades),
+                    $research->purge->tradesKept,
+                    $research->purge->tradesPurged,
+                ),
+            );
+        }
+        $atEnd = count(array_filter($trades, static fn (TradeRow $t): bool => 'end_of_window' === $t->exitType));
+        if ($atEnd !== $research->purge->tradesPurged) {
+            throw InvalidRunException::invalidValue(
+                TradesCsvReader::FILE,
+                'exit_type',
+                sprintf('%d trades en end_of_window pour %d purgés', $atEnd, $research->purge->tradesPurged),
+            );
+        }
+
+        $data = $manifest->data;
+        if (null !== $data->block && $data->block !== $research->block) {
+            throw InvalidRunException::invalidValue(self::MANIFEST_FILE, 'data.block', 'différent de research.block des métriques');
+        }
+        $declared = $data->decisionWindow;
+        if (null !== $declared && ($declared->startMs !== $window->startMs || $declared->endMs !== $window->endMs)) {
+            throw InvalidRunException::invalidValue(
+                self::MANIFEST_FILE,
+                'data.decision_window',
+                'différent de research.decision_window des métriques',
+            );
+        }
     }
 
     private function costs(JsonObject $o): CostsBlock

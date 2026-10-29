@@ -1,0 +1,94 @@
+{
+ "cost_measures_hash": null,
+ "costs_file_hash": "blake3:c057f11ec057f11ec057f11ec057f11ec057f11ec057f11ec057f11ec057f11e",
+ "dataset_hash": "blake3:da7a1301da7a1301da7a1301da7a1301da7a1301da7a1301da7a1301da7a1301",
+ "fee_grid": "okx_regular",
+ "gates": {
+  "both_gate_profiles_positive": false,
+  "cost_r": {
+   "adverse": false,
+   "baseline": false
+  },
+  "cost_third": {
+   "adverse": false,
+   "baseline": false
+  },
+  "gross_median_vs_2x_baseline_cost": false
+ },
+ "initial_cash": 300.0,
+ "label": "negative",
+ "label_fr": "négatif",
+ "maker": {
+  "entries_converted": 6,
+  "entries_filled_maker": 6,
+  "entries_taken_at_arrival": 0,
+  "expectancy_net": -0.349022242,
+  "maker_entry_maker_share": 0.7,
+  "min_maker_entry_share": 0.5,
+  "n_trades": 5,
+  "status": "non_positive"
+ },
+ "profiles": [
+  {
+   "config_hash": "c0de1301c0de1301c0de1301c0de1301c0de1301c0de1301c0de1301c0de1301",
+   "cost_r_mean": 0.6446891473,
+   "cost_r_pass": false,
+   "cost_third_pass": false,
+   "dir": "baseline",
+   "expectancy_net": -0.78922132,
+   "expectancy_r": -0.628916805,
+   "gross_median_rate": 0.0109492544,
+   "n_trades": 5,
+   "name": "baseline",
+   "pnl_net": 9.08282631,
+   "positive": false,
+   "result_hash": "blake3:7e5a23017e5a23017e5a23017e5a23017e5a23017e5a23017e5a23017e5a2301",
+   "role": "gate",
+   "round_trip_cost_rate_mean": 0.0079922723,
+   "run_id": "5e7f23015e7f23015e7f23015e7f23015e7f23015e7f23015e7f23015e7f2301",
+   "verdict": "rejected_negative_expectancy"
+  },
+  {
+   "config_hash": "c0de1302c0de1302c0de1302c0de1302c0de1302c0de1302c0de1302c0de1302",
+   "cost_r_mean": 0.9834078561,
+   "cost_r_pass": false,
+   "cost_third_pass": false,
+   "dir": "adverse",
+   "expectancy_net": -2.377062846,
+   "expectancy_r": -0.628916805,
+   "gross_median_rate": 0.0108992544,
+   "n_trades": 5,
+   "name": "adverse",
+   "pnl_net": 0.99288577,
+   "positive": false,
+   "result_hash": "blake3:7e5a23027e5a23027e5a23027e5a23027e5a23027e5a23027e5a23027e5a2302",
+   "role": "gate",
+   "round_trip_cost_rate_mean": 0.0118534541,
+   "run_id": "5e7f23025e7f23025e7f23025e7f23025e7f23025e7f23025e7f23025e7f2302",
+   "verdict": "rejected_negative_expectancy"
+  },
+  {
+   "config_hash": "c0de1303c0de1303c0de1303c0de1303c0de1303c0de1303c0de1303c0de1303",
+   "cost_r_mean": 0.564655403,
+   "cost_r_pass": false,
+   "cost_third_pass": false,
+   "dir": "maker",
+   "expectancy_net": -0.349022242,
+   "expectancy_r": -0.628916805,
+   "gross_median_rate": 0.0109992698,
+   "n_trades": 5,
+   "name": "maker",
+   "pnl_net": 11.71215407,
+   "positive": false,
+   "result_hash": "blake3:7e5a23037e5a23037e5a23037e5a23037e5a23037e5a23037e5a23037e5a2303",
+   "role": "informative",
+   "round_trip_cost_rate_mean": 0.0069418272,
+   "run_id": "5e7f23035e7f23035e7f23035e7f23035e7f23035e7f23035e7f23035e7f2303",
+   "verdict": "rejected_negative_expectancy"
+  }
+ ],
+ "profiles_id": "9f0f23019f0f23019f0f23019f0f23019f0f23019f0f23019f0f23019f0f2301",
+ "schema": "tv4-profiles-v1",
+ "seed": 1,
+ "stress_calibrated": false
+}

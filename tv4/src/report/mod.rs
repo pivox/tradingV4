@@ -12,6 +12,10 @@
 //! la variante `tv4-manifest-s9` de [`manifest`] ; `trades.csv` et `equity.csv` gardent le format de S8
 //! (la colonne `symbol` porte la paire de chaque trade). Le chemin de S8 n'est pas touché.
 //!
+//! La génération s11 ([`research`]) ajoute le bloc `research` de `metrics.json` (`tv4-metrics-s11`), la
+//! purge des trades ouverts à la fin de la fenêtre de décision et `lines.json` (`tv4-lines-v1`), qui résume
+//! les deux lignes d'un rapport de validation ou de holdout.
+//!
 //! Écarts d'implémentation (S8) à docs/03 :
 //!
 //! 1. `manifest.json` est défini ici et non dans `engine/manifest.rs` (§4) : `engine` n'écrit rien et
@@ -33,6 +37,7 @@ pub mod manifest;
 pub mod metrics;
 pub mod metrics_s9;
 pub mod profiles;
+pub mod research;
 pub mod verify;
 pub mod writers;
 
@@ -47,7 +52,7 @@ use crate::model::{ModelError, hash};
 
 pub use equity::write_equity_csv;
 pub use manifest::{
-    EngineInfo, Manifest, ManifestS9, ManifestS10Inputs, profiles_id, run_id, run_id_s9,
+    EngineInfo, Manifest, ManifestS9, ManifestS10Inputs, profiles_id, run_id, run_id_s9, run_id_s11,
 };
 pub use metrics::{DataInfo, DatasetRef, Metrics, RunVerdict};
 pub use metrics_s9::MetricsS9;

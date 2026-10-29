@@ -134,6 +134,22 @@ pub fn parse_rfc3339_utc(text: &str) -> Result<Ts, StoreError> {
     Ok((days_from_civil(y, mo, d) * 86_400 + h * 3600 + mi * 60 + s) * 1000)
 }
 
+/// Fin de couverture exclusive lue dans le manifeste d'un dump : `AAAA-MM-JJ` est inclusive (le
+/// lendemain à 00:00 UTC), `AAAA-MM-JJTHH:MM:SSZ` est prise telle quelle ; toute autre forme est
+/// ignorée (`None`).
+///
+/// Copie de la fonction de `cli/ingest.rs` (docs/specs/s11.md §1 et §14, lot B) : `marketdata` ne
+/// peut dépendre que de `model`, et `tv4 universe` comme `tv4 ingest kraken` ont besoin de la même
+/// règle. La CLI de l'ingestion l'importera d'ici au lot F ; comportement inchangé.
+pub fn parse_coverage_end(text: &str) -> Option<Ts> {
+    if text.len() == 10 {
+        let debut_du_jour = parse_rfc3339_utc(&format!("{text}T00:00:00Z")).ok()?;
+        Some(debut_du_jour + MS_PER_DAY)
+    } else {
+        parse_rfc3339_utc(text).ok()
+    }
+}
+
 /// Horodatage UTC lu sur la ligne de commande (`--from`, `--to`) : `FromStr` = [`parse_rfc3339_utc`],
 /// ce qui donne à clap une erreur d'usage (code 2) sur un mauvais format.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -253,6 +269,30 @@ mod tests {
                 parse_rfc3339_utc(&format_rfc3339_utc(ms).unwrap()).unwrap(),
                 ms
             );
+        }
+    }
+
+    #[test]
+    fn couverture_en_date_inclusive_ou_instant() {
+        // 2020-01-07 est inclusive : la fin exclusive est le lendemain 00:00 UTC.
+        assert_eq!(parse_coverage_end("2020-01-07"), Some(1_578_441_600_000));
+        assert_eq!(
+            parse_coverage_end("2020-01-08T00:00:00Z"),
+            Some(1_578_441_600_000)
+        );
+        // 2026-09-30 inclusive : fin au 2026-10-01 00:00 UTC.
+        assert_eq!(
+            parse_coverage_end("2026-09-30"),
+            parse_rfc3339_utc("2026-10-01T00:00:00Z").ok()
+        );
+        for illisible in [
+            "",
+            "demain",
+            "2020-13-01",
+            "2020/01/07",
+            "2020-01-07T00:00:00",
+        ] {
+            assert_eq!(parse_coverage_end(illisible), None, "« {illisible} »");
         }
     }
 

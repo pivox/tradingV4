@@ -34,7 +34,8 @@
 //! Toutes les jambes démarrent à la même minute : la plus tardive des premières minutes jouées de
 //! chaque jambe (convention de warmup de S5, par jambe) et, si une stratégie lit le régime, de la
 //! première minute où la SMA200 de la paire de régime existe. L'activation d'une paire en cours de
-//! fenêtre relève de S11.
+//! fenêtre n'existe qu'en mode recherche (docs S11 §8.2, module [`research`](super::research)) : chaque
+//! jambe y démarre à sa propre minute, et la grille n'est enregistrée qu'à partir de `decision_start`.
 //!
 //! # Sizing (docs S9 §7)
 //!
@@ -64,6 +65,9 @@
 //! 3. La paire de régime est lue même si elle n'est pas dans l'univers ; elle est alors absente de la
 //!    grille, du rang et des rapports par paire.
 
+use std::collections::BTreeMap;
+
+use crate::model::costs::LegCostHashed;
 use crate::model::{Candle, FeeSchedule, Side, Timeframe, Ts};
 use crate::mtf::Mtf;
 use crate::sim::{
@@ -79,9 +83,14 @@ use crate::strategy::{
 use super::config::StrategyRecord;
 use super::portfolio_config::{
     LIQUIDITY_WINDOW_DAYS, MAX_POSITIONS_LIMIT, PRIORITY_RULE, PortfolioConfig, PortfolioRunConfig,
+    ResearchHashed,
 };
 use super::priority::RankTable;
 use super::regime::{RegimeFeed, RegimeSeries};
+use super::research::{
+    LegOutcome, ResearchLegCounters, ResearchResult, ResearchSpec, ResearchState, build_result,
+    check_research, decision_tf_of,
+};
 use super::run::{
     MINUTE_MS, SIGNALS_FLOOR, TRADES_INITIAL_CAPACITY, check_candles, indicator_column,
     to_pending_order, to_position,
@@ -215,6 +224,8 @@ pub struct PortfolioResult {
     pub priority: PriorityStats,
     /// `None` si aucune stratégie ne lit le régime.
     pub regime: Option<RegimeStats>,
+    /// Résultat de recherche (docs S11 §8.4), `None` hors mode recherche.
+    pub research: Option<ResearchResult>,
 }
 
 /// Rejoue le portefeuille (voir [`run_portfolio_observed`]).
@@ -246,7 +257,14 @@ struct LegPrep {
 }
 
 /// Calcule les colonnes de la jambe et son index de départ, comme `run_prepared` de S8.
-fn prepare_leg(mtf: &Mtf<'_>, strategy: &dyn Strategy) -> Result<LegPrep, EngineError> {
+///
+/// `tolerate_short` (mode recherche) : une jambe dont le warmup n'est jamais satisfait n'est pas une
+/// erreur, son index de départ vaut alors `mtf.len()` (elle n'est jamais jouée).
+fn prepare_leg(
+    mtf: &Mtf<'_>,
+    strategy: &dyn Strategy,
+    tolerate_short: bool,
+) -> Result<LegPrep, EngineError> {
     let n = mtf.len();
     let declared: Vec<Timeframe> = strategy.timeframes().to_vec();
     let mut declared_mask = 0u8;
@@ -292,19 +310,24 @@ fn prepare_leg(mtf: &Mtf<'_>, strategy: &dyn Strategy) -> Result<LegPrep, Engine
         .position(|tf| *tf == tf_max)
         .and_then(|k| closed.get(k).copied())
         .ok_or(EngineError::MissingTimeframe { tf: tf_max })?;
-    let start = (0..n)
-        .find(|&i| {
-            let before = if i == 0 {
-                0
-            } else {
-                counts_max.get(i - 1).copied().unwrap_or(0)
-            };
-            before >= warmup_bars
-        })
-        .ok_or(EngineError::NotEnoughBars {
-            warmup_bars,
-            bars: n,
-        })?;
+    let found = (0..n).find(|&i| {
+        let before = if i == 0 {
+            0
+        } else {
+            counts_max.get(i - 1).copied().unwrap_or(0)
+        };
+        before >= warmup_bars
+    });
+    let start = match found {
+        Some(start) => start,
+        None if tolerate_short => n,
+        None => {
+            return Err(EngineError::NotEnoughBars {
+                warmup_bars,
+                bars: n,
+            });
+        }
+    };
     Ok(LegPrep {
         declared,
         declared_mask,
@@ -372,6 +395,8 @@ struct LegRun<'a> {
     deadline: Ts,
     start_index: usize,
     rows: usize,
+    /// Compteurs de recherche (docs S11 §8.3), nuls hors recherche.
+    research: ResearchLegCounters,
 }
 
 /// Fusionne les pointeurs de lecture : plus petite `open_time` non jouée, `None` en fin de données.
@@ -385,8 +410,9 @@ fn next_open(runs: &[LegRun<'_>]) -> Option<Ts> {
     next
 }
 
-/// Nombre de minutes de la grille, par une fusion à blanc (les tampons sont alloués à la bonne taille).
-fn count_grid(runs: &[LegRun<'_>]) -> usize {
+/// Nombre de minutes de la grille **enregistrée** (`open_time ≥ record_from`), par une fusion à blanc (les
+/// tampons sont alloués à la bonne taille). `Ts::MIN` hors recherche : toute la grille.
+fn count_grid(runs: &[LegRun<'_>], record_from: Ts) -> usize {
     let mut cursors: Vec<usize> = runs.iter().map(|run| run.idx).collect();
     let mut count = 0usize;
     loop {
@@ -408,7 +434,9 @@ fn count_grid(runs: &[LegRun<'_>]) -> usize {
                 *cursor += 1;
             }
         }
-        count += 1;
+        if t >= record_from {
+            count += 1;
+        }
     }
 }
 
@@ -697,6 +725,57 @@ impl Loaded {
     }
 }
 
+/// D'où viennent les colonnes du chargement : empruntées (chemin hérité, copie des colonnes) ou possédées
+/// (mode recherche, docs S11 §12.2 parade 1 : chaque série est libérée dès qu'elle est convertie, ce qui
+/// retire une copie de la mémoire du run).
+pub(super) enum SeriesSource<'a> {
+    Borrowed(&'a [(String, Columns)]),
+    Owned(Vec<(String, Columns)>),
+}
+
+/// Résultat de la recherche d'une série par symbole.
+enum Fetched {
+    Missing,
+    Empty,
+    Candles(Vec<Candle>),
+}
+
+impl SeriesSource<'_> {
+    /// Convertit la série de `symbol` en bougies. Une source possédée la remplace par une série vide
+    /// (le nom reste, la mémoire est rendue).
+    fn fetch(&mut self, symbol: &str) -> Fetched {
+        match self {
+            SeriesSource::Borrowed(series) => {
+                match series.iter().find(|(name, _)| name == symbol) {
+                    None => Fetched::Missing,
+                    Some((_, columns)) if columns.is_empty() => Fetched::Empty,
+                    Some((_, columns)) => Fetched::Candles(columns.to_candles()),
+                }
+            }
+            SeriesSource::Owned(series) => {
+                match series.iter_mut().find(|(name, _)| name == symbol) {
+                    None => Fetched::Missing,
+                    Some((_, slot)) => {
+                        let columns = std::mem::replace(slot, Columns::with_capacity(0));
+                        if columns.is_empty() {
+                            Fetched::Empty
+                        } else {
+                            Fetched::Candles(columns.to_candles())
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    fn contains(&self, symbol: &str) -> bool {
+        match self {
+            SeriesSource::Borrowed(series) => series.iter().any(|(name, _)| name == symbol),
+            SeriesSource::Owned(series) => series.iter().any(|(name, _)| name == symbol),
+        }
+    }
+}
+
 /// Convertit les colonnes du dataset en bougies et les contrôle (alignement, ordre).
 ///
 /// # Erreurs
@@ -707,21 +786,31 @@ pub(super) fn load(
     config: &PortfolioConfig<'_>,
     uses_regime: bool,
 ) -> Result<Loaded, EngineError> {
+    load_from(SeriesSource::Borrowed(series), config, uses_regime)
+}
+
+/// Comme [`load`], depuis une source empruntée ou possédée.
+pub(super) fn load_from(
+    mut source: SeriesSource<'_>,
+    config: &PortfolioConfig<'_>,
+    uses_regime: bool,
+) -> Result<Loaded, EngineError> {
     let legs = config.universe.len();
-    let find = |symbol: &str| series.iter().find(|(name, _)| name == symbol);
     let mut candle_store: Vec<Vec<Candle>> = Vec::with_capacity(legs);
     for symbol in config.universe {
-        let Some((_, columns)) = find(symbol) else {
-            return Err(EngineError::SymbolNotInDataset {
-                symbol: symbol.clone(),
-            });
+        let candles = match source.fetch(symbol) {
+            Fetched::Missing => {
+                return Err(EngineError::SymbolNotInDataset {
+                    symbol: symbol.clone(),
+                });
+            }
+            Fetched::Empty => {
+                return Err(EngineError::LegWithoutBars {
+                    symbol: symbol.clone(),
+                });
+            }
+            Fetched::Candles(candles) => candles,
         };
-        if columns.is_empty() {
-            return Err(EngineError::LegWithoutBars {
-                symbol: symbol.clone(),
-            });
-        }
-        let candles = columns.to_candles();
         check_candles(&candles)?;
         candle_store.push(candles);
     }
@@ -731,14 +820,17 @@ pub(super) fn load(
         .position(|symbol| symbol == config.regime_symbol);
     let mut regime_store: Vec<Candle> = Vec::new();
     if uses_regime && regime_in_universe.is_none() {
-        let Some((_, columns)) = find(config.regime_symbol) else {
-            return Err(EngineError::RegimeSeriesMissing {
-                symbol: config.regime_symbol.to_string(),
-            });
+        regime_store = match source.fetch(config.regime_symbol) {
+            Fetched::Missing => {
+                return Err(EngineError::RegimeSeriesMissing {
+                    symbol: config.regime_symbol.to_string(),
+                });
+            }
+            Fetched::Empty => Vec::new(),
+            Fetched::Candles(candles) => candles,
         };
-        regime_store = columns.to_candles();
         check_candles(&regime_store)?;
-    } else if uses_regime && find(config.regime_symbol).is_none() {
+    } else if uses_regime && !source.contains(config.regime_symbol) {
         return Err(EngineError::RegimeSeriesMissing {
             symbol: config.regime_symbol.to_string(),
         });
@@ -759,8 +851,13 @@ pub(super) struct Shared<'a> {
     mtfs: Vec<Mtf<'a>>,
     preps: Vec<LegPrep>,
     regime: Option<RegimeSeries<'a>>,
-    /// Première minute jouée, commune à toutes les jambes.
+    /// Première minute jouée : commune à toutes les jambes hors recherche, la plus précoce des jambes
+    /// vivantes en recherche.
     window_start_ms: Ts,
+    /// Première minute jouée de chaque jambe : `window_start_ms` pour toutes hors recherche ; en
+    /// recherche `max(fin du warmup de la jambe, SMA200 du régime prête)`, `Ts::MAX` si la jambe ne
+    /// devient jamais vivante (docs S11 §8.2).
+    live_ms: Vec<Ts>,
     /// Fin de la première 1m de la paire de régime à laquelle la SMA200 existe.
     regime_ready_ms: Option<Ts>,
     ranks: RankTable,
@@ -781,6 +878,31 @@ pub(super) fn share<'a>(
     config: &PortfolioConfig<'_>,
     checked: &Checked,
 ) -> Result<Shared<'a>, EngineError> {
+    share_impl(loaded, strategies, config, checked, false)
+}
+
+/// Comme [`share`] pour le mode recherche (docs S11 §8.2) : chaque jambe a sa propre minute de départ.
+///
+/// # Erreurs
+///
+/// Celles de [`share`], sauf qu'une jambe au warmup jamais satisfait n'en est pas une ; en revanche
+/// [`EngineError::ResearchNoLiveLeg`] si aucune jambe ne devient vivante.
+pub(super) fn share_research<'a>(
+    loaded: &'a Loaded,
+    strategies: &[Box<dyn Strategy>],
+    config: &PortfolioConfig<'_>,
+    checked: &Checked,
+) -> Result<Shared<'a>, EngineError> {
+    share_impl(loaded, strategies, config, checked, true)
+}
+
+fn share_impl<'a>(
+    loaded: &'a Loaded,
+    strategies: &[Box<dyn Strategy>],
+    config: &PortfolioConfig<'_>,
+    checked: &Checked,
+    research: bool,
+) -> Result<Shared<'a>, EngineError> {
     let legs = config.universe.len();
     let uses_regime = checked.uses_regime;
     let mut mtfs: Vec<Mtf<'a>> = Vec::with_capacity(legs);
@@ -789,7 +911,7 @@ pub(super) fn share<'a>(
     }
     let mut preps: Vec<LegPrep> = Vec::with_capacity(legs);
     for (mtf, strategy) in mtfs.iter().zip(strategies) {
-        preps.push(prepare_leg(mtf, strategy.as_ref())?);
+        preps.push(prepare_leg(mtf, strategy.as_ref(), research)?);
     }
     let regime_m1: &'a [Candle] = match loaded.regime_in_universe {
         Some(k) if uses_regime => loaded.candle_store.get(k).map_or(&[], Vec::as_slice),
@@ -800,27 +922,62 @@ pub(super) fn share<'a>(
     } else {
         None
     };
-    // Départ commun : la plus tardive des premières minutes de chaque jambe et de la SMA200 du régime.
+    let mut live_ms: Vec<Ts> = Vec::with_capacity(legs);
     let mut window_start_ms = Ts::MIN;
-    for ((symbol, candles), prep) in config.universe.iter().zip(&loaded.candle_store).zip(&preps) {
-        let first = candles
-            .get(prep.start)
-            .ok_or_else(|| EngineError::LegNotEnoughBars {
-                symbol: symbol.clone(),
-                warmup_bars: prep.warmup_bars,
-                bars: candles.len(),
-            })?;
-        window_start_ms = window_start_ms.max(first.open_time_ms);
-    }
     let mut regime_ready_ms: Option<Ts> = None;
-    if let Some(series) = regime.as_ref() {
-        let ready = series
-            .first_ready_open_ms()
-            .ok_or_else(|| EngineError::RegimeNotReady {
-                symbol: config.regime_symbol.to_string(),
-            })?;
-        regime_ready_ms = Some(ready.saturating_add(MINUTE_MS));
-        window_start_ms = window_start_ms.max(ready);
+    if research {
+        // Activation par jambe : `live_k = max(fin du warmup de k, prêt du régime)`, la grille commence à
+        // la plus précoce.
+        let mut ready_open = Ts::MIN;
+        if let Some(series) = regime.as_ref() {
+            let ready =
+                series
+                    .first_ready_open_ms()
+                    .ok_or_else(|| EngineError::RegimeNotReady {
+                        symbol: config.regime_symbol.to_string(),
+                    })?;
+            regime_ready_ms = Some(ready.saturating_add(MINUTE_MS));
+            ready_open = ready;
+        }
+        for (candles, prep) in loaded.candle_store.iter().zip(&preps) {
+            live_ms.push(
+                candles
+                    .get(prep.start)
+                    .map_or(Ts::MAX, |first| first.open_time_ms.max(ready_open)),
+            );
+        }
+        window_start_ms = live_ms
+            .iter()
+            .copied()
+            .filter(|&live| live != Ts::MAX)
+            .min()
+            .ok_or(EngineError::ResearchNoLiveLeg)?;
+    } else {
+        // Départ commun : la plus tardive des premières minutes de chaque jambe et de la SMA200 du
+        // régime.
+        for ((symbol, candles), prep) in
+            config.universe.iter().zip(&loaded.candle_store).zip(&preps)
+        {
+            let first = candles
+                .get(prep.start)
+                .ok_or_else(|| EngineError::LegNotEnoughBars {
+                    symbol: symbol.clone(),
+                    warmup_bars: prep.warmup_bars,
+                    bars: candles.len(),
+                })?;
+            window_start_ms = window_start_ms.max(first.open_time_ms);
+        }
+        if let Some(series) = regime.as_ref() {
+            let ready =
+                series
+                    .first_ready_open_ms()
+                    .ok_or_else(|| EngineError::RegimeNotReady {
+                        symbol: config.regime_symbol.to_string(),
+                    })?;
+            regime_ready_ms = Some(ready.saturating_add(MINUTE_MS));
+            window_start_ms = window_start_ms.max(ready);
+        }
+        live_ms.resize(legs, window_start_ms);
     }
     let rank_inputs: Vec<&[Candle]> = loaded.candle_store.iter().map(Vec::as_slice).collect();
     let ranks = RankTable::build(&rank_inputs);
@@ -830,6 +987,7 @@ pub(super) fn share<'a>(
         preps,
         regime,
         window_start_ms,
+        live_ms,
         regime_ready_ms,
         ranks,
         warmup_bars: checked.warmup_bars,
@@ -895,9 +1053,146 @@ pub fn run_portfolio_counted(
         &config,
         run_config,
         config_hash,
+        None,
         observer,
     )?;
     Ok((result, prep))
+}
+
+/// Rejoue le portefeuille en **mode recherche** (docs S11 §8) : activation par jambe, grille enregistrée
+/// à partir de `decision_start`, filtre des entrées, annulation des entrées d'une jambe qui sort de
+/// l'univers. Le `config_hash` est celui de la configuration gelée (bloc `research` haché, tables par
+/// jambe vidées) ; l'identité de recherche est dans `PortfolioResult::research`.
+///
+/// # Erreurs
+///
+/// Celles de [`run_portfolio`] (hors départ commun : une jambe au warmup jamais satisfait n'est pas une
+/// erreur), plus [`EngineError::ResearchNeedsZeroVolumeRule`], [`EngineError::ResearchWindow`],
+/// [`EngineError::UniverseQuarterMissing`], [`EngineError::ResearchNoLiveLeg`] et
+/// [`EngineError::DecisionTfNotDeclared`].
+pub fn run_portfolio_research(
+    inputs: PortfolioInputs<'_>,
+    research: &ResearchSpec<'_>,
+) -> Result<PortfolioResult, EngineError> {
+    run_portfolio_research_counted(inputs, research, &mut NoopObserver).map(|(result, _)| result)
+}
+
+/// Comme [`run_portfolio_research`], avec un observateur appelé juste avant et juste après la boucle et
+/// les compteurs de la préparation. Sert au test d'allocation du mode recherche.
+///
+/// # Erreurs
+///
+/// Celles de [`run_portfolio_research`].
+pub fn run_portfolio_research_counted(
+    inputs: PortfolioInputs<'_>,
+    research: &ResearchSpec<'_>,
+    observer: &mut dyn LoopObserver,
+) -> Result<(PortfolioResult, PrepStats), EngineError> {
+    let PortfolioInputs {
+        series,
+        strategies,
+        config,
+    } = inputs;
+    research_core(
+        SeriesSource::Borrowed(series),
+        strategies,
+        config,
+        research,
+        observer,
+    )
+}
+
+/// Entrées de [`run_portfolio_research_owned`] : comme [`PortfolioInputs`], mais les séries sont
+/// **possédées**.
+pub struct OwnedPortfolioInputs<'a> {
+    pub series: Vec<(String, Columns)>,
+    pub strategies: Vec<Box<dyn Strategy>>,
+    pub config: PortfolioConfig<'a>,
+}
+
+/// Comme [`run_portfolio_research`], en consommant les colonnes (docs S11 §12.2, parade 1) : chaque série
+/// est convertie en bougies puis libérée, si bien que le dataset et les bougies du moteur ne vivent plus
+/// ensemble. Le résultat est identique au bit à celui de [`run_portfolio_research`].
+///
+/// # Erreurs
+///
+/// Celles de [`run_portfolio_research`].
+pub fn run_portfolio_research_owned(
+    inputs: OwnedPortfolioInputs<'_>,
+    research: &ResearchSpec<'_>,
+) -> Result<PortfolioResult, EngineError> {
+    let OwnedPortfolioInputs {
+        series,
+        strategies,
+        config,
+    } = inputs;
+    research_core(
+        SeriesSource::Owned(series),
+        strategies,
+        config,
+        research,
+        &mut NoopObserver,
+    )
+    .map(|(result, _)| result)
+}
+
+fn research_core(
+    source: SeriesSource<'_>,
+    strategies: Vec<Box<dyn Strategy>>,
+    config: PortfolioConfig<'_>,
+    research: &ResearchSpec<'_>,
+    observer: &mut dyn LoopObserver,
+) -> Result<(PortfolioResult, PrepStats), EngineError> {
+    let checked = check_config(&strategies, &config)?;
+    check_research(research, &config)?;
+    let decision_tf = decision_tf_of(&strategies)?;
+    let loaded = load_from(source, &config, checked.uses_regime)?;
+    let shared = share_research(&loaded, &strategies, &config, &checked)?;
+    let mut prep = PrepStats::default();
+    prep.record(&loaded, &shared);
+
+    let run_config = PortfolioRunConfig::new(
+        strategies
+            .first()
+            .map(|s| s.as_ref())
+            .ok_or(EngineError::EmptyUniverse)?,
+        &config,
+        checked.warmup_bars,
+        checked.uses_regime,
+    )
+    .into_research(ResearchHashed::new(
+        research.universe_spec.clone(),
+        decision_tf,
+    ));
+    let config_hash = run_config.hash()?;
+    let book = Book::new(
+        book_config(&config, loaded.window_max()),
+        config.instruments,
+    )?;
+    let run = ResearchRun {
+        spec: research,
+        decision_tf,
+        costs_legs: BTreeMap::new(),
+    };
+    let (result, _) = play_profile(
+        &shared,
+        strategies,
+        book,
+        &config,
+        run_config,
+        config_hash,
+        Some(&run),
+        observer,
+    )?;
+    Ok((result, prep))
+}
+
+/// Ce que `play_profile` lit d'un run de recherche : la spécification, le TF de décision et les valeurs de
+/// coûts résolues par jambe (vides hors profils), que l'identité de recherche hache.
+pub(super) struct ResearchRun<'a> {
+    pub(super) spec: &'a ResearchSpec<'a>,
+    pub(super) decision_tf: Timeframe,
+    pub(super) costs_legs: BTreeMap<String, LegCostHashed>,
 }
 
 /// Paramètres du [`Book`] d'un profil, communs aux chemins hérité et s10.
@@ -920,6 +1215,10 @@ pub(super) fn book_config(config: &PortfolioConfig<'_>, window_max: usize) -> Bo
 /// être reconstruit par profil (docs S10 §9.4).
 ///
 /// Rend le résultat et les compteurs de coûts de chaque jambe (nuls pour un coût hérité).
+///
+/// `research` : `None` hors recherche (chemin hérité, inchangé au bit), `Some` en mode recherche (docs
+/// S11 §8).
+#[allow(clippy::too_many_arguments)]
 pub(super) fn play_profile(
     shared: &Shared<'_>,
     strategies: Vec<Box<dyn Strategy>>,
@@ -927,6 +1226,7 @@ pub(super) fn play_profile(
     config: &PortfolioConfig<'_>,
     run_config: PortfolioRunConfig,
     config_hash: String,
+    research: Option<&ResearchRun<'_>>,
     observer: &mut dyn LoopObserver,
 ) -> Result<(PortfolioResult, Vec<CostCounters>), EngineError> {
     let legs = config.universe.len();
@@ -958,15 +1258,20 @@ pub(super) fn play_profile(
         ) else {
             return Err(EngineError::EmptyUniverse);
         };
-        let first = candles.partition_point(|c| c.open_time_ms < window_start_ms);
+        let live_ms = shared.live_ms.get(k).copied().unwrap_or(window_start_ms);
+        let first = candles.partition_point(|c| c.open_time_ms < live_ms);
         if first >= candles.len() {
-            return Err(EngineError::LegNotEnoughBars {
-                symbol: symbol.clone(),
-                warmup_bars: prep.warmup_bars,
-                bars: candles.len(),
-            });
+            // En recherche, une jambe qui ne devient jamais vivante n'est jamais jouée (docs S11 §8.2).
+            if research.is_none() {
+                return Err(EngineError::LegNotEnoughBars {
+                    symbol: symbol.clone(),
+                    warmup_bars: prep.warmup_bars,
+                    bars: candles.len(),
+                });
+            }
+        } else {
+            check_start(mtf, prep, first)?;
         }
-        check_start(mtf, prep, first)?;
         let mut base: Vec<TfView<'_>> = Vec::with_capacity(prep.declared.len());
         let mut closed: Vec<&[usize]> = Vec::with_capacity(prep.declared.len());
         for (j, &tf) in prep.declared.iter().enumerate() {
@@ -1001,11 +1306,19 @@ pub(super) fn play_profile(
             deadline: Ts::MAX,
             start_index: first,
             rows,
+            research: ResearchLegCounters::default(),
         });
     }
 
+    // --- État de recherche : éligibilité de chaque jambe, construite avant la boucle ---
+    let mut state: Option<ResearchState> =
+        research.map(|r| ResearchState::new(r.spec, config.universe, r.decision_tf));
+    let record_from = state
+        .as_ref()
+        .map_or(Ts::MIN, ResearchState::decision_start_ms);
+
     // --- Tampons de la boucle, tous préalloués ---
-    let grid_minutes = count_grid(&runs);
+    let grid_minutes = count_grid(&runs, record_from);
     let mut buffers = PlayBuffers {
         grid: Vec::with_capacity(grid_minutes),
         equity: Vec::with_capacity(grid_minutes),
@@ -1013,6 +1326,7 @@ pub(super) fn play_profile(
         emitted: 0,
         accepted: 0,
         bars_in_position: 0,
+        last_open_ms: None,
     };
     let max_notional = match config.sizing {
         SizingMode::Research => Some(config.initial_cash / f64::from(config.max_positions)),
@@ -1029,6 +1343,7 @@ pub(super) fn play_profile(
         config,
         max_notional,
         &mut buffers,
+        state.as_mut(),
     );
     observer.loop_finished();
     played?;
@@ -1064,6 +1379,7 @@ pub(super) fn play_profile(
         }
     }
     let mut leg_results: Vec<LegResult> = Vec::with_capacity(legs);
+    let mut research_legs: Vec<LegOutcome<'_>> = Vec::with_capacity(legs);
     for (k, mut run) in runs.into_iter().enumerate() {
         run.funnel.strategy = run
             .strategy
@@ -1087,6 +1403,13 @@ pub(super) fn play_profile(
             .candles
             .get(run.start_index)
             .map_or(window_first_open_ms, |c| c.open_time_ms);
+        if research.is_some() {
+            research_legs.push(LegOutcome {
+                symbol,
+                live_from_ms: run.candles.get(run.start_index).map(|c| c.open_time_ms),
+                counters: run.research,
+            });
+        }
         leg_results.push(LegResult {
             symbol: symbol.clone(),
             start_index: run.start_index,
@@ -1123,6 +1446,36 @@ pub(super) fn play_profile(
                 days_bull,
                 days_bear,
             })
+        }
+        _ => None,
+    };
+
+    // Recherche : la fenêtre jouée commence à la plus précoce des jambes vivantes, et aucune entrée n'a pu
+    // être décidée avant `decision_start` (docs S11 §3.4, côté gauche de la purge).
+    let mut window_start_ms = window_start_ms;
+    let research_result = match (research, state.as_ref()) {
+        (Some(run), Some(state)) => {
+            debug_assert!(
+                outcome
+                    .trades
+                    .iter()
+                    .all(|trade| trade.entry_signal_ms >= state.decision_start_ms()),
+                "mode recherche : une entrée a été décidée avant decision_start"
+            );
+            window_start_ms = leg_results
+                .iter()
+                .filter(|leg| leg.rows > 0)
+                .map(|leg| leg.first_ms)
+                .min()
+                .unwrap_or(window_start_ms);
+            Some(build_result(
+                run.spec,
+                config,
+                run.decision_tf,
+                &run.costs_legs,
+                shared.regime.is_some(),
+                &research_legs,
+            )?)
         }
         _ => None,
     };
@@ -1173,6 +1526,7 @@ pub(super) fn play_profile(
             partial_days: ranks.partial_days(window_first_open_ms, window_last_open_ms),
         },
         regime,
+        research: research_result,
     };
     Ok((result, cost_by_leg))
 }
@@ -1196,6 +1550,9 @@ struct PlayBuffers {
     emitted: u64,
     accepted: u64,
     bars_in_position: u64,
+    /// `open_time` de la dernière minute de la grille jouée, enregistrée ou non (en recherche, les
+    /// minutes d'avant `decision_start` sont jouées sans être enregistrées).
+    last_open_ms: Option<Ts>,
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -1230,7 +1587,32 @@ fn force_quote_gaps(
     Ok(())
 }
 
-/// Boucle des étapes de docs S9 §4.2 sur la grille des minutes.
+/// Étape 1 du mode recherche (docs S11 §8.3), après les trous de cotation et avant tout `on_bar` : toute
+/// jambe qui vient de sortir de l'univers (ou dont le TF de décision vient d'être exclu par la qualité)
+/// voit ses entrées en attente (`Enter` et limits d'achat) annulées, en position comme à plat, pour
+/// toutes les jambes dans l'ordre du rang, qu'elles aient ou non une bougie à la minute `t`. Les ventes,
+/// les sorties et le stop ne sont pas touchés : une jambe en position va à son terme.
+fn cancel_left_universe(
+    book: &mut Book,
+    runs: &mut [LegRun<'_>],
+    order: &[u16],
+    state: &mut ResearchState,
+    t: Ts,
+) -> Result<(), SimError> {
+    for &k in order {
+        let k = usize::from(k);
+        if state.leaves_at(k, t)
+            && let Some(run) = runs.get_mut(k)
+        {
+            run.research.entries_cancelled_universe += book.cancel_entries_quote_gap(k)?;
+        }
+    }
+    Ok(())
+}
+
+/// Boucle des étapes de docs S9 §4.2 sur la grille des minutes. `research` : état du mode recherche
+/// (docs S11 §8), `None` hors recherche.
+#[allow(clippy::too_many_arguments)]
 fn play(
     book: &mut Book,
     runs: &mut [LegRun<'_>],
@@ -1239,15 +1621,29 @@ fn play(
     config: &PortfolioConfig<'_>,
     max_notional: Option<f64>,
     buffers: &mut PlayBuffers,
+    mut research: Option<&mut ResearchState>,
 ) -> Result<(), EngineError> {
     let legs = runs.len();
     let fees: FeeSchedule = config.fees;
+    let record_from = research
+        .as_deref()
+        .map_or(Ts::MIN, ResearchState::decision_start_ms);
+    if let Some(state) = research.as_deref_mut()
+        && let Some(first) = next_open(runs)
+    {
+        // Éligibilité initiale : rien à annuler, aucun ordre n'existe encore.
+        state.init_at(first);
+    }
     while let Some(t) = next_open(runs) {
         let now_ms = t.saturating_add(MINUTE_MS);
         let order = ranks.order_at(now_ms);
 
         // 1. Trous de cotation, avant tout `on_bar`.
         force_quote_gaps(book, runs, order, t)?;
+        // 1 bis (recherche). Sortie de l'univers : annulation des entrées en attente des jambes à plat.
+        if let Some(state) = research.as_deref_mut() {
+            cancel_left_universe(book, runs, order, state, t)?;
+        }
 
         // 2a. Toutes les jambes qui ont des ordres en attente appliquent leurs annulations et expirations
         // échues à `t`, sans fill, dans l'ordre du rang et avant tout `on_bar`. Une échéance est une heure
@@ -1281,14 +1677,19 @@ fn play(
             }
             run.present = true;
         }
-        if (0..legs).any(|k| book.position(k).is_some()) {
+        let recorded = t >= record_from;
+        if recorded && (0..legs).any(|k| book.position(k).is_some()) {
             buffers.bars_in_position += 1;
         }
 
-        // 3. Equity du portefeuille, une fois par minute de la grille.
+        // 3. Equity du portefeuille, une fois par minute de la grille. En recherche, les minutes d'avant
+        // `decision_start` sont jouées sans être enregistrées (docs S11 §8.2).
         let equity_i = book.equity();
-        buffers.grid.push(t);
-        buffers.equity.push(equity_i);
+        if recorded {
+            buffers.grid.push(t);
+            buffers.equity.push(equity_i);
+        }
+        buffers.last_open_ms = Some(t);
         book.check_invariants();
         let base = match config.sizing {
             SizingMode::Research => config.initial_cash,
@@ -1393,6 +1794,16 @@ fn play(
                     ),
                 };
                 *emitted += 1;
+                // Recherche : filtre des entrées à `now_ms`. Le refus est compté, l'ordre n'est pas
+                // soumis, aucune fraction de capital n'est enregistrée ; sorties, `MoveStop` et
+                // annulations ne sont jamais filtrés.
+                if class == SignalClass::Entry
+                    && let Some(state) = research.as_deref_mut()
+                    && let Some(refusal) = state.refusal(k, now_ms)
+                {
+                    run.research.record(refusal);
+                    continue;
+                }
                 let fraction = if class == SignalClass::Entry {
                     entry_fraction(signal, base, candle.close)
                 } else {
@@ -1436,10 +1847,17 @@ fn play(
     }
 
     // Fin de fenêtre : un trou encore ouvert est soldé comme un trou de cotation, avant la clôture forcée.
-    if let Some(&last) = buffers.grid.last() {
+    if let Some(last) = buffers.last_open_ms {
         let end_ms = last.saturating_add(MINUTE_MS);
         let order = ranks.order_at(end_ms);
-        force_quote_gaps(book, runs, order, end_ms)?;
+        // En recherche, une échéance qui tombe à `decision_end` ou au-delà n'est pas soldée en trou de
+        // cotation : la position passe à la clôture forcée (`end_of_window`) et elle est purgée
+        // (docs S11 §3.4), sinon `exit_ms >= decision_end` sans être `end_of_window` ferait échouer le run.
+        let at_ms = match research.as_deref() {
+            Some(state) => end_ms.min(state.decision_end_ms().saturating_sub(1)),
+            None => end_ms,
+        };
+        force_quote_gaps(book, runs, order, at_ms)?;
     }
     Ok(())
 }

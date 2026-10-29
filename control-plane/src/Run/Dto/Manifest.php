@@ -5,13 +5,16 @@ declare(strict_types=1);
 namespace App\Run\Dto;
 
 /**
- * Contenu de `manifest.json` (schémas `tv4-manifest-s8`, `tv4-manifest-s9` et `tv4-manifest-s10`).
- * Les champs `profile`, `costs_file*`, `cost_measures*` et `profiles_id` n'existent qu'en s10 et peuvent y manquer.
+ * Contenu de `manifest.json` (schémas `tv4-manifest-s8`, `tv4-manifest-s9`, `tv4-manifest-s10` et `tv4-manifest-s11`).
+ * Les champs `profile`, `costs_file*`, `cost_measures*` et `profiles_id` n'existent qu'en s10 (et en s11 joué avec
+ * un profil de coûts) et peuvent y manquer. `research_inputs` (chemins du dossier d'univers et du sous-ensemble OKX,
+ * tels que donnés à `tv4 backtest`) n'existe qu'en s11.
  */
 final readonly class Manifest
 {
     /**
      * @param array<string, string> $fileHashes hashes `blake3:<hex>` des fichiers du run
+     * @param array<string, bool|int|float|string|null>|null $researchInputs chemins d'entrée de la recherche (s11)
      */
     public function __construct(
         public string $runId,
@@ -37,6 +40,7 @@ final readonly class Manifest
         public ?string $costMeasuresFile = null,
         public ?string $costMeasuresHash = null,
         public ?string $profilesId = null,
+        public ?array $researchInputs = null,
     ) {
     }
 }

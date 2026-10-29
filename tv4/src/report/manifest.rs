@@ -8,6 +8,8 @@
 //! `config` (l'objet haché lui-même, sans duplication) ; `duration_ms` est remplacé par `timings` ;
 //! ajouts `schema`, `hash_format`, `verdict`, `outputs`, `engine.rustc_commit` et `engine.profile`.
 
+use std::collections::BTreeMap;
+
 use serde::Serialize;
 
 use crate::engine::RunConfig;
@@ -24,6 +26,8 @@ pub const SCHEMA: &str = "tv4-manifest-s8";
 pub const SCHEMA_S9: &str = "tv4-manifest-s9";
 /// Identifiant du schéma des runs à profils de coûts (docs/specs/s10.md §12.3).
 pub const SCHEMA_S10: &str = "tv4-manifest-s10";
+/// Identifiant du schéma des runs de recherche (docs/specs/s11.md §9.2).
+pub const SCHEMA_S11: &str = "tv4-manifest-s11";
 /// Durée d'une 1m en millisecondes.
 const MINUTE_MS: Ts = 60_000;
 
@@ -167,6 +171,28 @@ pub fn run_id_s9(
     )
 }
 
+/// `run_id` d'un run de recherche (docs/specs/s11.md §8.6) : BLAKE3 hexadécimal de
+/// `"{config_hash}|{dataset_hash}|{start_ms},{end_ms}|{initial_cash:?}|{research_identity_hash}"`.
+///
+/// Prolonge [`run_id_s9`] du seul hash de l'identité de recherche (`blake3:…`) : le `config_hash` d'un run
+/// de recherche est celui de la configuration gelée, identique d'un bloc à l'autre et d'une ligne à
+/// l'autre, et ne distingue donc pas deux runs.
+pub fn run_id_s11(
+    config_hash: &str,
+    dataset_hash: &str,
+    start_ms: Ts,
+    end_ms: Ts,
+    initial_cash: f64,
+    research_identity_hash: &str,
+) -> String {
+    hash::blake3_hex(
+        format!(
+            "{config_hash}|{dataset_hash}|{start_ms},{end_ms}|{initial_cash:?}|{research_identity_hash}"
+        )
+        .as_bytes(),
+    )
+}
+
 fn data_of(data: &DataInfo, fixture_blake3: Option<String>) -> ManifestData {
     ManifestData {
         source: data.source,
@@ -276,6 +302,11 @@ pub struct ManifestS9 {
     /// Identifiant du dossier de profils auquel ce run appartient (s10, [`profiles_id`]).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub profiles_id: Option<String>,
+    /// Chemins des entrées de recherche tels que donnés à la CLI (s11) : `universe` (dossier d'univers) et
+    /// `okx_subset` (fichier de sous-ensemble). Jamais dans `metrics.json` (même règle que
+    /// `instruments_file`).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub research_inputs: Option<BTreeMap<String, String>>,
 }
 
 /// Ce que la CLI fournit en plus pour écrire le manifeste d'un profil s10.
@@ -342,7 +373,52 @@ impl ManifestS9 {
             cost_measures_file: None,
             cost_measures_hash: None,
             profiles_id: None,
+            research_inputs: None,
         })
+    }
+
+    /// Construit le manifeste d'un run de recherche à partir de ses métriques (`tv4-metrics-s11`) : celui
+    /// de [`ManifestS9::new`], au schéma s11, avec les chemins d'entrée de recherche. `data.block` et
+    /// `data.decision_window` viennent de `metrics.data`, comme `run_id` (identité de recherche comprise).
+    ///
+    /// Refuse des métriques sans bloc `research`, ou avec des blocs de coûts (profil : voir
+    /// [`ManifestS9::new_s11_profile`]).
+    pub fn new_s11(
+        metrics: &MetricsS9,
+        inputs: ManifestS9Inputs,
+        research_inputs: BTreeMap<String, String>,
+    ) -> Result<ManifestS9, ReportError> {
+        if metrics.research.is_none() || metrics.costs.is_some() {
+            return Err(ReportError::Series {
+                detail: "les métriques ne sont pas celles d'un run de recherche sans profil"
+                    .to_string(),
+            });
+        }
+        let mut manifest = ManifestS9::new(metrics, inputs)?;
+        manifest.schema = SCHEMA_S11;
+        manifest.research_inputs = Some(research_inputs);
+        Ok(manifest)
+    }
+
+    /// Construit le manifeste d'un profil de coûts joué en recherche : celui de
+    /// [`ManifestS9::new_s10`], au schéma s11, avec les chemins d'entrée de recherche.
+    ///
+    /// Refuse des métriques sans bloc `research` ou sans bloc `costs`.
+    pub fn new_s11_profile(
+        metrics: &MetricsS9,
+        inputs: ManifestS10Inputs,
+        research_inputs: BTreeMap<String, String>,
+    ) -> Result<ManifestS9, ReportError> {
+        if metrics.research.is_none() {
+            return Err(ReportError::Series {
+                detail: "les métriques n'ont pas de bloc `research` : ce n'est pas un run s11"
+                    .to_string(),
+            });
+        }
+        let mut manifest = ManifestS9::new_s10(metrics, inputs)?;
+        manifest.schema = SCHEMA_S11;
+        manifest.research_inputs = Some(research_inputs);
+        Ok(manifest)
     }
 
     /// Construit le manifeste d'un profil s10 à partir de ses métriques (`tv4-metrics-s10`).
@@ -386,6 +462,25 @@ mod tests {
         );
         assert_ne!(a, run_id_s9("aa", "blake3:bb", 60_000, 120_000, 3_000.0));
         assert_ne!(a, run_id("aa", "blake3:bb", 60_000, 120_000));
+    }
+
+    #[test]
+    fn run_id_s11_prolonge_run_id_s9_de_l_identite_de_recherche() {
+        let a = run_id_s11("aa", "blake3:bb", 60_000, 120_000, 300.0, "blake3:cc");
+        assert_eq!(
+            a,
+            hash::blake3_hex(b"aa|blake3:bb|60000,120000|300.0|blake3:cc"),
+            "format documente"
+        );
+        assert_ne!(a, run_id_s9("aa", "blake3:bb", 60_000, 120_000, 300.0));
+        assert_ne!(
+            a,
+            run_id_s11("aa", "blake3:bb", 60_000, 120_000, 300.0, "blake3:dd")
+        );
+        assert_ne!(
+            a,
+            run_id_s11("aa", "blake3:bb", 60_000, 120_000, 3_000.0, "blake3:cc")
+        );
     }
 
     #[test]

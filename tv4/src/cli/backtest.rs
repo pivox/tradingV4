@@ -39,6 +39,7 @@ pub use profiles::CostArgs;
 
 mod portfolio;
 mod profiles;
+mod research;
 
 /// Symbole canonique de la fixture (XBTUSD Kraken, docs/03 §4).
 const FIXTURE_SYMBOL: &str = "BTC-USD";
@@ -133,7 +134,7 @@ pub struct BacktestArgs {
     /// Options du mode portefeuille (S9) : `--symbols` l'active.
     #[command(flatten)]
     pub portfolio: PortfolioArgs,
-    /// Options des profils de coûts (S10) : `--costs` les active, exige `--symbols`.
+    /// Options des profils de coûts (S10) : `--costs` les active, exige `--symbols` ou `--universe`.
     #[command(flatten)]
     pub costs: CostArgs,
 }
@@ -233,6 +234,10 @@ struct Input {
 pub(super) fn run(args: &BacktestArgs) -> Result<(), CliError> {
     // Les refus d'usage de S10 viennent avant toute lecture de fichier.
     args.costs.check(&args.portfolio, &args.inputs)?;
+    // Dataset de bloc (S11) : un run par ligne, avec ou sans profils de coûts.
+    if research::dispatch(args)? {
+        return research::run(args);
+    }
     if args.costs.is_costs() {
         return profiles::run(args);
     }
@@ -297,10 +302,16 @@ pub(super) fn run(args: &BacktestArgs) -> Result<(), CliError> {
     // Un dossier de sortie existant (même `run_id` sous un autre commit) ne doit pas garder l'ancien
     // manifeste, qui marque un run complet, pendant que les autres fichiers sont réécrits : une
     // interruption laisserait des fichiers du nouveau run sous le manifeste de l'ancien. Le manifeste
-    // est réécrit en dernier ; le rapport HTML d'un rendu précédent est périmé lui aussi, et le
-    // `profiles.json` d'un run `--costs` précédent aussi : verify et le control plane classent un dossier
-    // sur sa seule présence, un run s8 ne doit pas y rester pris pour un dossier de profils.
-    for stale in [MANIFEST_FILE, REPORT_FILE, report::profiles::PROFILES_FILE] {
+    // est réécrit en dernier ; le rapport HTML d'un rendu précédent est périmé lui aussi, ainsi que le
+    // `profiles.json` d'un run `--costs` précédent et le `lines.json` d'un run de recherche à deux
+    // lignes : verify et le control plane classent un dossier sur sa seule présence, un run s8 ne doit
+    // pas y rester pris pour un dossier de profils ou de lignes.
+    for stale in [
+        MANIFEST_FILE,
+        REPORT_FILE,
+        report::profiles::PROFILES_FILE,
+        report::research::LINES_FILE,
+    ] {
         remove_stale(&out, stale)?;
     }
     report::write_bytes_atomic(&out, "metrics.json", &metrics_bytes)?;

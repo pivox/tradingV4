@@ -1,0 +1,90 @@
+{
+  "schema": "tv4-instruments-v1",
+  "exchange": "okx",
+  "site": "eea",
+  "endpoint": "/api/v5/account/instruments",
+  "inst_type": "SPOT",
+  "fetched_at": "2023-11-14T22:13:20.123Z",
+  "server_time_ms": 1700000000123,
+  "instruments_hash": "blake3:3d2b75711f1301962f071a140181166c8a844534f37c43d4ad30b1271e8313f0",
+  "instruments": [
+    {
+      "inst_id": "ADA-USDC",
+      "base_ccy": "ADA",
+      "quote_ccy": "USDC",
+      "tick_sz": "0.0001",
+      "lot_sz": "0.000001",
+      "min_sz": "1",
+      "state": "live",
+      "list_time": "1755763200000",
+      "rule_type": "normal",
+      "trade_quote_ccy_list": [
+        "USDC"
+      ],
+      "upc_chg": []
+    },
+    {
+      "inst_id": "BTC-USD",
+      "base_ccy": "BTC",
+      "quote_ccy": "USD",
+      "tick_sz": "0.1",
+      "lot_sz": "0.00000001",
+      "min_sz": "0.00001",
+      "state": "live",
+      "list_time": "1755763200000",
+      "rule_type": "normal",
+      "trade_quote_ccy_list": [
+        "USD",
+        "USDC"
+      ],
+      "upc_chg": []
+    },
+    {
+      "inst_id": "ETH-USD",
+      "base_ccy": "ETH",
+      "quote_ccy": "USD",
+      "tick_sz": "0.01",
+      "lot_sz": "0.000001",
+      "min_sz": "0.001",
+      "state": "live",
+      "list_time": "1755763200000",
+      "rule_type": "normal",
+      "trade_quote_ccy_list": [
+        "USD"
+      ],
+      "upc_chg": []
+    },
+    {
+      "inst_id": "SOL-USD",
+      "base_ccy": "SOL",
+      "quote_ccy": "USD",
+      "tick_sz": "0.001",
+      "lot_sz": "0.000001",
+      "min_sz": "0.01",
+      "state": "suspend",
+      "list_time": "1755763200000",
+      "rule_type": "normal",
+      "trade_quote_ccy_list": [
+        "USD",
+        "USDC"
+      ],
+      "upc_chg": []
+    },
+    {
+      "inst_id": "XRP-USD",
+      "base_ccy": "XRP",
+      "quote_ccy": "USD",
+      "tick_sz": "0.00001",
+      "lot_sz": "0.000001",
+      "min_sz": "1",
+      "state": "preopen",
+      "list_time": "1755763200000",
+      "rule_type": "normal",
+      "trade_quote_ccy_list": [
+        "USD",
+        "USDC"
+      ],
+      "upc_chg": []
+    }
+  ]
+}

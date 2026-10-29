@@ -21,7 +21,7 @@ use crate::marketdata::kraken_zip::{
 };
 use crate::model::{ExchangeId, Timeframe, Ts};
 use crate::report;
-use crate::store::time::{MS_PER_DAY, format_rfc3339_utc, parse_rfc3339_utc};
+use crate::store::time::{format_rfc3339_utc, parse_coverage_end};
 use crate::store::{
     self, Columns, ContinuityCounts, ContinuityInput, Partition, QualityReport, Symbol,
     WriteOptions, WriteOutcome, WriteStatus,
@@ -113,9 +113,18 @@ pub struct IngestKrakenArgs {
     /// SHA-256 publié par Kraken pour ce zip (64 caractères hexadécimaux), vérifié avant toute lecture.
     #[arg(long, value_name = "HEX")]
     pub sha256: Sha256Hex,
-    /// Paire Kraken à ingérer en 1m (XBTUSD, ETHUSD...) ; répétable.
-    #[arg(long = "pair", value_name = "PAIRE", required = true)]
+    /// Paire Kraken à ingérer en 1m (XBTUSD, ETHUSD...) ; répétable. Obligatoire sans
+    /// `--pairs-from-universe`.
+    #[arg(
+        long = "pair",
+        value_name = "PAIRE",
+        required_unless_present = "pairs_from_universe"
+    )]
     pub pairs: Vec<KrakenPair>,
+    /// Dossier d'univers (`tv4 universe build`) : ingère aussi les paires de son `union`, cumulables avec
+    /// `--pair` (une paire donnée des deux façons n'est ingérée qu'une fois).
+    #[arg(long, value_name = "DOSSIER")]
+    pub pairs_from_universe: Option<PathBuf>,
     /// Racine de travail (contient data/, reports/, state/). Une racine dédiée au dump évite tout
     /// conflit avec la fixture ingérée par `ingest csv` : les fichiers clos y sont immuables.
     #[arg(long, value_name = "DOSSIER", default_value = ".")]
@@ -234,17 +243,6 @@ struct SummaryReport {
     pairs: Vec<SummaryPair>,
 }
 
-/// Fin de couverture exclusive lue dans le manifeste du zip : `AAAA-MM-JJ` est inclusive (le lendemain
-/// à 00:00 UTC), `AAAA-MM-JJTHH:MM:SSZ` est prise telle quelle ; toute autre forme est ignorée.
-fn parse_coverage_end(text: &str) -> Option<Ts> {
-    if text.len() == 10 {
-        let debut_du_jour = parse_rfc3339_utc(&format!("{text}T00:00:00Z")).ok()?;
-        Some(debut_du_jour + MS_PER_DAY)
-    } else {
-        parse_rfc3339_utc(text).ok()
-    }
-}
-
 /// Valeur de manifeste pour l'impression : `?` si absente.
 fn or_unknown<T: Display>(value: &Option<T>) -> String {
     value
@@ -299,15 +297,33 @@ fn millis(started: Instant) -> u64 {
 pub fn ingest_kraken(args: &IngestKrakenArgs, now_ms: Ts) -> Result<IngestSummary, CliError> {
     let total_started = Instant::now();
 
-    // Avant toute lecture : paires en double et symboles canoniques valides.
+    // Avant toute lecture : paires en double et symboles canoniques valides, puis paires de l'union
+    // d'un dossier d'univers (une paire déjà donnée par --pair n'est pas ajoutée deux fois).
     let mut vues = BTreeSet::new();
     for pair in &args.pairs {
-        if !vues.insert(pair.as_str()) {
+        if !vues.insert(pair.as_str().to_string()) {
             return Err(CliError::DuplicatePair {
                 pair: pair.as_str().to_string(),
             });
         }
         pair.symbol().parse::<Symbol>()?;
+    }
+    let mut pairs: Vec<KrakenPair> = args.pairs.clone();
+    if let Some(dir) = args.pairs_from_universe.as_deref() {
+        let universe = store::universe::load(dir)?;
+        for entry in &universe.file().union {
+            let pair: KrakenPair = entry.kraken_pair.parse()?;
+            pair.symbol().parse::<Symbol>()?;
+            if vues.insert(pair.as_str().to_string()) {
+                pairs.push(pair);
+            }
+        }
+        println!(
+            "univers : {} paire(s) de l'union lues dans {}, {} à ingérer au total",
+            universe.file().union.len(),
+            dir.display(),
+            pairs.len()
+        );
     }
 
     // 1. SHA-256 puis ouverture.
@@ -366,7 +382,7 @@ pub fn ingest_kraken(args: &IngestKrakenArgs, now_ms: Ts) -> Result<IngestSummar
     let report_dir = args.root.join(REPORT_DIR_REL);
     let mut summary_pairs = Vec::new();
     let mut failed: Vec<(String, String)> = Vec::new();
-    for pair in &args.pairs {
+    for pair in &pairs {
         let started = Instant::now();
         let mut report = PairReport {
             schema: SCHEMA_PAIR,
@@ -427,7 +443,7 @@ pub fn ingest_kraken(args: &IngestKrakenArgs, now_ms: Ts) -> Result<IngestSummar
         seconds(total_started)
     );
     Ok(IngestSummary {
-        pairs_ok: args.pairs.len() - failed.len(),
+        pairs_ok: pairs.len() - failed.len(),
         pairs_failed: failed,
         summary_path,
     })
@@ -616,30 +632,6 @@ pub(super) fn kraken(args: &IngestKrakenArgs) -> Result<(), CliError> {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn couverture_en_date_inclusive_ou_instant() {
-        // 2020-01-07 est inclusive : la fin exclusive est le lendemain 00:00 UTC.
-        assert_eq!(parse_coverage_end("2020-01-07"), Some(1_578_441_600_000));
-        assert_eq!(
-            parse_coverage_end("2020-01-08T00:00:00Z"),
-            Some(1_578_441_600_000)
-        );
-        // 2026-09-30 inclusive : fin au 2026-10-01 00:00 UTC.
-        assert_eq!(
-            parse_coverage_end("2026-09-30"),
-            parse_rfc3339_utc("2026-10-01T00:00:00Z").ok()
-        );
-        for illisible in [
-            "",
-            "demain",
-            "2020-13-01",
-            "2020/01/07",
-            "2020-01-07T00:00:00",
-        ] {
-            assert_eq!(parse_coverage_end(illisible), None, "« {illisible} »");
-        }
-    }
 
     fn rapport_vide() -> PairReport {
         PairReport {

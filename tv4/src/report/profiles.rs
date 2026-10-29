@@ -38,7 +38,8 @@ use crate::model::{FeeGridId, Timeframe, hash};
 use super::ReportError;
 use super::manifest::OutputFiles;
 use super::manifest::profiles_id;
-use super::metrics_s9::{CostsInputs, MetricsS9, MetricsS9Inputs};
+use super::metrics_s9::{CostsInputs, MetricsS9, MetricsS9Inputs, SCHEMA_S10, SCHEMA_S11};
+use super::research::ResearchInputs;
 use super::{equity, writers};
 
 /// Identifiant du schéma de `profiles.json`.
@@ -93,6 +94,30 @@ pub fn render_profile(
     equity_step: Timeframe,
 ) -> Result<RenderedProfile, ReportError> {
     let metrics = MetricsS9::new_s10(run, inputs, costs)?;
+    render_files(run, metrics, equity_step)
+}
+
+/// Comme [`render_profile`], pour un profil joué en recherche (génération s11, docs/specs/s11.md §9.6) :
+/// `metrics.json` est au schéma `tv4-metrics-s11` avec son bloc `research` et ses métriques de trades sur
+/// les trades conservés, `trades.csv` garde tous les trades (purgés compris), `equity.csv` commence à
+/// `decision_start`.
+pub fn render_profile_research(
+    run: &ProfileRun,
+    inputs: MetricsS9Inputs<'_>,
+    costs: CostsInputs<'_>,
+    research: &ResearchInputs<'_>,
+    equity_step: Timeframe,
+) -> Result<RenderedProfile, ReportError> {
+    let metrics = MetricsS9::new_s11_profile(run, inputs, costs, research)?;
+    render_files(run, metrics, equity_step)
+}
+
+/// Fichiers d'un profil depuis ses métriques : le même rendu pour les deux générations.
+fn render_files(
+    run: &ProfileRun,
+    metrics: MetricsS9,
+    equity_step: Timeframe,
+) -> Result<RenderedProfile, ReportError> {
     let result = &run.result;
     let symbols: Vec<&str> = result.universe.iter().map(String::as_str).collect();
     let metrics_bytes = super::json_bytes(&metrics)?;
@@ -337,9 +362,15 @@ fn summarize(
     let (Some(costs), Some(arithmetic)) = (m.costs.as_ref(), m.cost_arithmetic.as_ref()) else {
         return Err(series_error(format!(
             "les métriques du profil `{expected}` n'ont pas de blocs `costs` et `cost_arithmetic` : \
-             ce ne sont pas celles d'un run s10"
+             ce ne sont pas celles d'un run s10 ou s11"
         )));
     };
+    if m.schema != SCHEMA_S10 && m.schema != SCHEMA_S11 {
+        return Err(series_error(format!(
+            "les métriques du profil `{expected}` sont de schéma `{}` : un profil est un run s10 ou s11",
+            m.schema
+        )));
+    }
     if costs.profile != expected {
         return Err(series_error(format!(
             "les métriques du profil `{}` sont données à la place de celles du profil `{expected}`",
@@ -393,6 +424,13 @@ impl ProfilesReport {
             return Err(series_error("blocs `costs` absents".to_string()));
         };
         for (name, other, costs) in [("adverse", ma, ca), ("maker", mm, cm)] {
+            if other.schema != mb.schema {
+                return Err(series_error(format!(
+                    "le profil `{name}` n'est pas un run de la même génération que baseline \
+                     (`{}` contre `{}`)",
+                    other.schema, mb.schema
+                )));
+            }
             let same = other.dataset_hash == mb.dataset_hash
                 && other.config.initial_cash.to_bits() == mb.config.initial_cash.to_bits()
                 && costs.seed == cb.seed
@@ -401,7 +439,15 @@ impl ProfilesReport {
                 && costs.cost_measures_hash == cb.cost_measures_hash
                 && costs.stress_calibrated == cb.stress_calibrated
                 && other.min_trades == mb.min_trades
-                && other.data.window == mb.data.window;
+                && other.data.window == mb.data.window
+                && other
+                    .research
+                    .as_ref()
+                    .map(|r| (r.block, r.line, &r.decision_window))
+                    == mb
+                        .research
+                        .as_ref()
+                        .map(|r| (r.block, r.line, &r.decision_window));
             if !same {
                 return Err(series_error(format!(
                     "le profil `{name}` ne partage pas les données, le capital, la fenêtre, la graine, \

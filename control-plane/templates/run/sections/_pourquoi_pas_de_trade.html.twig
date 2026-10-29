@@ -23,6 +23,18 @@
       {%- if f.entryRejectedMaxPositions is not null and f.entryRejectedMaxPositions != 0 %}
         <tr class="sub"><th scope="row">dont rejetés : <code>max_positions</code></th><td class="num">{{ f.entryRejectedMaxPositions|int }}</td></tr>
       {%- endif %}
+      {%- if metrics.isResearch and metrics.research is not null %}
+        {%- set rf = metrics.research.funnel %}
+        {%- if rf.entriesOutsideDecisionWindow != 0 %}
+        <tr class="sub"><th scope="row">dont refusés par la recherche : <code>outside_decision_window</code></th><td class="num">{{ rf.entriesOutsideDecisionWindow|int }}</td></tr>
+        {%- endif %}
+        {%- if rf.entriesNotInUniverse != 0 %}
+        <tr class="sub"><th scope="row">dont refusés par la recherche : <code>not_in_universe</code></th><td class="num">{{ rf.entriesNotInUniverse|int }}</td></tr>
+        {%- endif %}
+        {%- if rf.entriesExcludedQuality != 0 %}
+        <tr class="sub"><th scope="row">dont refusés par la recherche : <code>excluded_quality</code></th><td class="num">{{ rf.entriesExcludedQuality|int }}</td></tr>
+        {%- endif %}
+      {%- endif %}
       <tr><th scope="row">Ordres d'entrée acceptés</th><td class="num">{{ f.entryOrders|int }}</td></tr>
       {% for reason, count in f.entryNotFilledByReason %}
         {% if count != 0 %}

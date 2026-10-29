@@ -1082,3 +1082,112 @@ fn deux_process_meme_metrics_dataset() {
     }
     assert_eq!(contenus[0], contenus[1]);
 }
+
+// ---------------------------------------------------------------------------------------------
+// S11 : cas d'usage refusés (docs/specs/s11.md §6.3, §9.5, §11)
+// ---------------------------------------------------------------------------------------------
+
+#[test]
+fn backtest_options_de_recherche_refusees_sans_dataset_de_bloc() {
+    let dossier = tempfile::tempdir().unwrap();
+    let out = dossier.path().join("run");
+    let avec = |extra: &[&str]| {
+        let mut args = backtest_args(PARAMS_1M, &out);
+        args.extend(extra.iter().map(|s| (*s).to_string()));
+        args
+    };
+    // Comme les autres options du portefeuille (S9) : sans --symbols, erreur applicative (code 1).
+    for extra in [
+        &["--okx-subset", "liste.json"][..],
+        &["--unguarded-protected-read"],
+    ] {
+        let sortie = tv4_owned(&avec(extra));
+        let (_, stderr) = texte(&sortie);
+        assert_eq!(sortie.status.code(), Some(1), "{extra:?} : {stderr}");
+        assert!(
+            stderr.contains("n'a de sens qu'avec --symbols") && stderr.contains(extra[0]),
+            "{extra:?} : {stderr}"
+        );
+    }
+    // `--universe` remplace les fichiers d'instruments : conflit clap (code 2), avant toute lecture.
+    let sortie = tv4_owned(&avec(&["--universe", "univers"]));
+    let (_, stderr) = texte(&sortie);
+    assert_eq!(sortie.status.code(), Some(2), "{stderr}");
+    assert!(stderr.contains("--universe"), "{stderr}");
+    assert!(!out.exists(), "aucune sortie ne doit être écrite");
+}
+
+#[test]
+fn dataset_build_sans_bloc_garde_ses_options_obligatoires_et_refuse_celles_de_recherche() {
+    let racine = tempfile::tempdir().unwrap();
+    let r = racine.path().display().to_string();
+    let base = |extra: &[&str]| {
+        let mut args = vec![
+            "dataset",
+            "build",
+            "--root",
+            &r,
+            "--name",
+            "d",
+            "--exchange",
+            "kraken",
+            "--tf",
+            "1m",
+        ];
+        args.extend_from_slice(extra);
+        tv4(&args)
+    };
+    for (extra, option) in [
+        // Sans bloc, --from, --to et --symbol restent obligatoires.
+        (
+            &["--symbol", "BTC-USD", "--to", "2020-01-02T00:00:00Z"][..],
+            "--from",
+        ),
+        (
+            &["--symbol", "BTC-USD", "--from", "2020-01-01T00:00:00Z"],
+            "--to",
+        ),
+        (
+            &[
+                "--from",
+                "2020-01-01T00:00:00Z",
+                "--to",
+                "2020-01-02T00:00:00Z",
+            ],
+            "--symbol",
+        ),
+        // Les options de recherche exigent --block.
+        (
+            &[
+                "--symbol",
+                "BTC-USD",
+                "--from",
+                "2020-01-01T00:00:00Z",
+                "--to",
+                "2020-01-02T00:00:00Z",
+                "--warmup-days",
+                "5",
+            ],
+            "--block",
+        ),
+        (
+            &[
+                "--symbol",
+                "BTC-USD",
+                "--from",
+                "2020-01-01T00:00:00Z",
+                "--to",
+                "2020-01-02T00:00:00Z",
+                "--universe",
+                "univers",
+            ],
+            "--block",
+        ),
+    ] {
+        let sortie = base(extra);
+        let (_, stderr) = texte(&sortie);
+        assert_eq!(sortie.status.code(), Some(2), "{extra:?} : {stderr}");
+        assert!(stderr.contains(option), "{extra:?} : {stderr}");
+    }
+    assert!(!racine.path().join("datasets/d.json").exists());
+}

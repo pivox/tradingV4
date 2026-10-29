@@ -1,0 +1,783 @@
+{
+ "approx": {
+  "ln_return": -0.00920132885354444,
+  "return_annualized": null,
+  "ulp_tolerance": 20
+ },
+ "avg_holding_ms": 41873333.333333336,
+ "cash_final": 297.25226215,
+ "config": {
+  "costs": {
+   "entry": {
+    "decision_tf": "15m",
+    "mode": "taker"
+   },
+   "fee_grid": {
+    "grid": "okx_regular",
+    "maker_bps": 20,
+    "taker_bps": 35
+   },
+   "legs": {},
+   "profile": "baseline",
+   "rules_version": "c1",
+   "seed": 1
+  },
+  "initial_cash": 300.0,
+  "instruments": {},
+  "instruments_hash": null,
+  "min_trades": 5,
+  "portfolio": {
+   "liquidity_window_days": 90,
+   "max_positions": 2,
+   "min_order_bump": null,
+   "priority": "signal_time_then_liquidity_90d",
+   "quote_gap_ms": 604800000,
+   "regime": null,
+   "sizing": "research",
+   "universe": []
+  },
+  "research": {
+   "blocks_version": "b1",
+   "decision_tf": "15m",
+   "purge_rule": "end_of_window_v1",
+   "universe_spec": {
+    "mode": "quarterly",
+    "rules_hash": "blake3:a1e51301a1e51301a1e51301a1e51301a1e51301a1e51301a1e51301a1e51301"
+   }
+  },
+  "schema": "tv4-portfolio-config-v2",
+  "sim_rules": {
+   "activation_delay_bars": 1,
+   "intrabar": "stop_first",
+   "limit_cross_ticks": 1,
+   "market_buy_cash_margin": 0.05,
+   "max_pending": 64,
+   "max_volume_share": 0.005,
+   "stop_stress_bps": 0.0,
+   "tp_ignored_on_fill_bar": true,
+   "version": "s6.1",
+   "zero_volume_no_fill": true
+  },
+  "strategy": {
+   "id": "sma_cross",
+   "params": {
+    "fast": 20,
+    "slow": 50,
+    "stop_atr_mult": 2.0,
+    "tf": "15m"
+   },
+   "version": "1.1.0"
+  },
+  "tv4_version": "0.1.0",
+  "warmup_bars": 50
+ },
+ "config_hash": "c0de1301c0de1301c0de1301c0de1301c0de1301c0de1301c0de1301c0de1301",
+ "cost_arithmetic": {
+  "capital_fraction_mean": 0.9396712707,
+  "cost_breakdown": {
+   "fees": 19.25235648,
+   "slippage": 2.38707523,
+   "spread": 0.27512565
+  },
+  "cost_r_limit": 0.1,
+  "cost_r_mean": 0.6446891473,
+  "cost_r_median": 0.6004374807,
+  "cost_r_pass": false,
+  "cost_third_pass": false,
+  "cost_to_gross": 1.1433590924,
+  "decision_tf": "15m",
+  "gross_expectancy": 1.916681951,
+  "gross_median_rate": 0.0109492544,
+  "gross_median_vs_own_cost_pass": false,
+  "hurdle_annual": 3.4288339756,
+  "protocol_tf": false,
+  "round_trip_cost_mean": 2.191455736,
+  "round_trip_cost_rate_mean": 0.0079922723,
+  "round_trip_cost_rate_median": 0.0074494348,
+  "trades_per_year": 456.5625,
+  "trades_with_r": 8
+ },
+ "cost_counters": {
+  "adverse_selection_total": 0,
+  "by_pair": [
+   {
+    "adverse_selection_total": 0,
+    "maker_entries_converted": 0,
+    "maker_entries_filled_maker": 0,
+    "maker_entries_taken_at_arrival": 0,
+    "maker_entry_maker_share": null,
+    "maker_fill_draws": 0,
+    "maker_fill_missed": 0,
+    "maker_fills": 0,
+    "spread_cost_total": 0.1651864022,
+    "stop_fills_drawn": 1,
+    "stop_stress_fills": 0,
+    "symbol": "BTC-USD"
+   },
+   {
+    "adverse_selection_total": 0,
+    "maker_entries_converted": 0,
+    "maker_entries_filled_maker": 0,
+    "maker_entries_taken_at_arrival": 0,
+    "maker_entry_maker_share": null,
+    "maker_fill_draws": 0,
+    "maker_fill_missed": 0,
+    "maker_fills": 0,
+    "spread_cost_total": 0.1099392477,
+    "stop_fills_drawn": 3,
+    "stop_stress_fills": 0,
+    "symbol": "ETH-USD"
+   }
+  ],
+  "maker_entries_converted": 0,
+  "maker_entries_filled_maker": 0,
+  "maker_entries_taken_at_arrival": 0,
+  "maker_entry_maker_share": null,
+  "maker_fill_draws": 0,
+  "maker_fill_missed": 0,
+  "maker_fills": 0,
+  "spread_cost_total": 0.2751256499,
+  "stop_fills_drawn": 4,
+  "stop_stress_fills": 0
+ },
+ "costs": {
+  "cost_measures_file": null,
+  "cost_measures_hash": null,
+  "costs_file": "config/costs.toml",
+  "costs_file_hash": "blake3:c057f11ec057f11ec057f11ec057f11ec057f11ec057f11ec057f11ec057f11e",
+  "fee_grid": "okx_regular",
+  "gates_profile": true,
+  "legs": [
+   {
+    "adverse_selection_bps": 0.0,
+    "class": "major",
+    "class_source": "list",
+    "entry": "taker",
+    "half_spread_bps": 0.5,
+    "maker_fill_probability": null,
+    "maker_ttl_minutes": null,
+    "market_slippage_bps": 1.0,
+    "measured_p95_half_spread_bps": null,
+    "slippage_source": "default",
+    "spread_source": "default",
+    "stop_slippage_bps": {
+     "p100": 200.0,
+     "p50": 5.0,
+     "p95": 50.0,
+     "p99": 200.0
+    },
+    "stop_slippage_mean_bps": 20.625,
+    "stress_drop": 0.03,
+    "stress_probability": 0.03,
+    "symbol": "BTC-USD"
+   },
+   {
+    "adverse_selection_bps": 0.0,
+    "class": "major",
+    "class_source": "list",
+    "entry": "taker",
+    "half_spread_bps": 0.5,
+    "maker_fill_probability": null,
+    "maker_ttl_minutes": null,
+    "market_slippage_bps": 1.0,
+    "measured_p95_half_spread_bps": null,
+    "slippage_source": "default",
+    "spread_source": "default",
+    "stop_slippage_bps": {
+     "p100": 200.0,
+     "p50": 5.0,
+     "p95": 50.0,
+     "p99": 200.0
+    },
+    "stop_slippage_mean_bps": 20.625,
+    "stress_drop": 0.03,
+    "stress_probability": 0.03,
+    "symbol": "ETH-USD"
+   }
+  ],
+  "profile": "baseline",
+  "rules_version": "c1",
+  "seed": 1,
+  "stress_calibrated": false,
+  "stress_calibration_ref": null
+ },
+ "data": {
+  "block": "HOLDOUT",
+  "dataset": "exemple_recherche_profils",
+  "dataset_hash": "blake3:da7a1301da7a1301da7a1301da7a1301da7a1301da7a1301da7a1301da7a1301",
+  "decision_window": {
+   "end": "2025-03-09T04:10:00Z",
+   "end_ms": 1741493400000,
+   "start": "2025-03-01T00:00:00Z",
+   "start_ms": 1740787200000
+  },
+  "exchange": "kraken",
+  "gaps_policy": "zero_volume_marked",
+  "hash_format": "dsh-v1",
+  "regime_symbol": null,
+  "series": [
+   {
+    "first_ms": 1722643200000,
+    "last_ms": 1741493340000,
+    "rows": 314150,
+    "symbol": "BTC-USD"
+   },
+   {
+    "first_ms": 1722643200000,
+    "last_ms": 1741493340000,
+    "rows": 314134,
+    "symbol": "ETH-USD"
+   }
+  ],
+  "source": "dataset",
+  "symbols": [
+   "BTC-USD",
+   "ETH-USD"
+  ],
+  "tf": "1m",
+  "window": {
+   "end": "2025-03-09T04:10:00Z",
+   "end_ms": 1741493400000,
+   "start": "2025-03-01T00:00:00Z",
+   "start_ms": 1740787200000
+  }
+ },
+ "dataset_hash": "blake3:da7a1301da7a1301da7a1301da7a1301da7a1301da7a1301da7a1301da7a1301",
+ "distribution": {
+  "by_exit_type": [
+   {
+    "exit_type": "gap_forced_exit",
+    "n_trades": 1,
+    "pnl_net": -7.30995754
+   },
+   {
+    "exit_type": "stop_loss",
+    "n_trades": 2,
+    "pnl_net": -11.87281031
+   },
+   {
+    "exit_type": "strategy_exit",
+    "n_trades": 4,
+    "pnl_net": 2.15829049
+   },
+   {
+    "exit_type": "trailing_stop",
+    "n_trades": 2,
+    "pnl_net": 1.2478066
+   }
+  ],
+  "by_pair": [
+   {
+    "expectancy_r": -0.628916805,
+    "exposure": 0.4017841971112999,
+    "net_pnl": -3.9461066000000002,
+    "symbol": "BTC-USD",
+    "trades": 5,
+    "win_rate": 0.6
+   },
+   {
+    "expectancy_r": -0.8266455,
+    "exposure": 0.2524214103653356,
+    "net_pnl": -11.83056416,
+    "symbol": "ETH-USD",
+    "trades": 4,
+    "win_rate": 0.5
+   }
+  ],
+  "by_year": [
+   {
+    "n_trades": 9,
+    "n_wins": 5,
+    "pnl_net": -15.776670760000002,
+    "year": 2025
+   }
+  ],
+  "histogram_r": {
+   "bin_width": 0.5,
+   "counts": [
+    0,
+    0,
+    0,
+    0,
+    0,
+    2,
+    2,
+    0,
+    0,
+    0,
+    3,
+    0,
+    1,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0
+   ],
+   "max": 10.0,
+   "min": -5.0,
+   "overflow": 0,
+   "underflow": 0
+  },
+  "pnl_net_mean": -1.7529634177777778,
+  "pnl_net_median": 0.46339186,
+  "pnl_without_best": [
+   {
+    "n": 1,
+    "pnl_net": -20.65864703
+   },
+   {
+    "n": 3,
+    "pnl_net": -25.78856037
+   },
+   {
+    "n": 5,
+    "pnl_net": -27.03636697
+   },
+   {
+    "n": 10,
+    "pnl_net": null
+   }
+  ],
+  "r_mean": -0.7277811525,
+  "r_median": -0.6798816099999999
+ },
+ "equity_final": 297.25226215,
+ "executability": {
+  "live_list": [],
+  "pairs": [
+   {
+    "entry_orders": 5,
+    "median_close": 29200.0,
+    "median_quote_volume_1m": 41500.0,
+    "min_order_notional": null,
+    "min_sz": null,
+    "notional_ref": 61.2,
+    "okx_inst_id": null,
+    "state": null,
+    "symbol": "BTC-USD",
+    "verdict": "not_applicable",
+    "volume_cap": 207.5
+   },
+   {
+    "entry_orders": 4,
+    "median_close": 730.0,
+    "median_quote_volume_1m": 9100.0,
+    "min_order_notional": null,
+    "min_sz": null,
+    "notional_ref": 58.0,
+    "okx_inst_id": null,
+    "state": null,
+    "symbol": "ETH-USD",
+    "verdict": "not_applicable",
+    "volume_cap": 45.5
+   }
+  ],
+  "reference_capital": 300.0,
+  "rejected": [],
+  "rule": "g0_volume_then_min_size_then_state",
+  "venue_matches_execution": false
+ },
+ "expectancy_net": -1.7529634177777778,
+ "expectancy_r": -0.7277811525,
+ "exposure": {
+  "bars_in_position": 7700,
+  "bars_in_window": 11770,
+  "fraction": 0.6542056074766355
+ },
+ "fees_total": 19.25235648,
+ "fills": 20,
+ "forced_close": true,
+ "funnel": {
+  "entry_fills": 10,
+  "entry_filtered_by_reason": {
+   "stop_not_positive": 1,
+   "trend_filter": 2
+  },
+  "entry_not_filled_by_reason": {
+   "below_minimum": 0,
+   "dropped_while_long": 0,
+   "insufficient_cash": 0,
+   "invalid_risk_at_fill": 0,
+   "other": 0,
+   "volume_share": 0
+  },
+  "entry_orders": 10,
+  "entry_rejected_by_reason": {
+   "below_minimum": 1,
+   "cancel_unknown_slot": 0,
+   "duplicate_exit": 0,
+   "entry_while_long": 0,
+   "exit_without_position": 0,
+   "insufficient_quote": 1,
+   "invalid_price": 0,
+   "invalid_risk_sizing": 0,
+   "invalid_size": 0,
+   "invalid_slot": 0,
+   "invalid_ttl": 0,
+   "move_stop_without_position": 0,
+   "pending_full": 0,
+   "place_limit_risk_pct": 0,
+   "risk_without_stop": 0,
+   "sell_without_free_qty": 0,
+   "slot_already_open": 0
+  },
+  "entry_rejected_max_positions": 3,
+  "entry_signals": 20,
+  "evaluations": 768,
+  "exit_orders": 5,
+  "exit_signals": 5,
+  "exits_by_type": {
+   "end_of_window": 1,
+   "gap_forced_exit": 1,
+   "limit_sell": 0,
+   "stop_loss": 2,
+   "strategy_exit": 4,
+   "take_profit": 0,
+   "time_stop": 0,
+   "trailing_stop": 2
+  },
+  "other_accepted": 2,
+  "other_signals": 2,
+  "raw_entry_signals": 23,
+  "trades": 10
+ },
+ "funnel_by_pair": [
+  {
+   "entry_fills": 6,
+   "entry_orders": 6,
+   "entry_signals": 11,
+   "evaluations": 384,
+   "rejected": {
+    "cash": 1,
+    "lot_step": 0,
+    "max_positions": 1,
+    "min_notional": 0,
+    "other": 0,
+    "volume": 0
+   },
+   "symbol": "BTC-USD",
+   "trades": 5
+  },
+  {
+   "entry_fills": 4,
+   "entry_orders": 4,
+   "entry_signals": 9,
+   "evaluations": 384,
+   "rejected": {
+    "cash": 0,
+    "lot_step": 0,
+    "max_positions": 2,
+    "min_notional": 1,
+    "other": 0,
+    "volume": 0
+   },
+   "symbol": "ETH-USD",
+   "trades": 4
+  }
+ ],
+ "g1_executable": {
+  "at_reference_capital": true,
+  "fills": 9,
+  "ratio": 0.8181818181818182,
+  "rejected_cash": 1,
+  "rejected_lot_step": 0,
+  "rejected_max_positions": 3,
+  "rejected_min_notional": 1,
+  "rejected_volume": 0,
+  "threshold": 0.95,
+  "verdict": "not_applicable"
+ },
+ "gross_loss": -27.03636697,
+ "gross_profit": 11.25969621,
+ "instruments": {
+  "fetched_at": null,
+  "file": null,
+  "instruments_hash": null,
+  "not_live": [],
+  "source": "toml",
+  "upcoming_changes": []
+ },
+ "mae_mean": -2.87736168,
+ "max_drawdown": {
+  "h1": {
+   "pct": 0.056670572089386424,
+   "peak_ms": 1740830400000,
+   "quote": 17.074733589999994,
+   "trough_ms": 1741374000000
+  },
+  "m1": {
+   "pct": 0.056670572089386424,
+   "peak_ms": 1740830400000,
+   "quote": 17.074733589999994,
+   "trough_ms": 1741374000000
+  }
+ },
+ "mfe_mean": 3.1191159144444445,
+ "min_trades": 5,
+ "n_losses": 4,
+ "n_trades": 9,
+ "n_trades_forced": 0,
+ "n_wins": 5,
+ "pnl_marked": 13.02893291,
+ "pnl_net": -2.7477378500000005,
+ "pnl_realized": -15.77667076,
+ "portfolio": {
+  "grid_minutes": 11770,
+  "initial_cash": 300.0,
+  "legs": 2,
+  "max_cost_to_initial": 0.6218,
+  "max_open_positions": 2,
+  "positions_cap_hits": 3,
+  "quote_gap_exits": 1,
+  "sizing": "research"
+ },
+ "priority": {
+  "liquidity_window_days": 90,
+  "partial_days": 8,
+  "rank_days": 8,
+  "rank_exchange": "kraken",
+  "rank_source": "dataset",
+  "rule": "signal_time_then_liquidity_90d"
+ },
+ "profit_factor": 0.4164648387297726,
+ "regime": null,
+ "research": {
+  "block": "HOLDOUT",
+  "blocks_version": "b1",
+  "decision_window": {
+   "end": "2025-03-09T04:10:00Z",
+   "end_ms": 1741493400000,
+   "start": "2025-03-01T00:00:00Z",
+   "start_ms": 1740787200000
+  },
+  "funnel": {
+   "entries_cancelled_universe": 0,
+   "entries_excluded_quality": 0,
+   "entries_not_in_universe": 0,
+   "entries_outside_decision_window": 5
+  },
+  "guard": "unguarded",
+  "identity": {
+   "block": "HOLDOUT",
+   "decision_end_ms": 1741493400000,
+   "decision_start_ms": 1740787200000,
+   "legs_hash": "blake3:1e6513011e6513011e6513011e6513011e6513011e6513011e6513011e651301",
+   "line": "full",
+   "quality_hash": "blake3:9a1713019a1713019a1713019a1713019a1713019a1713019a1713019a171301",
+   "subset_hash": null,
+   "universe_window_hash": "blake3:b10c1301b10c1301b10c1301b10c1301b10c1301b10c1301b10c1301b10c1301"
+  },
+  "identity_hash": "blake3:1de713011de713011de713011de713011de713011de713011de713011de71301",
+  "legs": [
+   {
+    "entries_cancelled_universe": 0,
+    "entries_excluded_quality": 0,
+    "entries_not_in_universe": 0,
+    "entries_outside_decision_window": 3,
+    "live_from": "2024-08-03T12:30:00Z",
+    "symbol": "BTC-USD"
+   },
+   {
+    "entries_cancelled_universe": 0,
+    "entries_excluded_quality": 0,
+    "entries_not_in_universe": 0,
+    "entries_outside_decision_window": 2,
+    "live_from": "2024-08-03T12:30:00Z",
+    "symbol": "ETH-USD"
+   }
+  ],
+  "line": "full",
+  "metrics_basis": "kept_trades",
+  "purge": {
+   "pnl_net_purged": 13.02893291,
+   "rule": "end_of_window_v1",
+   "trades_kept": 9,
+   "trades_purged": 1
+  },
+  "quality_exclusions": {
+   "ETH-USD": [
+    {
+     "quarter": "2025-Q1",
+     "tfs": [
+      "1h",
+      "4h",
+      "1d"
+     ]
+    }
+   ]
+  },
+  "regime_used": false,
+  "subset": null,
+  "universe": {
+   "decision_tf": "15m",
+   "mode": "quarterly",
+   "quarters": [
+    {
+     "eligible_legs": 2,
+     "excluded_quality": [],
+     "members": 2,
+     "quarter": "2025-Q1"
+    }
+   ],
+   "rules_hash": "blake3:a1e51301a1e51301a1e51301a1e51301a1e51301a1e51301a1e51301a1e51301",
+   "symbols": null,
+   "window_hash": "blake3:b10c1301b10c1301b10c1301b10c1301b10c1301b10c1301b10c1301b10c1301"
+  },
+  "warmup_start": "2024-08-03T00:00:00Z"
+ },
+ "return_total": -0.009159126166666668,
+ "schema": "tv4-metrics-s11",
+ "signals": {
+  "accepted": 17,
+  "emitted": 27,
+  "rejected": 5,
+  "rejected_by_reason": {
+   "below_minimum": 1,
+   "cancel_unknown_slot": 0,
+   "duplicate_exit": 0,
+   "entry_while_long": 0,
+   "exit_without_position": 0,
+   "insufficient_quote": 1,
+   "invalid_price": 0,
+   "invalid_risk_sizing": 0,
+   "invalid_size": 0,
+   "invalid_slot": 0,
+   "invalid_ttl": 0,
+   "move_stop_without_position": 0,
+   "pending_full": 0,
+   "place_limit_risk_pct": 0,
+   "risk_without_stop": 0,
+   "sell_without_free_qty": 0,
+   "slot_already_open": 0
+  },
+  "rejected_max_positions": 3
+ },
+ "signals_rejected": 5,
+ "sim": {
+  "bars_zero_volume_blocked": 2,
+  "buys_rejected_below_minimum": 0,
+  "buys_rejected_insufficient_cash": 0,
+  "buys_rejected_volume_share": 0,
+  "entries_capped_by_cash": 10,
+  "entries_dropped_while_long": 0,
+  "entries_invalid_risk_at_fill": 0,
+  "exits_dropped_flat": 0,
+  "exits_over_volume_share": 0,
+  "fills": 20,
+  "fills_limit": 0,
+  "fills_market": 15,
+  "limits_expired": 0,
+  "limits_marketable_at_arrival": 0,
+  "move_stops_applied": 2,
+  "move_stops_dropped_flat": 0,
+  "orders_cancelled": 0,
+  "orders_unfilled_at_end": 0,
+  "sells_cancelled_by_exit": 0,
+  "stop_tp_same_bar": 0,
+  "stops_triggered": 4,
+  "take_profits_ignored_fill_bar": 0,
+  "take_profits_triggered": 0
+ },
+ "sim_by_pair": [
+  {
+   "counters": {
+    "bars_zero_volume_blocked": 1,
+    "buys_rejected_below_minimum": 0,
+    "buys_rejected_insufficient_cash": 0,
+    "buys_rejected_volume_share": 0,
+    "entries_capped_by_cash": 6,
+    "entries_dropped_while_long": 0,
+    "entries_invalid_risk_at_fill": 0,
+    "exits_dropped_flat": 0,
+    "exits_over_volume_share": 0,
+    "fills": 12,
+    "fills_limit": 0,
+    "fills_market": 9,
+    "limits_expired": 0,
+    "limits_marketable_at_arrival": 0,
+    "move_stops_applied": 1,
+    "move_stops_dropped_flat": 0,
+    "orders_cancelled": 0,
+    "orders_unfilled_at_end": 0,
+    "sells_cancelled_by_exit": 0,
+    "stop_tp_same_bar": 0,
+    "stops_triggered": 2,
+    "take_profits_ignored_fill_bar": 0,
+    "take_profits_triggered": 0
+   },
+   "detail": {
+    "below_min_exits": 0,
+    "below_min_min_qty": 0,
+    "below_min_notional": 0,
+    "below_min_zero_lot": 0,
+    "entries_bumped_to_min": 0,
+    "entries_capped_by_notional": 0,
+    "quote_gap_exits": 0
+   },
+   "symbol": "BTC-USD"
+  },
+  {
+   "counters": {
+    "bars_zero_volume_blocked": 1,
+    "buys_rejected_below_minimum": 0,
+    "buys_rejected_insufficient_cash": 0,
+    "buys_rejected_volume_share": 0,
+    "entries_capped_by_cash": 4,
+    "entries_dropped_while_long": 0,
+    "entries_invalid_risk_at_fill": 0,
+    "exits_dropped_flat": 0,
+    "exits_over_volume_share": 0,
+    "fills": 8,
+    "fills_limit": 0,
+    "fills_market": 6,
+    "limits_expired": 0,
+    "limits_marketable_at_arrival": 0,
+    "move_stops_applied": 1,
+    "move_stops_dropped_flat": 0,
+    "orders_cancelled": 0,
+    "orders_unfilled_at_end": 0,
+    "sells_cancelled_by_exit": 0,
+    "stop_tp_same_bar": 0,
+    "stops_triggered": 2,
+    "take_profits_ignored_fill_bar": 0,
+    "take_profits_triggered": 0
+   },
+   "detail": {
+    "below_min_exits": 0,
+    "below_min_min_qty": 0,
+    "below_min_notional": 0,
+    "below_min_zero_lot": 0,
+    "entries_bumped_to_min": 0,
+    "entries_capped_by_notional": 0,
+    "quote_gap_exits": 1
+   },
+   "symbol": "ETH-USD"
+  }
+ ],
+ "sim_deviations": [
+  "market_buy_cash_margin",
+  "instrument_minimums_unvalidated",
+  "no_maker_fill_probability",
+  "exit_volume_rule_counted_not_rejected",
+  "stop_stress_uncalibrated",
+  "cost_defaults_unmeasured",
+  "universe_quality_uses_quarter_data"
+ ],
+ "slippage_total": 2.38707523,
+ "trades_with_r": 8,
+ "verdict": "rejected_negative_expectancy",
+ "win_rate": 0.5555555555555556
+}

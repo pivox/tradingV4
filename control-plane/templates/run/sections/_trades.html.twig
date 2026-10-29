@@ -8,9 +8,9 @@
 <section id="trades" class="section" aria-labelledby="trades-titre">
   <h2 id="trades-titre">Trades</h2>
   {% if hiddenTrades > 0 %}
-    <p class="note">{{ shownTrades|length|int }} premiers trades sur {{ run.trades|length|int }} ; {{ hiddenTrades|int }} de plus non affichés. Export complet : <code>trades.csv</code>.</p>
+    <p class="note">{{ shownTrades|length|int }} premiers trades sur {{ run.trades|length|int }}{% if metrics.isResearch and metrics.research is not null %}, dont {{ metrics.research.purge.tradesPurged|int }} purgé{{ metrics.research.purge.tradesPurged > 1 ? 's' : '' }} (hors métriques de trades){% endif %} ; {{ hiddenTrades|int }} de plus non affichés. Export complet : <code>trades.csv</code>.</p>
   {% else %}
-    <p class="note">{{ run.trades|length|int }} trades, dans l'ordre du simulateur. Export complet : <code>trades.csv</code>.</p>
+    <p class="note">{{ run.trades|length|int }} trades{% if metrics.isResearch and metrics.research is not null %}, dont {{ metrics.research.purge.tradesPurged|int }} purgé{{ metrics.research.purge.tradesPurged > 1 ? 's' : '' }} (hors métriques de trades){% endif %}, dans l'ordre du simulateur. Export complet : <code>trades.csv</code>.</p>
   {% endif %}
   <div class="scroll">
   <table class="data">
@@ -39,7 +39,7 @@
         <td class="num">{{ t.rMultiple|num(2) }}</td>
         <td class="num">{{ t.mfe|money }}</td>
         <td class="num">{{ t.mae|money }}</td>
-        <td><code>{{ t.exitType }}</code>{% if t.forcedClose %} (forcée){% endif %}</td>
+        <td><code>{{ t.exitType }}</code>{% if metrics.isResearch and t.exitType == 'end_of_window' %} (purgé){% elseif t.forcedClose %} (forcée){% endif %}</td>
         <td><code>{{ t.entryTag }}</code> → <code>{{ t.exitTag }}</code></td>
       </tr>
     {% endfor %}

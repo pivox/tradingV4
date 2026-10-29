@@ -70,7 +70,9 @@
     <tr><th scope="row"><code>costs_file_hash</code></th><td><code>{{ metrics.costs.costsFile }}</code> : <code class="hash">{{ metrics.costs.costsFileHash }}</code></td></tr>
     {% if metrics.costs.costMeasuresHash is not null %}<tr><th scope="row"><code>cost_measures_hash</code></th><td>{% if metrics.costs.costMeasuresFile is not null %}<code>{{ metrics.costs.costMeasuresFile }}</code> : {% endif %}<code class="hash">{{ metrics.costs.costMeasuresHash }}</code></td></tr>
     {% endif %}{% if manifest.profilesId is not null %}<tr><th scope="row"><code>profiles_id</code></th><td><code class="hash">{{ manifest.profilesId }}</code></td></tr>
-{% endif %}{% endif %}{% endif %}
+{% endif %}{% endif %}{% endif %}{% if metrics.isResearch %}
+    <tr><th scope="row">Bloc de recherche</th><td><code>{{ metrics.research.block }}</code> · ligne <code>{{ metrics.research.line }}</code> · fenêtre de décision {{ metrics.research.decisionWindow.startMs|datetime }} → {{ metrics.research.decisionWindow.endMs|datetime }}</td></tr>
+    <tr><th scope="row">Identité de recherche (<code>research.identity_hash</code>)</th><td><code class="hash">{{ metrics.research.identityHash }}</code> (hors <code>config_hash</code>, docs/specs/s11.md §8.6)</td></tr>{% endif %}
   </table>
   <p class="absent-note"><strong>Absent au jalon 1.</strong> <code>version_hash</code> : le jalon 1 identifie la version du code par la version de la stratégie. Reproductibilité (« rejoué le …, identique à l'octet ») et bouton « Rejouer » : aucun <code>tv4 verify</code> n'est enregistré dans le run, jalon 2.</p>
 </section>

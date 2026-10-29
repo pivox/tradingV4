@@ -1,10 +1,12 @@
 # CI tradingV4 (docs/03-architecture.md §3 ligne Qualité, §4 et §11 S1).
 # Sans filtrage par chemin : chaque push et chaque pull request passe tout le contrôle.
 # Jobs : `qualite` (format, clippy, tests, doubles runs de fumée avec `tv4 verify` pour le chemin mono-paire,
-# pour le portefeuille et pour les profils de coûts s10, fumée de `tv4 costs calibrate-stress`, couverture),
+# pour le portefeuille, pour les profils de coûts s10 et pour la recherche s11 à deux lignes, fumée de
+# `tv4 costs calibrate-stress`, fumée de `tv4 universe build` et `survivorship`, couverture),
 # `bench` (criterion `engine_2y_1m` et sa porte ; les groupes informatifs `engine_portfolio_2y_1m_2legs` et
 # `engine_portfolio_profiles_2y_1m_2legs` ne sont pas lancés ici), `control-plane` (PHP : composer, phpcs,
-# phpstan, phpunit) et `rapport-bout-en-bout` (rend avec le control plane les runs écrits par `tv4`).
+# phpstan, phpunit) et `rapport-bout-en-bout` (rend avec le control plane les runs et le dossier de lignes écrits
+# par `tv4`).
 name: CI
 
 on:
@@ -136,6 +138,94 @@ jobs:
           test "$(jq -r .schema runs/calibration/stress-a.json)" = "tv4-stress-calibration-v1"
           test "$(jq -r .measurement_hash runs/calibration/stress-a.json)" = "$(jq -r .measurement_hash runs/calibration/stress-b.json)"
 
+      # Recherche (docs/specs/s11.md §14, lot H) : la fixture réelle (2020-01, dans le bloc DEV) est ingérée, puis
+      # le dataset de bloc `fumee_dev` est construit (`--block DEV` : fenêtre de décision [2018-01-01, 2023-01-01),
+      # chauffe de 210 jours, `zero_volume_marked`). Un run en symboles fixes, puis deux process avec la liste
+      # figée `tv4-pair-subset-v1` dérivée de la fixture d'instruments de test (valeurs inventées, aucun secret)
+      # écrivent `full/`, `okx_usdc/` et `lines.json`, comparés par `tv4 verify`. Le fichier de sous-ensemble est
+      # écrit dans un dossier existant (voir docs/specs/s11.md §17). Même réserve que pour les autres fumées :
+      # 4 trades sur 7 jours, donc un test de chaîne et de déterminisme, sans résultat (verdict attendu
+      # `rejected_too_few_trades`). Les contrôles `jq` portent sur le schéma, le bloc, la garde et l'égalité
+      # « trades conservés + purgés = lignes de trades.csv ».
+      - name: Backtest de fumée de recherche (bloc DEV, deux lignes), deux process, et tv4 verify
+        run: |
+          set -euo pipefail
+          ./target/debug/tv4 ingest csv --root smoke-s11 --csv fixtures/kraken_xbtusd_1m.csv \
+            --exchange kraken --symbol BTC-USD --tf 1m
+          ./target/debug/tv4 dataset build --root smoke-s11 --name fumee_dev --exchange kraken \
+            --symbol BTC-USD --tf 1m --block DEV
+          mkdir -p smoke-s11/subset
+          ./target/debug/tv4 universe okx-subset --instruments tv4/tests/fixtures/okx_instruments_spot.json \
+            --out smoke-s11/subset/okx_usdc.json
+          ./target/debug/tv4 backtest --root smoke-s11 --dataset fumee_dev --strategy sma_cross \
+            --params config/strategies/sma_cross.toml --fees okx --symbols BTC-USD \
+            --sizing research --capital 300 --out runs/recherche-simple
+          for r in a b; do
+            ./target/debug/tv4 backtest --root smoke-s11 --dataset fumee_dev --strategy sma_cross \
+              --params config/strategies/sma_cross.toml --fees okx --symbols BTC-USD \
+              --okx-subset smoke-s11/subset/okx_usdc.json --sizing research --capital 300 --out runs/recherche-$r
+          done
+          ./target/debug/tv4 verify runs/recherche-a runs/recherche-b
+          for d in runs/recherche-simple runs/recherche-a/full runs/recherche-a/okx_usdc; do
+            test "$(jq -r .schema "$d/metrics.json")" = "tv4-metrics-s11"
+            test "$(jq -r .research.block "$d/metrics.json")" = "DEV"
+            test "$(jq -r .research.guard "$d/metrics.json")" = "none"
+            test "$(jq -r '.research.purge.trades_kept + .research.purge.trades_purged' "$d/metrics.json")" = "$(( $(wc -l < "$d/trades.csv") - 1 ))"
+          done
+          test "$(jq -r .schema runs/recherche-a/lines.json)" = "tv4-lines-v1"
+          test "$(jq -r .research.line runs/recherche-a/okx_usdc/metrics.json)" = "okx_usdc"
+          test "$(jq -r .config_hash runs/recherche-a/full/manifest.json)" = "$(jq -r .config_hash runs/recherche-a/okx_usdc/manifest.json)"
+          test "$(jq -r .run_id runs/recherche-a/full/manifest.json)" != "$(jq -r .run_id runs/recherche-a/okx_usdc/manifest.json)"
+
+      # Univers et survivance (docs/specs/s11.md §4.5, §5.3 et §14, lot H) sur un zip construit dans le job : la
+      # fixture réelle devient l'entrée `XBTUSD_1.csv`, avec ou sans `MANIFEST.json`. Ce zip n'a que sept jours
+      # d'historique : aucune paire n'est éligible et tous les motifs de survivance sont absents. C'est un contrôle
+      # de plomberie, pas une mesure. Deux exécutions donnent les mêmes octets (`diff -r`, `cmp`). Sans
+      # `MANIFEST.json`, la fin de couverture est inconnue : la commande échoue (code 1) et n'écrit rien, sauf avec
+      # `--coverage-end`.
+      - name: Fumée de tv4 universe build et survivorship, avec et sans MANIFEST.json
+        run: |
+          set -euo pipefail
+          mkdir -p smoke-univers/src-avec smoke-univers/src-sans
+          cp fixtures/kraken_xbtusd_1m.csv smoke-univers/src-avec/XBTUSD_1.csv
+          cp fixtures/kraken_xbtusd_1m.csv smoke-univers/src-sans/XBTUSD_1.csv
+          printf '%s' '{"product":"ohlcvt","schema_version":1,"release":"r1","has_header":false,"coverage":{"start":"2013-09-11","end":"2020-01-08"},"pairs":1,"files":1,"rows":10000,"generated_at":"2020-01-09"}' \
+            > smoke-univers/src-avec/MANIFEST.json
+          (cd smoke-univers/src-avec && zip -q ../avec.zip MANIFEST.json XBTUSD_1.csv)
+          (cd smoke-univers/src-sans && zip -q ../sans.zip XBTUSD_1.csv)
+          avec="$(sha256sum smoke-univers/avec.zip | cut -d' ' -f1)"
+          sans="$(sha256sum smoke-univers/sans.zip | cut -d' ' -f1)"
+          for r in a b; do
+            ./target/debug/tv4 universe build --zip smoke-univers/avec.zip --sha256 "$avec" \
+              --out "smoke-univers/univers-$r" --at 2019-12-31T00:00:00Z
+            ./target/debug/tv4 universe survivorship --zip smoke-univers/avec.zip --sha256 "$avec" \
+              --out "smoke-univers/survivance-$r.json"
+          done
+          diff -r smoke-univers/univers-a smoke-univers/univers-b
+          cmp smoke-univers/survivance-a.json smoke-univers/survivance-b.json
+          test "$(jq -r .schema smoke-univers/univers-a/universe.json)" = "tv4-universe-v1"
+          jq -e '[.quarters[].members] | length > 0 and all(. == 0)' smoke-univers/univers-a/universe.json
+          jq -e '.union | length == 0' smoke-univers/univers-a/universe.json
+          test "$(jq -r .schema smoke-univers/survivance-a.json)" = "tv4-survivorship-v1"
+          jq -e '[.expected[] | select(.present)] | length == 0' smoke-univers/survivance-a.json
+          jq -e '.absent | length == 6' smoke-univers/survivance-a.json
+          code=0
+          ./target/debug/tv4 universe build --zip smoke-univers/sans.zip --sha256 "$sans" \
+            --out smoke-univers/univers-sans || code=$?
+          test "$code" = 1
+          test ! -e smoke-univers/univers-sans/universe.json
+          code=0
+          ./target/debug/tv4 universe survivorship --zip smoke-univers/sans.zip --sha256 "$sans" \
+            --out smoke-univers/survivance-sans.json || code=$?
+          test "$code" = 1
+          test ! -e smoke-univers/survivance-sans.json
+          ./target/debug/tv4 universe build --zip smoke-univers/sans.zip --sha256 "$sans" \
+            --out smoke-univers/univers-sans --coverage-end 2020-01-09T00:00:00Z
+          ./target/debug/tv4 universe survivorship --zip smoke-univers/sans.zip --sha256 "$sans" \
+            --out smoke-univers/survivance-sans.json --coverage-end 2020-01-09T00:00:00Z
+          test -e smoke-univers/univers-sans/universe.json
+          test -e smoke-univers/survivance-sans.json
+
       - name: Publier les runs de fumée
         uses: actions/upload-artifact@v4
         with:
@@ -240,10 +330,12 @@ jobs:
         continue-on-error: true
 
   # Conformité entre la vraie sortie de `tv4` et les DTO PHP (la fixture du control plane est écrite à la
-  # main) : les runs de fumée A (mono-paire s8), du portefeuille (s9) et des profils de coûts (s10) sont
-  # rendus en HTML. Le rendu du portefeuille échoue si un bloc obligatoire de s9 y est déclaré absent, celui
-  # des profils si une section de s10 manque. Les tests PHPUnit `GoldenPortfolioRunTest` et
-  # `GoldenProfilesRunTest` font le même contrôle sur les goldens `portfolio_2legs` et `portfolio_profiles`.
+  # main) : les runs de fumée A (mono-paire s8), du portefeuille (s9), des profils de coûts (s10) et de la
+  # recherche (s11, run simple et dossier de lignes) sont rendus en HTML. Le rendu du portefeuille échoue si
+  # un bloc obligatoire de s9 y est déclaré absent, celui des profils si une section de s10 manque, celui de
+  # la recherche si une section de s11 manque. Les tests PHPUnit `GoldenPortfolioRunTest`,
+  # `GoldenProfilesRunTest` et `GoldenResearchLinesTest` font le même contrôle sur les goldens
+  # `portfolio_2legs`, `portfolio_profiles` et `research_lines`.
   rapport-bout-en-bout:
     name: Rapport HTML d'un vrai run
     needs: [qualite, control-plane]
@@ -316,6 +408,39 @@ jobs:
           done
           exit "$statut"
 
+      # Recherche (s11) : un run en symboles fixes et le dossier de lignes (`lines.json`, `full/`, `okx_usdc/`).
+      # En s11 le lecteur lève une erreur (code de sortie non nul) quand le bloc `research` manque ; le contrôle
+      # ci-dessous garde aussi le motif « Ce run ne porte pas de bloc » et vérifie que les sections « Deux
+      # lignes » (dossier de lignes seulement) et « Recherche » sont rendues, une fois chacune.
+      - name: Rendre les rapports du run de recherche et du dossier de lignes
+        working-directory: control-plane
+        run: |
+          php bin/console tv4:report ../runs/recherche-simple --output ../rapport-recherche.html
+          php bin/console tv4:report ../runs/recherche-a --output ../rapport-lignes.html
+
+      - name: Contrôler les sections s11 des rapports de recherche
+        run: |
+          statut=0
+          for fichier in rapport-recherche.html rapport-lignes.html; do
+            if grep -qF "Ce run ne porte pas de bloc" "$fichier"; then
+              echo "::error::le rapport ${fichier} déclare un bloc absent"
+              statut=1
+            fi
+            if [ "$(grep -cF 'id="recherche"' "$fichier")" != "1" ]; then
+              echo "::error::le rapport ${fichier} n'a pas exactement une section Recherche"
+              statut=1
+            fi
+          done
+          if [ "$(grep -cF 'id="lignes"' rapport-lignes.html)" != "1" ]; then
+            echo "::error::le rapport du dossier de lignes n'a pas exactement une section Deux lignes"
+            statut=1
+          fi
+          if grep -qF 'id="lignes"' rapport-recherche.html; then
+            echo "::error::le rapport du run simple porte une section Deux lignes"
+            statut=1
+          fi
+          exit "$statut"
+
       - name: Publier les rapports
         uses: actions/upload-artifact@v4
         with:
@@ -324,4 +449,6 @@ jobs:
             rapport-fumee.html
             rapport-portefeuille.html
             rapport-profils.html
+            rapport-recherche.html
+            rapport-lignes.html
           if-no-files-found: error
