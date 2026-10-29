@@ -7,7 +7,7 @@ namespace App\Tests\Support;
 use RuntimeException;
 
 /**
- * Copie d'un run d'exemple (s8 par défaut, le run portefeuille s9, le run de recherche s11, ou un dossier de profils s10
+ * Copie d'un run d'exemple (s8 par défaut, le run portefeuille s9, un run de recherche s11, ou un dossier de profils s10
  * ou de lignes s11) dans un dossier
  * temporaire, modifiable fichier par fichier, pour fabriquer des runs invalides sans toucher à la fixture versionnée.
  * Les chemins d'un dossier de profils s'écrivent avec leur sous-dossier (`baseline/metrics.json`).
@@ -22,13 +22,19 @@ final class RunFixture
     /** Dossier de profils écrit à la main selon docs/specs/s10.md §12 et §13 (`profiles.json` et trois runs s10). */
     public const PROFILES_SOURCE = __DIR__ . '/../fixtures/run-profils';
 
-    /** Run de recherche écrit à la main selon docs/specs/s11.md §9.2 (schémas s11, bloc FORWARD, ligne full). */
+    /** Sortie réelle de `tv4 backtest` sur un dataset DEV, symboles fixes, une ligne (docs/specs/s11.md §9.2). */
     public const RESEARCH_SOURCE = __DIR__ . '/../fixtures/run-recherche';
 
-    /** Dossier de lignes écrit à la main selon docs/specs/s11.md §9.3 (`lines.json`, `full/` et `okx_usdc/`, deux runs s11). */
+    /** Run de recherche écrit à la main : univers trimestriel, exclusions qualité, trade purgé (bloc FORWARD, ligne full). */
+    public const RESEARCH_QUARTERLY_SOURCE = __DIR__ . '/../fixtures/run-recherche-trimestriel';
+
+    /** Sortie réelle de `tv4 backtest --okx-subset` sur un dataset DEV (`lines.json`, `full/` et `okx_usdc/`, deux runs s11). */
     public const LINES_SOURCE = __DIR__ . '/../fixtures/run-lignes';
 
-    /** Dossier de lignes dont chaque ligne est un dossier de profils de coûts (trois runs s11 par ligne). */
+    /** Dossier de lignes écrit à la main : bloc VALIDATION, garde levée, jambes différentes d'une ligne à l'autre. */
+    public const LINES_GUARD_SOURCE = __DIR__ . '/../fixtures/run-lignes-garde';
+
+    /** Dossier de lignes écrit à la main dont chaque ligne est un dossier de profils de coûts (trois runs s11 par ligne). */
     public const LINES_PROFILES_SOURCE = __DIR__ . '/../fixtures/run-lignes-profils';
 
     /** @var list<string> */

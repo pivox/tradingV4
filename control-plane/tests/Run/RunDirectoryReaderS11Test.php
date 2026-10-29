@@ -14,9 +14,10 @@ use PHPUnit\Framework\Attributes\DataProvider;
 use PHPUnit\Framework\TestCase;
 
 /**
- * Lecture d'un run s11 (`tv4-manifest-s11` et `tv4-metrics-s11`, docs/specs/s11.md §9.2) : `run-recherche/` pour un
- * run complet, `run-lignes/` pour la ligne `okx_usdc` et la garde, `run-lignes-profils/` pour un run s11 joué avec un
- * profil de coûts.
+ * Lecture d'un run s11 (`tv4-manifest-s11` et `tv4-metrics-s11`, docs/specs/s11.md §9.2) : `run-recherche/` (sortie
+ * réelle de `tv4`, symboles fixes), `run-recherche-trimestriel/` (écrit à la main : univers trimestriel, exclusions
+ * qualité, trade purgé), `run-lignes/` (sortie réelle, deux lignes), `run-lignes-garde/` pour la ligne `okx_usdc` et la
+ * garde levée, `run-lignes-profils/` pour un run s11 joué avec un profil de coûts.
  */
 final class RunDirectoryReaderS11Test extends TestCase
 {
@@ -33,14 +34,60 @@ final class RunDirectoryReaderS11Test extends TestCase
         return new RunDirectoryReader(new TradesCsvReader(), new EquityCsvReader());
     }
 
+    /** Copie du run de recherche écrit à la main (univers trimestriel, exclusions qualité, trade purgé). */
     private function copy(): RunFixture
     {
-        return $this->copy = RunFixture::copy(RunFixture::RESEARCH_SOURCE);
+        return $this->copy = RunFixture::copy(RunFixture::RESEARCH_QUARTERLY_SOURCE);
     }
 
-    public function testReadsTheResearchRunIntoTypedDtos(): void
+    public function testReadsTheRealFixedUniverseRun(): void
     {
         $run = $this->reader()->read(RunFixture::RESEARCH_SOURCE);
+
+        self::assertSame('tv4-manifest-s11', $run->manifest->schema);
+        self::assertSame('tv4-metrics-s11', $run->metrics->schema);
+        self::assertTrue($run->metrics->isResearch());
+        self::assertFalse($run->metrics->isCosts());
+        self::assertSame(['BTC-USD'], $run->manifest->data->symbols);
+        self::assertSame('zero_volume_marked', $run->manifest->data->gapsPolicy);
+        self::assertSame('DEV', $run->manifest->data->block);
+        self::assertNotNull($run->manifest->data->decisionWindow);
+        self::assertSame(1_514_764_800_000, $run->manifest->data->decisionWindow->startMs);
+        self::assertSame(1_672_531_200_000, $run->manifest->data->decisionWindow->endMs);
+        self::assertSame([], $run->manifest->researchInputs);
+
+        $research = $run->metrics->research;
+        self::assertNotNull($research);
+        self::assertSame('DEV', $research->block);
+        self::assertSame('none', $research->guard);
+        self::assertSame('2017-06-05T00:00:00Z', $research->warmupStart);
+        self::assertSame('full', $research->line);
+        self::assertNull($research->subset);
+        self::assertFalse($research->regimeUsed);
+
+        // Univers fixe : pas de trimestre, pas de hash d'univers ; le TF de décision de la stratégie est écrit.
+        self::assertFalse($research->universe->isQuarterly());
+        self::assertSame('fixed', $research->universe->mode);
+        self::assertNull($research->universe->rulesHash);
+        self::assertNull($research->universe->windowHash);
+        self::assertSame('15m', $research->universe->decisionTf);
+        self::assertSame([], $research->universe->quarters);
+        self::assertNull($research->identity->universeWindowHash);
+        self::assertSame([], $research->qualityExclusions);
+
+        // Aucun trade purgé : la fin du dataset tombe hors position.
+        self::assertSame(4, $run->metrics->nTrades);
+        self::assertCount(4, $run->trades);
+        self::assertSame(4, $research->purge->tradesKept);
+        self::assertSame(0, $research->purge->tradesPurged);
+        self::assertSame(0, $research->funnel->total());
+        self::assertSame(['BTC-USD'], array_map(static fn ($l): string => $l->symbol, $research->legs));
+        self::assertSame('2020-01-01T12:30:00Z', $research->legs[0]->liveFrom);
+    }
+
+    public function testReadsTheQuarterlyResearchRunIntoTypedDtos(): void
+    {
+        $run = $this->reader()->read(RunFixture::RESEARCH_QUARTERLY_SOURCE);
 
         self::assertSame('tv4-manifest-s11', $run->manifest->schema);
         self::assertSame('tv4-metrics-s11', $run->metrics->schema);
@@ -113,9 +160,25 @@ final class RunDirectoryReaderS11Test extends TestCase
         self::assertSame('2025-12-03T12:30:00Z', $research->legs[0]->liveFrom);
     }
 
-    public function testReadsTheOkxLineAndTheGuardOfAnUnguardedRun(): void
+    public function testReadsTheOkxLineOfTheRealLinesDirectory(): void
     {
         $run = $this->reader()->read(RunFixture::LINES_SOURCE . '/okx_usdc');
+
+        $research = $run->metrics->research;
+        self::assertNotNull($research);
+        self::assertSame('DEV', $research->block);
+        self::assertSame('okx_usdc', $research->line);
+        self::assertFalse($research->isUnguarded());
+        self::assertNotNull($research->subset);
+        self::assertSame('okx_usdc_tradable', $research->subset->kind);
+        self::assertSame([], $research->subset->legsExcluded);
+        self::assertSame($research->subset->subsetHash, $research->identity->subsetHash);
+        self::assertSame(['okx_subset' => 'smoke-s11/subset/okx_usdc.json'], $run->manifest->researchInputs);
+    }
+
+    public function testReadsTheOkxLineAndTheGuardOfAnUnguardedRun(): void
+    {
+        $run = $this->reader()->read(RunFixture::LINES_GUARD_SOURCE . '/okx_usdc');
 
         $research = $run->metrics->research;
         self::assertNotNull($research);

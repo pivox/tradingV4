@@ -16,8 +16,9 @@ use PHPUnit\Framework\Attributes\DataProvider;
 use PHPUnit\Framework\TestCase;
 
 /**
- * Lecture d'un dossier de lignes (`lines.json`, `tv4-lines-v1`, docs/specs/s11.md §9.3) : `run-lignes/` pour deux
- * runs, `run-lignes-profils/` pour deux dossiers de profils de coûts.
+ * Lecture d'un dossier de lignes (`lines.json`, `tv4-lines-v1`, docs/specs/s11.md §9.3) : `run-lignes/` (sortie réelle
+ * de `tv4`, deux runs), `run-lignes-garde/` (écrit à la main : deux runs aux jambes différentes, garde levée),
+ * `run-lignes-profils/` (écrit à la main : deux dossiers de profils de coûts).
  */
 final class LinesDirectoryReaderTest extends TestCase
 {
@@ -36,7 +37,7 @@ final class LinesDirectoryReaderTest extends TestCase
         return new LinesDirectoryReader($runs, new ProfilesDirectoryReader($runs));
     }
 
-    private function copy(string $source = RunFixture::LINES_SOURCE): RunFixture
+    private function copy(string $source = RunFixture::LINES_GUARD_SOURCE): RunFixture
     {
         return $this->copy = RunFixture::copyLines($source);
     }
@@ -49,15 +50,44 @@ final class LinesDirectoryReaderTest extends TestCase
     public function testDetectsALinesDirectory(): void
     {
         self::assertTrue(LinesDirectoryReader::isLinesDirectory(RunFixture::LINES_SOURCE));
+        self::assertTrue(LinesDirectoryReader::isLinesDirectory(RunFixture::LINES_GUARD_SOURCE));
         self::assertTrue(LinesDirectoryReader::isLinesDirectory(RunFixture::LINES_PROFILES_SOURCE . '/'));
         self::assertFalse(LinesDirectoryReader::isLinesDirectory(RunFixture::LINES_SOURCE . '/full'));
         self::assertFalse(LinesDirectoryReader::isLinesDirectory(RunFixture::PROFILES_SOURCE));
         self::assertFalse(LinesDirectoryReader::isLinesDirectory(RunFixture::SOURCE));
     }
 
-    public function testReadsTwoRuns(): void
+    public function testReadsTheRealLinesDirectory(): void
     {
         $report = $this->reader()->read(RunFixture::LINES_SOURCE);
+
+        self::assertSame('DEV', $report->block);
+        self::assertSame(['single'], $report->profileNames);
+        self::assertSame(300.0, $report->initialCash);
+        self::assertSame('okx_usdc_tradable', $report->subsetKind);
+        self::assertSame(['BTC', 'ETH', 'SOL'], $report->subsetBases);
+        self::assertNull($report->universeWindowHash);
+        self::assertSame(['full', 'okx_usdc'], array_map(static fn ($l): string => $l->line, $report->lines));
+
+        // Une seule jambe, BTC-USD, tradable : les deux lignes jouent les mêmes trades, la survivance résiduelle est nulle.
+        $full = $report->full();
+        $okx = $report->line('okx_usdc');
+        self::assertSame(['BTC-USD'], $full->legs);
+        self::assertSame(['BTC-USD'], $okx->legs);
+        self::assertNotNull($full->run);
+        self::assertNotNull($okx->run);
+        self::assertSame($full->run->manifest->configHash, $okx->run->manifest->configHash);
+        self::assertSame($report->configHash['single'], $full->run->manifest->configHash);
+        self::assertNotSame($full->id, $okx->id);
+        self::assertSame(4, $full->stats('single')->nTrades);
+        self::assertSame(0, $full->stats('single')->tradesPurged);
+        self::assertSame(0, $report->residualOf('single')->nTrades);
+        self::assertEqualsWithDelta(0.0, (float) $report->residualOf('single')->returnTotal, 1e-12);
+    }
+
+    public function testReadsTwoRuns(): void
+    {
+        $report = $this->reader()->read(RunFixture::LINES_GUARD_SOURCE);
 
         self::assertSame('VALIDATION', $report->block);
         self::assertSame(['single'], $report->profileNames);

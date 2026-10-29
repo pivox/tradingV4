@@ -27,9 +27,10 @@ use Symfony\Component\Console\Tester\CommandTester;
  * de profils.
  *
  * Ce test garde les clés que suppose le lecteur : un bloc renommé côté Rust, puis un golden régénéré, le ferait
- * échouer. Aucune valeur numérique du golden n'y est épinglée, il peut être régénéré. Il reste marqué « skipped » tant
- * que le golden du lot E n'existe pas ; le pilote retire le saut à l'intégration (les fixtures `run-recherche/` et
- * `run-lignes/` sont alors remplacées par cette sortie).
+ * échouer. Aucune valeur numérique du golden n'y est épinglée, il peut être régénéré. Il ne saute jamais : un golden
+ * absent est une erreur. Le golden est un run de bibliothèque (univers trimestriel, exclusion qualité, trades purgés,
+ * stratégie à régime) ; les fixtures `run-recherche/` et `run-lignes/` sont, elles, la sortie de la CLI sur la fixture
+ * Kraken.
  */
 final class GoldenResearchLinesTest extends KernelTestCase
 {
@@ -40,11 +41,10 @@ final class GoldenResearchLinesTest extends KernelTestCase
     protected function setUp(): void
     {
         parent::setUp();
-        if (!is_dir(self::GOLDEN)) {
-            self::markTestSkipped(
-                'golden Rust absent : tv4/tests/golden_runs/research_lines/ (full/, okx_usdc/ et lines.json, lot E de docs/specs/s11.md)',
-            );
-        }
+        self::assertDirectoryExists(
+            self::GOLDEN,
+            'golden Rust absent : tv4/tests/golden_runs/research_lines/ (full/, okx_usdc/ et lines.json, docs/specs/s11.md §13)',
+        );
     }
 
     protected function tearDown(): void

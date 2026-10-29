@@ -1,10 +1,13 @@
-# Dossier de lignes d'exemple (données fabriquées, schémas s11)
+# Dossier de lignes réel (sortie de `tv4`, schémas s11)
 
-Ce dossier est un **dossier de lignes écrit à la main pour les tests** du control plane, selon `docs/specs/s11.md` §9.1 et §9.3. Ce n'est **ni une sortie de `tv4`, ni un résultat de backtest, ni des données de marché**. Il sera remplacé par la sortie réelle du golden Rust `tv4/tests/golden_runs/research_lines/` (lot E) avant la PR de S11.
+Ce dossier est la **sortie réelle de `tv4 backtest --okx-subset`** sur le dataset de bloc DEV de `../run-recherche/` : `full/`, `okx_usdc/` (chacun un run s11 complet, avec son manifeste) puis `lines.json` (`tv4-lines-v1`, `docs/specs/s11.md` §9.3). Aucun fichier n'est retouché. Mêmes données et même stratégie que `../run-recherche/` (fixture Kraken réelle, `sma_cross` de démonstration, verdict `rejected_too_few_trades`) : aucune valeur n'est un résultat de stratégie.
 
-- Il suit la forme d'un dossier écrit par `tv4 backtest` sur un dataset de bloc avec `--okx-subset` : `full/` et `okx_usdc/` (chacun un run s11 complet) puis `lines.json` (`tv4-lines-v1`, écrit à clés triées et à la fin).
-- Même construction que `../run-recherche/` (dérivé du run s9, trade `end_of_window` purgé), pour le bloc **VALIDATION** (dix trades décalés au 2023-03-01) joué avec l'option cachée `--unguarded-protected-read` : `research.guard = "unguarded"` dans les deux runs, d'où le bandeau de garde.
-- `full/` joue `BTC-USD` et `ETH-USD` ; `okx_usdc/` ne joue que `BTC-USD` (sous-ensemble `okx_usdc_tradable`, base `BTC`, `ETH-USD` retirée). Les deux runs ont le **même `config_hash`** et deux `run_id` (§9.1). Les trades de `okx_usdc/` sont ceux de `BTC-USD` de `full/`, et ses agrégats ont été recalculés par un script jetable (non versionné) ; le déroulé du portefeuille (cash partagé, `max_positions`) n'est pas rejoué, ce qui ne serait pas vrai d'un vrai run.
-- `lines.json` : résumé de chaque ligne (arrondis à 10 décimales comme `profiles.json`), `residual_survivorship` = `full` − `okx_usdc`, valeurs recopiées des métriques par le script. Les hashes sont **factices** (motifs hexadécimaux répétés).
+Le sous-ensemble est celui de `tv4 universe okx-subset` sur la fixture d'instruments de test `tv4/tests/fixtures/okx_instruments_spot.json` (valeurs inventées : bases BTC, ETH et SOL). Commandes, depuis la racine du dépôt (le fichier du sous-ensemble est écrit dans un dossier existant, voir `docs/specs/s11.md` §17) :
 
-Autre fixture : `../run-lignes-profils/` (lignes qui sont des dossiers de profils de coûts).
+```zsh
+mkdir -p smoke-s11/subset
+tv4 universe okx-subset --instruments tv4/tests/fixtures/okx_instruments_spot.json --out smoke-s11/subset/okx_usdc.json
+tv4 backtest --root smoke-s11 --dataset fumee_dev --strategy sma_cross --params config/strategies/sma_cross.toml --fees okx --symbols BTC-USD --okx-subset smoke-s11/subset/okx_usdc.json --sizing research --capital 300 --out run-lignes
+```
+
+Le manifeste de `okx_usdc/` garde le chemin tel que donné à la commande (`research_inputs.okx_subset` = `smoke-s11/subset/okx_usdc.json`). Une seule jambe, BTC-USD, est tradable : les deux lignes jouent les mêmes trades, ont deux `run_id`, le même `config_hash`, et la survivance résiduelle est nulle. Les cas où les lignes diffèrent sont couverts par la fixture écrite à la main `../run-lignes-garde/`.

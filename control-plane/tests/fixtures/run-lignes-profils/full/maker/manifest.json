@@ -20,7 +20,7 @@
   },
   "initial_cash": 300.0,
   "instruments": {},
-  "instruments_hash": "blake3:1257900c1257900c1257900c1257900c1257900c1257900c1257900c1257900c",
+  "instruments_hash": null,
   "min_trades": 5,
   "portfolio": {
    "liquidity_window_days": 90,
@@ -37,7 +37,7 @@
    "decision_tf": "15m",
    "purge_rule": "end_of_window_v1",
    "universe_spec": {
-    "kind": "quarterly",
+    "mode": "quarterly",
     "rules_hash": "blake3:a1e51301a1e51301a1e51301a1e51301a1e51301a1e51301a1e51301a1e51301"
    }
   },
@@ -124,8 +124,8 @@
  },
  "hash_format": "dsh-v1",
  "initial_cash": 300.0,
- "instruments_file": "instruments/okx/spot-20261028T124500Z.json",
- "instruments_hash": "blake3:1257900c1257900c1257900c1257900c1257900c1257900c1257900c1257900c",
+ "instruments_file": null,
+ "instruments_hash": null,
  "outputs": {
   "equity_step": "1h",
   "files": {

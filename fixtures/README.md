@@ -127,6 +127,22 @@ ajoutera la clé réelle à la liste des candidats du lecteur (`tv4/src/marketda
 autre changement. Durée attendue : quelques dizaines de secondes (SHA-256 du zip entier, puis deux
 paires) ; pic de mémoire de l'ordre de 1 Go pendant XBTUSD.
 
+## Commandes du propriétaire (S11)
+
+À lancer après la fusion de la PR de S11, dans un terminal zsh sur le Mac, avec le même zip et la même racine
+`~/data/tv4` que pour S5. Les séquences sont dans [`docs/specs/s11.md`](../docs/specs/s11.md) §15, qui fait foi
+(mêmes règles : aucun commentaire en ligne, aucun tube après `tv4`, aucune commande ne lit un fichier de clé) :
+
+- §15.2 : test de survivance et univers trimestriel (`tv4 universe survivorship`, `tv4 universe build --at`), avec les
+  comptes 5 / 8 / 9 de 04 §2.2 à retrouver ;
+- §15.3 : ingestion de l'union des paires (`tv4 ingest kraken --pairs-from-universe`) puis `tv4 universe verify` ;
+- §15.4 : les quatre datasets de recherche (`tv4 dataset build --block`) et leurs `dataset_hash` ;
+- §15.5 : run de démonstration sur DEV, deux fois, comparé par `tv4 verify` ;
+- §15.6 : liste OKX en USDC, une fois la clé en lecture seule créée (S9 §19).
+
+Les fichiers à renvoyer y sont nommés, et aucun ne contient de secret. Cette fixture n'est pas lue par ces commandes ;
+elle sert aux fumées de CI de S11 (`.github/workflows/ci.yml`).
+
 ## Règle
 
 Ces fichiers ne se modifient jamais. Un changement = de nouveaux fichiers et de nouvelles empreintes

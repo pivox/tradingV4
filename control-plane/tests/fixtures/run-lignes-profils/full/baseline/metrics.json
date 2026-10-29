@@ -24,7 +24,7 @@
   },
   "initial_cash": 300.0,
   "instruments": {},
-  "instruments_hash": "blake3:1257900c1257900c1257900c1257900c1257900c1257900c1257900c1257900c",
+  "instruments_hash": null,
   "min_trades": 5,
   "portfolio": {
    "liquidity_window_days": 90,
@@ -41,7 +41,7 @@
    "decision_tf": "15m",
    "purge_rule": "end_of_window_v1",
    "universe_spec": {
-    "kind": "quarterly",
+    "mode": "quarterly",
     "rules_hash": "blake3:a1e51301a1e51301a1e51301a1e51301a1e51301a1e51301a1e51301a1e51301"
    }
   },
@@ -356,44 +356,37 @@
  },
  "equity_final": 297.25226215,
  "executability": {
-  "live_list": [
-   "BTC-USD"
-  ],
+  "live_list": [],
   "pairs": [
    {
     "entry_orders": 5,
     "median_close": 29200.0,
     "median_quote_volume_1m": 41500.0,
-    "min_order_notional": 2.92,
-    "min_sz": 0.0001,
+    "min_order_notional": null,
+    "min_sz": null,
     "notional_ref": 61.2,
-    "okx_inst_id": "BTC-USDC",
-    "state": "live",
+    "okx_inst_id": null,
+    "state": null,
     "symbol": "BTC-USD",
-    "verdict": "executable",
+    "verdict": "not_applicable",
     "volume_cap": 207.5
    },
    {
     "entry_orders": 4,
     "median_close": 730.0,
     "median_quote_volume_1m": 9100.0,
-    "min_order_notional": 0.73,
-    "min_sz": 0.001,
+    "min_order_notional": null,
+    "min_sz": null,
     "notional_ref": 58.0,
-    "okx_inst_id": "ETH-USDC",
-    "state": "suspend",
+    "okx_inst_id": null,
+    "state": null,
     "symbol": "ETH-USD",
-    "verdict": "rejected_volume",
+    "verdict": "not_applicable",
     "volume_cap": 45.5
    }
   ],
   "reference_capital": 300.0,
-  "rejected": [
-   {
-    "reason": "rejected_volume",
-    "symbol": "ETH-USD"
-   }
-  ],
+  "rejected": [],
   "rule": "g0_volume_then_min_size_then_state",
   "venue_matches_execution": false
  },
@@ -505,26 +498,17 @@
   "rejected_min_notional": 1,
   "rejected_volume": 0,
   "threshold": 0.95,
-  "verdict": "fail"
+  "verdict": "not_applicable"
  },
  "gross_loss": -27.03636697,
  "gross_profit": 11.25969621,
  "instruments": {
-  "fetched_at": "2026-10-28T12:45:00.123Z",
-  "file": "instruments/okx/spot-20261028T124500Z.json",
-  "instruments_hash": "blake3:1257900c1257900c1257900c1257900c1257900c1257900c1257900c1257900c",
-  "not_live": [
-   "ETH-USDC"
-  ],
-  "source": "okx",
-  "upcoming_changes": [
-   {
-    "eff_time": "1793600000000",
-    "inst_id": "BTC-USDC",
-    "new_value": "0.001",
-    "param": "minSz"
-   }
-  ]
+  "fetched_at": null,
+  "file": null,
+  "instruments_hash": null,
+  "not_live": [],
+  "source": "toml",
+  "upcoming_changes": []
  },
  "mae_mean": -2.87736168,
  "max_drawdown": {
@@ -649,6 +633,7 @@
     }
    ],
    "rules_hash": "blake3:a1e51301a1e51301a1e51301a1e51301a1e51301a1e51301a1e51301a1e51301",
+   "symbols": null,
    "window_hash": "blake3:b10c1301b10c1301b10c1301b10c1301b10c1301b10c1301b10c1301b10c1301"
   },
   "warmup_start": "2024-08-03T00:00:00Z"

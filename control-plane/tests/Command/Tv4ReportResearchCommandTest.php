@@ -11,7 +11,9 @@ use Symfony\Component\Console\Tester\CommandTester;
 
 /**
  * Rendu des runs s11, des dossiers de lignes et des lignes de profils (docs/specs/s11.md §10), et garantie que les
- * rendus s8, s9 et s10 ne changent pas d'un octet.
+ * rendus s8, s9 et s10 ne changent pas d'un octet. `run-recherche/` et `run-lignes/` sont des sorties réelles de `tv4` ;
+ * `run-recherche-trimestriel/`, `run-lignes-garde/` et `run-lignes-profils/` sont écrits à la main (univers
+ * trimestriel, trade purgé, garde levée, profils de coûts).
  */
 final class Tv4ReportResearchCommandTest extends KernelTestCase
 {
@@ -64,9 +66,25 @@ final class Tv4ReportResearchCommandTest extends KernelTestCase
         }
     }
 
-    public function testTheResearchRunHasAResearchSectionBeforeTheVerdict(): void
+    public function testTheRealResearchRunIsRenderedWithItsResearchSection(): void
     {
         $html = $this->render(RunFixture::RESEARCH_SOURCE);
+
+        self::assertSame(1, substr_count($html, 'id="recherche"'));
+        self::assertLessThan(strpos($html, 'id="verdict"'), strpos($html, 'id="recherche"'));
+        self::assertStringContainsString('<code>DEV</code>', $html);
+        self::assertStringContainsString('2018-01-01 00:00 UTC → 2023-01-01 00:00 UTC', $html);
+        self::assertStringContainsString('aucun (univers fixe)', $html);
+        self::assertStringNotContainsString('Trimestres de l\'univers', $html);
+        self::assertStringNotContainsString('<p class="callout-garde">', $html);
+        self::assertStringNotContainsString('id="lignes"', $html);
+        self::assertStringNotContainsString('id="profils"', $html);
+        self::assertStringNotContainsString('Ce run ne porte pas de bloc', $html);
+    }
+
+    public function testTheQuarterlyResearchRunHasAResearchSectionBeforeTheVerdict(): void
+    {
+        $html = $this->render(RunFixture::RESEARCH_QUARTERLY_SOURCE);
 
         self::assertSame(1, substr_count($html, 'id="recherche"'));
         self::assertMatchesRegularExpression('#<h2 id="recherche-titre">Recherche</h2>#u', $html);
@@ -95,12 +113,22 @@ final class Tv4ReportResearchCommandTest extends KernelTestCase
 
     public function testTheResearchRunRendersInTheSameWayTwice(): void
     {
-        self::assertSame($this->render(RunFixture::RESEARCH_SOURCE), $this->render(RunFixture::RESEARCH_SOURCE));
+        foreach ([RunFixture::RESEARCH_SOURCE, RunFixture::RESEARCH_QUARTERLY_SOURCE] as $directory) {
+            self::assertSame($this->render($directory), $this->render($directory), $directory);
+        }
     }
 
     public function testTheReportIsSelfContained(): void
     {
-        foreach ([RunFixture::RESEARCH_SOURCE, RunFixture::LINES_SOURCE, RunFixture::LINES_PROFILES_SOURCE] as $directory) {
+        foreach (
+            [
+                RunFixture::RESEARCH_SOURCE,
+                RunFixture::RESEARCH_QUARTERLY_SOURCE,
+                RunFixture::LINES_SOURCE,
+                RunFixture::LINES_GUARD_SOURCE,
+                RunFixture::LINES_PROFILES_SOURCE,
+            ] as $directory
+        ) {
             $html = $this->render($directory);
 
             self::assertStringNotContainsString('<script', $html, $directory);
@@ -123,7 +151,7 @@ final class Tv4ReportResearchCommandTest extends KernelTestCase
 
     public function testAFixedUniverseResearchRunIsRendered(): void
     {
-        $this->copy = RunFixture::copy(RunFixture::RESEARCH_SOURCE);
+        $this->copy = RunFixture::copy(RunFixture::RESEARCH_QUARTERLY_SOURCE);
         $this->copy->setJson('metrics.json', ['research', 'universe'], ['mode' => 'fixed']);
         $this->copy->setJson('metrics.json', ['research', 'identity', 'universe_window_hash'], null);
 
@@ -134,9 +162,29 @@ final class Tv4ReportResearchCommandTest extends KernelTestCase
         self::assertStringContainsString('aucun (univers fixe)', $html);
     }
 
-    public function testTheLinesReportStartsWithTheTwoLinesSection(): void
+    public function testTheRealLinesReportStartsWithTheTwoLinesSection(): void
     {
         $html = $this->render(RunFixture::LINES_SOURCE);
+
+        self::assertMatchesRegularExpression('#<h2 id="lignes-titre">Deux lignes</h2>#u', $html);
+        self::assertSame(1, substr_count($html, 'id="lignes"'));
+        self::assertSame(1, substr_count($html, 'id="recherche"'));
+        self::assertLessThan(strpos($html, '<article class="run">'), strpos($html, 'id="lignes"'));
+        self::assertStringContainsString('Survivance résiduelle (<code>full</code> − <code>okx_usdc</code>)', $html);
+        self::assertStringContainsString('<code>DEV</code>', $html);
+        // Run joué sans option cachée : aucune garde levée, donc aucun bandeau.
+        self::assertStringNotContainsString('<p class="callout-garde">', $html);
+        self::assertStringNotContainsString('id="profils"', $html);
+        self::assertStringNotContainsString('Ce run ne porte pas de bloc', $html);
+        $expected = json_decode((string) file_get_contents(RunFixture::LINES_SOURCE . '/full/manifest.json'), true, 512, JSON_THROW_ON_ERROR);
+        self::assertIsArray($expected);
+        self::assertIsString($expected['run_id']);
+        self::assertStringContainsString('<h1>Run <code class="hash">' . $expected['run_id'] . '</code></h1>', $html);
+    }
+
+    public function testTheGuardedLinesReportStartsWithTheTwoLinesSection(): void
+    {
+        $html = $this->render(RunFixture::LINES_GUARD_SOURCE);
 
         self::assertMatchesRegularExpression('#<h2 id="lignes-titre">Deux lignes</h2>#u', $html);
         self::assertSame(1, substr_count($html, 'id="lignes"'));
@@ -156,7 +204,7 @@ final class Tv4ReportResearchCommandTest extends KernelTestCase
         self::assertStringContainsString('ligne <code>full</code>', $html);
         self::assertStringNotContainsString('id="profils"', $html);
         self::assertStringNotContainsString('Ce run ne porte pas de bloc', $html);
-        $expected = json_decode((string) file_get_contents(RunFixture::LINES_SOURCE . '/full/manifest.json'), true, 512, JSON_THROW_ON_ERROR);
+        $expected = json_decode((string) file_get_contents(RunFixture::LINES_GUARD_SOURCE . '/full/manifest.json'), true, 512, JSON_THROW_ON_ERROR);
         self::assertIsArray($expected);
         self::assertIsString($expected['run_id']);
         self::assertStringContainsString('<h1>Run <code class="hash">' . $expected['run_id'] . '</code></h1>', $html);

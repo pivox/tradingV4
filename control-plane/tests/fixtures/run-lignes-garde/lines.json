@@ -1,0 +1,72 @@
+{
+ "block": "VALIDATION",
+ "config_hash": {
+  "single": "c0de1201c0de1201c0de1201c0de1201c0de1201c0de1201c0de1201c0de1201"
+ },
+ "dataset_hash": "blake3:da7a1201da7a1201da7a1201da7a1201da7a1201da7a1201da7a1201da7a1201",
+ "initial_cash": 300.0,
+ "lines": [
+  {
+   "by_profile": {
+    "single": {
+     "expectancy_net": -1.7284409167,
+     "expectancy_r": -0.7277811525,
+     "identity_hash": "blake3:1de712011de712011de712011de712011de712011de712011de712011de71201",
+     "max_drawdown_1h": 0.0553599906,
+     "n_trades": 9,
+     "profit_factor": 0.415949061,
+     "return_total": -0.009020099,
+     "trades_purged": 1,
+     "verdict": "rejected_too_few_trades"
+    }
+   },
+   "dir": "full",
+   "legs": [
+    "BTC-USD",
+    "ETH-USD"
+   ],
+   "line": "full",
+   "run_id": "5e7f12015e7f12015e7f12015e7f12015e7f12015e7f12015e7f12015e7f1201"
+  },
+  {
+   "by_profile": {
+    "single": {
+     "expectancy_net": -0.806271834,
+     "expectancy_r": -0.628916805,
+     "identity_hash": "blake3:1de712021de712021de712021de712021de712021de712021de712021de71202",
+     "max_drawdown_1h": 0.0327111323,
+     "n_trades": 5,
+     "profit_factor": 0.7014585999,
+     "return_total": 0.0293952646,
+     "trades_purged": 1,
+     "verdict": "rejected_too_few_trades"
+    }
+   },
+   "dir": "okx_usdc",
+   "legs": [
+    "BTC-USD"
+   ],
+   "line": "okx_usdc",
+   "run_id": "5e7f12025e7f12025e7f12025e7f12025e7f12025e7f12025e7f12025e7f1202"
+  }
+ ],
+ "lines_id": "11ae560111ae560111ae560111ae560111ae560111ae560111ae560111ae5601",
+ "residual_survivorship": {
+  "single": {
+   "expectancy_net": -0.9221690827,
+   "expectancy_r": -0.0988643475,
+   "max_drawdown_1h": 0.0226488583,
+   "n_trades": 4,
+   "return_total": -0.0384153636
+  }
+ },
+ "schema": "tv4-lines-v1",
+ "subset": {
+  "bases": [
+   "BTC"
+  ],
+  "kind": "okx_usdc_tradable",
+  "subset_hash": "blake3:5ab512015ab512015ab512015ab512015ab512015ab512015ab512015ab51201"
+ },
+ "universe_window_hash": "blake3:b10c1201b10c1201b10c1201b10c1201b10c1201b10c1201b10c1201b10c1201"
+}

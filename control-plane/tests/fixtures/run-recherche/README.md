@@ -1,13 +1,14 @@
-# Run de recherche d'exemple (données fabriquées, schémas s11)
+# Run de recherche réel (sortie de `tv4`, schémas s11)
 
-Ce dossier est un **run écrit à la main pour les tests** du control plane, selon `docs/specs/s11.md` §9.2. Ce n'est **ni une sortie de `tv4`, ni un résultat de backtest, ni des données de marché** : aucune valeur ne doit être lue comme un résultat de stratégie. Il sera remplacé par la sortie réelle du golden Rust `tv4/tests/golden_runs/research_lines/` (lot E) avant la PR de S11.
+Ce dossier est la **sortie réelle de `tv4 backtest`** sur un dataset de bloc DEV, en symboles fixes, une seule ligne (`docs/specs/s11.md` §9.2). Les quatre fichiers (`manifest.json`, `metrics.json`, `trades.csv`, `equity.csv`) sont ceux que le binaire a écrits, sans retouche. Les données sont celles de `fixtures/kraken_xbtusd_1m.csv` (10 000 bougies 1m réelles de 2020-01) ; la stratégie est `sma_cross` avec les paramètres de démonstration de `config/strategies/sma_cross.toml`, qui ne sont pas une hypothèse de recherche. Le verdict est `rejected_too_few_trades` (4 trades) : ce n'est pas un résultat de stratégie.
 
-- Il suit les schémas `tv4-manifest-s11` et `tv4-metrics-s11` : la forme d'un run s9 plus le bloc `research` obligatoire (bloc, fenêtre de décision, univers trimestriel, ligne, identité, purge, refus d'entrée de la recherche, exclusions qualité), `data.block` et `data.decision_window` dans le manifeste, et `research_inputs` (chemins d'entrée, jamais dans `metrics.json`).
-- Il dérive du run portefeuille s9 (`../run-portefeuille/`) : mêmes dix trades, décalés au 2026-07-01 (bloc FORWARD, dataset de chauffe de 210 jours avant le bloc). Le lot 10 est un trade `end_of_window` : il est **purgé**. `trades.csv` garde donc les dix lignes, et les métriques de trades (effectif, espérance, profit factor, distribution, répartitions par paire, année et type de sortie, `funnel_by_pair`, exécutabilité et G1) sont recalculées sur les neuf trades conservés, alors que les métriques d'equity (PnL net, réalisé, marked, rendement, frais, slippage, exposition) portent sur les dix, `research.purge.pnl_net_purged` étant le PnL du trade purgé. Un script jetable (non versionné) a fait ces calculs et reconstruit `equity.csv` (marche à chaque sortie, depuis `decision_start`) et les drawdowns.
-- Config en mode recherche (docs/specs/s11.md §8.6) : `portfolio.universe = []` et `instruments = {}` (les tables par jambe passent dans l'identité de recherche), plus `config.research` (version des blocs, TF de décision, règle de purge, spécification de l'univers).
-- Les refus d'entrée de la recherche sont inventés : cinq signaux refusés avant `decision_start` (trois pour BTC-USD, deux pour ETH-USD), ajoutés aux signaux d'entrée de chaque paire. Les exclusions qualité d'ETH-USD portent sur 1h, 4h et 1d, pas sur le TF de décision (15m) : aucun refus pour qualité.
-- Les **hashes sont factices** (motifs hexadécimaux répétés, de forme valide) : le control plane ne recalcule aucun hash (rôle de `tv4 verify`).
+Commandes (depuis la racine du dépôt, binaire debug ; la fumée s11 de `.github/workflows/ci.yml` joue la même chaîne) :
 
-## Conformité aux clés réelles
+```zsh
+tv4 ingest csv --root smoke-s11 --csv fixtures/kraken_xbtusd_1m.csv --exchange kraken --symbol BTC-USD --tf 1m
+tv4 dataset build --root smoke-s11 --name fumee_dev --exchange kraken --symbol BTC-USD --tf 1m --block DEV
+tv4 backtest --root smoke-s11 --dataset fumee_dev --strategy sma_cross --params config/strategies/sma_cross.toml --fees okx --symbols BTC-USD --sizing research --capital 300 --out run-recherche
+```
 
-`tests/Run/GoldenResearchLinesTest.php` lit le golden `tv4/tests/golden_runs/research_lines/` et reste marqué « skipped » (avec le chemin attendu) tant que ce dossier n'existe pas. Après un changement de schéma côté `tv4`, comparer les chemins de clés de cette fixture à ceux du golden et compléter la fixture.
+- Bloc DEV, fenêtre de décision [2018-01-01, 2023-01-01), chauffe de 210 jours (`warmup_start` 2017-06-05), univers **fixe** (`research.universe.mode = "fixed"`, un seul symbole), `research.guard = "none"`, aucun trade purgé, `research_inputs` vide, règles d'instrument de `config/instruments.toml`.
+- `engine` et `started_at` du manifeste sont ceux de la machine qui a produit la sortie (binaire debug, commit de la branche de S11). Le dataset de 7 jours étant entièrement dans le bloc, l'univers trimestriel, les exclusions qualité, la purge, la garde levée, la ligne `okx_usdc` et les profils de coûts n'y apparaissent pas : ils sont couverts par les fixtures écrites à la main `../run-recherche-trimestriel/`, `../run-lignes-garde/` et `../run-lignes-profils/` (voir `../README.md`).

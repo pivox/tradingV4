@@ -60,6 +60,7 @@ Plateforme de trading crypto **spot** sur OKX : moteur de backtest, de paper tra
 - Spécification de S8 (rapports `metrics.json`, `trades.csv`, `equity.csv`, `manifest.json`, `tv4 verify`, `tv4 bench`, squelette Symfony `control-plane/`) : `docs/specs/s8.md`, qui fait foi pour le détail de S8 ; les 13 points soumis au propriétaire (§17) sont validés depuis le 28/10.
 - Spécification de S9 (portefeuille multi-paires, `tv4 instruments fetch`, rapports `tv4-metrics-s9` et `tv4-manifest-s9`, exécutabilité G0 et G1, trou de cotation, régime BTC/SMA200) : `docs/specs/s9.md`, qui fait foi pour le détail de S9 ; ses points soumis au propriétaire (§20) sont tous validés depuis le 28/10.
 - Spécification de S10 (profils de coûts baseline, adverse et maker, grilles de frais nommées `okx_regular` (alias d'analyse `okx`) et `bitvavo_usdc`, `config/costs.toml`, aléa SplitMix64 à compteur, `tv4 costs calibrate-stress`, rapports `tv4-metrics-s10`, `profiles.json`) : `docs/specs/s10.md`, qui fait foi pour le détail de S10 ; ses points soumis au propriétaire (§19) ne sont pas encore tranchés.
+- Spécification de S11 (univers trimestriel `tv4 universe build`, test de survivance, datasets de recherche par bloc avec `block` hors de `dsh-v1`, frontières et embargos dans `model::blocks`, purge, deux lignes `lines.json`, rapports `tv4-metrics-s11`, liste OKX USDC `tv4-pair-subset-v1`) : `docs/specs/s11.md`, qui fait foi pour le détail de S11 ; ses points soumis au propriétaire (§16) ne sont pas encore tranchés.
 
 ## Règles de travail
 
