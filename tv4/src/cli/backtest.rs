@@ -39,6 +39,7 @@ pub use profiles::CostArgs;
 
 mod portfolio;
 mod profiles;
+mod research;
 
 /// Symbole canonique de la fixture (XBTUSD Kraken, docs/03 §4).
 const FIXTURE_SYMBOL: &str = "BTC-USD";
@@ -233,6 +234,10 @@ struct Input {
 pub(super) fn run(args: &BacktestArgs) -> Result<(), CliError> {
     // Les refus d'usage de S10 viennent avant toute lecture de fichier.
     args.costs.check(&args.portfolio, &args.inputs)?;
+    // Dataset de bloc (S11) : un run par ligne, avec ou sans profils de coûts.
+    if research::dispatch(args)? {
+        return research::run(args);
+    }
     if args.costs.is_costs() {
         return profiles::run(args);
     }

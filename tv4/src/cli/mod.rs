@@ -4,12 +4,15 @@
 //! `backtest` existe depuis S3 (fixture CSV 1m), `ingest csv` et `dataset build` depuis S4, `ingest
 //! kraken` depuis S5, `ingest okx` et `compare-sources` depuis S7, `verify` et `bench` depuis S8,
 //! `instruments fetch` depuis S9, `backtest --costs` (profils de coûts) et `costs calibrate-stress` depuis
-//! S10. `grid` arrive au jalon 1.5.
+//! S10, `universe build|verify|survivorship|okx-subset`, `dataset build --block` et `backtest --universe`
+//! (recherche par bloc, deux lignes) depuis S11. `grid` arrive au jalon 1.5.
 //!
 //! Codes de sortie ([`CliError::exit_code`]) : 0 succès, 1 erreur applicative, 2 erreur d'usage (clap)
 //! ou clé OKX refusée par `tv4 instruments fetch` (permission autre que lecture, fichier de clé non
 //! sûr) ou usage refusé par la CLI de S10 (`--costs` sans `--symbols` ou avec `--slippage-bps`, dataset
-//! absent ou paramètre invalide de `costs calibrate-stress`), 3 `tv4 verify` a trouvé deux runs différents.
+//! absent ou paramètre invalide de `costs calibrate-stress`) ou par celle de S11 (option de recherche
+//! mal combinée, dataset de bloc lu sans `--symbols` ni `--universe`, `--universe` qui n'est pas celui du
+//! dataset, lecture protégée avant S12), 3 `tv4 verify` a trouvé deux runs différents.
 //!
 //! La CLI est le seul module qui lit l'horloge système ([`now_ms`]) : le store reçoit l'instant en
 //! paramètre (docs/03 §5.3, écart 5 de S4).
@@ -36,6 +39,10 @@ pub use ingest_okx::{
     MonthStatus, OkxIngestOptions, OkxIngestReport, UtcDate, ingest_okx,
 };
 pub use instruments::{FetchArgs, InstrumentsAction};
+pub use universe::{
+    UniverseAction, UniverseBuildArgs, UniverseOkxSubsetArgs, UniverseSurvivorshipArgs,
+    UniverseVerifyArgs,
+};
 pub use verify::VerifyArgs;
 
 mod backtest;
@@ -46,6 +53,7 @@ mod dataset;
 mod ingest;
 mod ingest_okx;
 mod instruments;
+mod universe;
 mod verify;
 
 /// Erreurs de la couche CLI.
@@ -87,6 +95,12 @@ pub enum CliError {
 
     #[error(transparent)]
     Stress(#[from] crate::research::stress::StressError),
+
+    #[error(transparent)]
+    UniverseCalc(#[from] crate::research::universe::UniverseError),
+
+    #[error(transparent)]
+    Survivorship(#[from] crate::research::survivorship::SurvivorshipError),
 
     #[error(transparent)]
     KrakenZip(#[from] crate::marketdata::kraken_zip::KrakenZipError),
@@ -218,6 +232,59 @@ pub enum CliError {
     /// Le hash du fichier d'instruments ne correspond pas à son contenu (fichier modifié).
     #[error("hash du fichier d'instruments `{path}` faux : fichier modifié")]
     InstrumentsHashMismatch { path: String },
+
+    /// Usage refusé par la CLI de S11 (option de recherche mal combinée ou hors de son domaine). Code 2.
+    #[error("option {option} : {detail}")]
+    Usage { option: String, detail: String },
+
+    /// `--universe` n'est pas l'univers qui a choisi les symboles du dataset de bloc (docs/specs/s11.md
+    /// §8.1). Code 2.
+    #[error("l'univers `{path}` n'est pas celui du dataset `{dataset}` : {detail}")]
+    UniverseMismatch {
+        path: String,
+        dataset: String,
+        detail: String,
+    },
+
+    /// Lecture d'un bloc protégé (VALIDATION, HOLDOUT) avant les garde-fous de S12 (docs/specs/s11.md
+    /// §9.5). Code 2.
+    #[error(
+        "lecture protégée : garde-fous de S12 non livrés (bloc {block}, dataset `{dataset}`) ; \
+         l'option cachée --unguarded-protected-read la trace dans les rapports"
+    )]
+    ProtectedRead { block: String, dataset: String },
+
+    /// Le zip ne donne pas de fin de couverture lisible et `--coverage-end` n'est pas fourni : le repli
+    /// de l'ingestion sur l'instant présent rendrait les fichiers dépendants de l'heure d'exécution
+    /// (docs/specs/s11.md §4.5).
+    #[error(
+        "fin de couverture du zip illisible ou absente (MANIFEST.json) : donner --coverage-end AAAA-MM-JJTHH:MM:SSZ"
+    )]
+    CoverageUnknown,
+
+    /// `universe verify` : le dossier d'univers ne correspond pas au store.
+    #[error("l'univers `{path}` diffère du store ({count} écart(s))")]
+    UniverseVerifyFailed { path: String, count: usize },
+
+    /// `universe build` : aucun trimestre entièrement couvert dans la plage demandée.
+    #[error(
+        "aucun trimestre entièrement couvert à partir de {from} avant la fin de couverture {coverage_end}"
+    )]
+    UniverseNoQuarter { from: String, coverage_end: String },
+
+    /// Une liste de paires tradables est vide : aucune ligne `okx_usdc` n'a de jambe.
+    #[error("{what} : aucune base tradable, la liste est vide")]
+    SubsetEmpty { what: String },
+
+    /// Une ligne d'un rapport à deux lignes n'a aucune jambe après le filtre du sous-ensemble.
+    #[error(
+        "la ligne okx_usdc n'a aucune jambe : aucune des jambes de l'univers n'est dans le sous-ensemble `{path}`"
+    )]
+    LinesSubsetEmpty { path: String },
+
+    /// Une jambe de l'univers n'est pas une série du dataset de bloc.
+    #[error("la jambe {symbol} de l'univers n'est pas une série du dataset `{dataset}`")]
+    LegNotInDataset { symbol: String, dataset: String },
 }
 
 impl CliError {
@@ -232,6 +299,9 @@ impl CliError {
             CliError::PrivateApi(error) if error.is_key_refused() => 2,
             CliError::CostsWithoutSymbols
             | CliError::CostsWithScalarSlippage
+            | CliError::Usage { .. }
+            | CliError::UniverseMismatch { .. }
+            | CliError::ProtectedRead { .. }
             | CliError::DatasetNotFound { .. }
             | CliError::Stress(crate::research::stress::StressError::InvalidParams { .. }) => 2,
             _ => 1,
@@ -298,6 +368,12 @@ pub enum Command {
         #[command(subcommand)]
         action: CostsAction,
     },
+    /// Univers trimestriel, test de survivance et liste OKX en USDC (S11).
+    Universe {
+        /// Opération demandée.
+        #[command(subcommand)]
+        action: UniverseAction,
+    },
 }
 
 /// Sources d'ingestion.
@@ -338,6 +414,12 @@ pub fn run(command: &Command) -> Result<(), CliError> {
         },
         Command::Costs { action } => match action {
             CostsAction::CalibrateStress(args) => costs::calibrate_stress(args),
+        },
+        Command::Universe { action } => match action {
+            UniverseAction::Build(args) => universe::build(args),
+            UniverseAction::Verify(args) => universe::verify(args),
+            UniverseAction::Survivorship(args) => universe::survivorship(args),
+            UniverseAction::OkxSubset(args) => universe::okx_subset(args),
         },
     }
 }
@@ -561,9 +643,12 @@ mod tests {
         else {
             panic!("sous-commande attendue : dataset build");
         };
-        assert_eq!(args.from.0, 1_577_836_800_000);
-        assert_eq!(args.to.0, 1_578_528_000_000);
-        assert_eq!(args.gaps_policy, crate::store::GapsPolicy::Skip);
+        assert_eq!(args.from.map(|d| d.0), Some(1_577_836_800_000));
+        assert_eq!(args.to.map(|d| d.0), Some(1_578_528_000_000));
+        // Sans bloc, la politique de trous n'est pas imposée : le défaut `skip` est appliqué à la
+        // construction (docs/specs/s11.md §6.3).
+        assert_eq!(args.gaps_policy, None);
+        assert_eq!(args.block, None);
         // Date sans heure ou politique inconnue : erreur d'usage.
         assert!(
             Cli::try_parse_from([

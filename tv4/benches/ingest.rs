@@ -77,6 +77,7 @@ fn ingest_kraken_zip_2y(c: &mut Criterion) {
                     zip: zip.clone(),
                     sha256: sha.parse().expect("sha256 valide"),
                     pairs: vec!["SYNTHUSD".parse().expect("paire valide")],
+                    pairs_from_universe: None,
                     root: racine.path().to_path_buf(),
                 };
                 (racine, args)

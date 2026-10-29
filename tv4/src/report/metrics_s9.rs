@@ -39,9 +39,10 @@ use serde::Serialize;
 use crate::engine::{
     EngineFunnel, LegResult, PortfolioResult, PortfolioRunConfig, ProfileRun, SignalRejections,
 };
+use crate::model::blocks::Block;
 use crate::model::costs::{CostMeasures, CostProfileName, CostsFile, LegCostRecord, ValueSource};
 use crate::model::{ExchangeId, FeeGridId, Timeframe, Ts};
-use crate::sim::{CostCounters, SimCounters, SimDetail, SizingMode, Trade};
+use crate::sim::{CostCounters, ExitReason, SimCounters, SimDetail, SizingMode, Trade};
 use crate::store::time::format_rfc3339_utc;
 
 use super::ReportError;
@@ -53,9 +54,12 @@ use super::equity::sample_indices;
 use super::executability::{
     self, Executability, ExecutabilityInput, G1Counts, G1Executable, LegMarket, OkxPair, PairInput,
 };
-use super::manifest::run_id_s9;
+use super::manifest::{run_id_s9, run_id_s11};
 use super::metrics::{
     EntryNotFilled, Exposure, MaxDrawdowns, RunVerdict, SIM_DEVIATIONS, mean, sum_trades,
+};
+use super::research::{
+    ResearchBlock, ResearchInputs, TradeSplit, UNIVERSE_QUALITY_DEVIATION, split_trades,
 };
 use super::writers::{exit_type, holding_ms, r_multiple};
 
@@ -63,6 +67,9 @@ use super::writers::{exit_type, holding_ms, r_multiple};
 pub const SCHEMA: &str = "tv4-metrics-s9";
 /// Identifiant du schéma des runs à profils de coûts (docs/specs/s10.md §12.1).
 pub const SCHEMA_S10: &str = "tv4-metrics-s10";
+/// Identifiant du schéma des runs de recherche (docs/specs/s11.md §9.2) : s9 ou s10 plus le bloc
+/// `research`, avec des métriques de trades sur les trades conservés.
+pub const SCHEMA_S11: &str = "tv4-metrics-s11";
 /// Écart de S9 que la loi de stop de s10 remplace.
 const STOP_SLIPPAGE_FIXED: &str = "stop_slippage_fixed";
 /// Écart de S9 que le profil maker remplace par un tirage de fill.
@@ -123,6 +130,12 @@ pub struct DataS9 {
     /// Les segments du dataset : l'univers dans son ordre, puis la paire de régime si elle n'y est pas.
     pub series: Vec<SeriesInfo>,
     pub window: WindowS9,
+    /// Bloc de recherche du dataset (s11) ; absent en s9 et s10.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub block: Option<Block>,
+    /// Fenêtre de décision du bloc (s11) ; absente en s9 et s10.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub decision_window: Option<WindowS9>,
 }
 
 /// Le dataset tel que la CLI le décrit.
@@ -418,6 +431,9 @@ pub struct MetricsS9 {
     /// Compteurs de coûts sommés sur les jambes, avec le détail par paire (s10) ; absent en s9.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub cost_counters: Option<CostCountersReport>,
+    /// Bloc de recherche (s11) ; absent en s9 et s10.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub research: Option<ResearchBlock>,
 }
 
 /// Bloc `costs` de `metrics.json` s10 (docs/specs/s10.md §12.1).
@@ -514,9 +530,9 @@ fn inconsistent(detail: String) -> ReportError {
 }
 
 /// Lots ouverts distincts de chaque paire, d'après les trades (un lot peut sortir en plusieurs trades).
-fn entry_fills_by_leg(result: &PortfolioResult) -> Vec<u64> {
-    let mut lots: Vec<Vec<u64>> = vec![Vec::new(); result.legs.len()];
-    for (trade, &leg) in result.trades.iter().zip(&result.trade_legs) {
+fn entry_fills_by_leg(legs: usize, trades: &[Trade], trade_legs: &[u16]) -> Vec<u64> {
+    let mut lots: Vec<Vec<u64>> = vec![Vec::new(); legs];
+    for (trade, &leg) in trades.iter().zip(trade_legs) {
         if let Some(list) = lots.get_mut(usize::from(leg)) {
             list.push(trade.lot_id);
         }
@@ -544,13 +560,23 @@ fn fill_rejections(counters: &SimCounters) -> u64 {
 /// expirations + annulations` en inégalité (`entry_orders ≥ entry_fills + refus au fill`), car
 /// `limits_expired` et `orders_cancelled` mélangent entrées et sorties et ne sont pas publiés par
 /// paire ; l'égalité n'est contrôlée qu'en agrégat (`other` de `build_funnel`, et `tv4 verify`).
-fn pair_funnel(leg: &LegResult, entry_fills: u64) -> Result<PairFunnel, ReportError> {
+///
+/// En recherche (s11), `entry_signals = entry_orders + refus à la soumission + research_refused`, les
+/// refus de recherche restant hors de `rejected` ; `entry_fills` et `trades` portent sur les trades
+/// conservés, donc l'entrée d'un trade purgé (soldé à la fin de la fenêtre) tombe dans `other` de
+/// l'entonnoir agrégé, avec les expirations et annulations.
+fn pair_funnel(
+    leg: &LegResult,
+    entry_fills: u64,
+    research_refused: u64,
+    trades: u64,
+) -> Result<PairFunnel, ReportError> {
     let f: &EngineFunnel = &leg.funnel;
     let submit_rejections = f.entry_rejections.total() + leg.max_positions_rejected;
-    if f.entry_signals != f.entry_orders + submit_rejections {
+    if f.entry_signals != f.entry_orders + submit_rejections + research_refused {
         return Err(inconsistent(format!(
-            "{} : {} signaux d'entrée pour {} ordres et {} refus à la soumission",
-            leg.symbol, f.entry_signals, f.entry_orders, submit_rejections
+            "{} : {} signaux d'entrée pour {} ordres, {} refus à la soumission et {} refus de recherche",
+            leg.symbol, f.entry_signals, f.entry_orders, submit_rejections, research_refused
         )));
     }
     let at_fill = fill_rejections(&leg.counters);
@@ -579,7 +605,7 @@ fn pair_funnel(leg: &LegResult, entry_fills: u64) -> Result<PairFunnel, ReportEr
         entry_signals: f.entry_signals,
         entry_orders: f.entry_orders,
         entry_fills,
-        trades: leg.trades,
+        trades,
         rejected: PairRejected {
             min_notional,
             lot_step,
@@ -596,6 +622,7 @@ fn build_funnel(
     result: &PortfolioResult,
     entry_fills: u64,
     exits: ExitsByTypeS9,
+    n_trades: u64,
 ) -> Result<FunnelS9, ReportError> {
     let f = &result.funnel;
     if f.entry_signals + f.exit_signals + f.other_signals != result.signals_emitted {
@@ -649,7 +676,7 @@ fn build_funnel(
             other,
         },
         entry_fills,
-        trades: result.trades.len() as u64,
+        trades: n_trades,
         exit_signals: f.exit_signals,
         exit_orders: f.exit_orders,
         other_signals: f.other_signals,
@@ -659,7 +686,12 @@ fn build_funnel(
 }
 
 /// Statistiques de chaque paire d'après ses trades, dans l'ordre de l'univers.
-fn pair_stats(result: &PortfolioResult, span_ms: Ts) -> Result<Vec<PairStats>, ReportError> {
+fn pair_stats(
+    result: &PortfolioResult,
+    trades: &[Trade],
+    trade_legs: &[u16],
+    span_ms: Ts,
+) -> Result<Vec<PairStats>, ReportError> {
     struct Acc {
         trades: u64,
         wins: u64,
@@ -680,7 +712,7 @@ fn pair_stats(result: &PortfolioResult, span_ms: Ts) -> Result<Vec<PairStats>, R
             share: 0.0,
         })
         .collect();
-    for (trade, &leg) in result.trades.iter().zip(&result.trade_legs) {
+    for (trade, &leg) in trades.iter().zip(trade_legs) {
         let Some(acc) = accs.get_mut(usize::from(leg)) else {
             return Err(ReportError::Series {
                 detail: format!("un trade porte la jambe {leg}, absente de l'univers"),
@@ -716,12 +748,47 @@ fn timestamp(ts_ms: Ts) -> Result<String, ReportError> {
     format_rfc3339_utc(ts_ms).map_err(|_| ReportError::Timestamp { ts_ms })
 }
 
+/// Métriques construites et, pour un run de recherche, la classification de ses trades.
+struct Built {
+    metrics: MetricsS9,
+    split: Option<TradeSplit>,
+}
+
 impl MetricsS9 {
     /// Construit `metrics.json` d'un run portefeuille.
+    ///
+    /// Refuse un résultat de recherche ([`PortfolioResult::research`] présent) : ses métriques de trades
+    /// se calculent sur les trades conservés, par [`MetricsS9::new_research`].
     pub fn new(
         result: &PortfolioResult,
         inputs: MetricsS9Inputs<'_>,
     ) -> Result<MetricsS9, ReportError> {
+        if result.research.is_some() {
+            return Err(ReportError::Series {
+                detail:
+                    "résultat de recherche : utiliser `new_research` (schéma s11, trades purgés)"
+                        .to_string(),
+            });
+        }
+        Ok(Self::build(result, inputs, None)?.metrics)
+    }
+
+    /// Construit `metrics.json` (`tv4-metrics-s11`) d'un run de recherche (docs/specs/s11.md §9.2) : le
+    /// corps de s9, un bloc `research`, des métriques de trades sur les trades conservés et des métriques
+    /// d'equity sur la fenêtre de décision.
+    pub fn new_research(
+        result: &PortfolioResult,
+        inputs: MetricsS9Inputs<'_>,
+        research: &ResearchInputs<'_>,
+    ) -> Result<MetricsS9, ReportError> {
+        Ok(Self::build(result, inputs, Some(research))?.metrics)
+    }
+
+    fn build(
+        result: &PortfolioResult,
+        inputs: MetricsS9Inputs<'_>,
+        research: Option<&ResearchInputs<'_>>,
+    ) -> Result<Built, ReportError> {
         let legs = result.legs.len();
         if result.grid_open_ms.len() != result.equity.len() {
             return Err(ReportError::Series {
@@ -746,7 +813,29 @@ impl MetricsS9 {
             return Err(ReportError::NoCandles);
         }
 
-        let trades = &result.trades;
+        // Recherche : les métriques de trades portent sur les trades conservés (docs S11 §3.4), les
+        // métriques d'equity sur la fenêtre de décision, purgés compris.
+        let split = match (research, result.research.as_ref()) {
+            (Some(_), Some(engine)) => Some(split_trades(result, engine.decision_end_ms)?),
+            (None, None) => None,
+            _ => {
+                return Err(ReportError::Series {
+                    detail: "entrées de recherche et résultat de recherche vont ensemble"
+                        .to_string(),
+                });
+            }
+        };
+        let (trades, trade_legs): (&[Trade], &[u16]) = match &split {
+            Some(split) => (&split.kept, &split.kept_legs),
+            None => (&result.trades, &result.trade_legs),
+        };
+        let research_refused = |leg: usize| {
+            result
+                .research
+                .as_ref()
+                .and_then(|r| r.legs.get(leg))
+                .map_or(0, |l| l.counters.refused())
+        };
         let n = trades.len() as u64;
         let sums = sum_trades(trades)?;
         let initial_cash = result.initial_cash;
@@ -787,12 +876,19 @@ impl MetricsS9 {
         for trade in trades {
             exits.count(trade);
         }
-        let fills_by_leg = entry_fills_by_leg(result);
+        let fills_by_leg = entry_fills_by_leg(legs, trades, trade_legs);
         let entry_fills: u64 = fills_by_leg.iter().sum();
-        let funnel = build_funnel(result, entry_fills, exits)?;
+        let funnel = build_funnel(result, entry_fills, exits, n)?;
         let mut funnel_by_pair = Vec::with_capacity(legs);
-        for (leg, &fills) in result.legs.iter().zip(&fills_by_leg) {
-            funnel_by_pair.push(pair_funnel(leg, fills)?);
+        for (k, (leg, &fills)) in result.legs.iter().zip(&fills_by_leg).enumerate() {
+            // Hors recherche, tous les trades sont conservés : `leg.trades` fait foi. En recherche,
+            // `funnel_by_pair` porte sur les trades conservés, comme `funnel` (docs S11 §9.2).
+            let kept = if split.is_some() {
+                trade_legs.iter().filter(|&&l| usize::from(l) == k).count() as u64
+            } else {
+                leg.trades
+            };
+            funnel_by_pair.push(pair_funnel(leg, fills, research_refused(k), kept)?);
         }
         let sim_by_pair: Vec<PairSim> = result
             .legs
@@ -861,7 +957,7 @@ impl MetricsS9 {
 
         let distribution = DistributionS9 {
             base: distribution::compute(trades, expectancy_net, expectancy_r)?,
-            by_pair: pair_stats(result, span_ms)?,
+            by_pair: pair_stats(result, trades, trade_legs, span_ms)?,
         };
 
         let data = {
@@ -893,18 +989,36 @@ impl MetricsS9 {
                     start_ms,
                     end_ms,
                 },
+                block: result.research.as_ref().map(|r| r.block),
+                decision_window: result
+                    .research
+                    .as_ref()
+                    .map(|r| -> Result<WindowS9, ReportError> {
+                        Ok(WindowS9 {
+                            start: timestamp(r.decision_start_ms)?,
+                            end: timestamp(r.decision_end_ms)?,
+                            start_ms: r.decision_start_ms,
+                            end_ms: r.decision_end_ms,
+                        })
+                    })
+                    .transpose()?,
             }
         };
 
+        // Les refus d'entrée de la recherche sont émis puis refusés avant le carnet : ni acceptés, ni dans
+        // les motifs de refus du simulateur (écart 3 de `report::research`).
         let rejected_total = result.rejections.total() + result.max_positions_rejected;
-        if result.signals_emitted.checked_sub(result.signals_accepted) != Some(rejected_total) {
+        let refused_total = result.research.as_ref().map_or(0, |r| r.totals.refused());
+        if result.signals_emitted.checked_sub(result.signals_accepted)
+            != Some(rejected_total + refused_total)
+        {
             return Err(inconsistent(format!(
-                "{} signaux émis, {} acceptés et {} refus comptés",
-                result.signals_emitted, result.signals_accepted, rejected_total
+                "{} signaux émis, {} acceptés, {} refus comptés et {} refus de recherche",
+                result.signals_emitted, result.signals_accepted, rejected_total, refused_total
             )));
         }
 
-        let sim_deviations = SIM_DEVIATIONS
+        let mut sim_deviations: Vec<&'static str> = SIM_DEVIATIONS
             .iter()
             .map(|&d| {
                 if okx_rules && d == MINIMUMS_UNVALIDATED {
@@ -914,9 +1028,31 @@ impl MetricsS9 {
                 }
             })
             .collect();
+        let research_block = match (research, result.research.as_ref(), split.as_ref()) {
+            (Some(inputs), Some(engine), Some(split)) => {
+                let block = ResearchBlock::build(engine, &result.universe, inputs, split)?;
+                if block.universe.mode == "quarterly" {
+                    sim_deviations.push(UNIVERSE_QUALITY_DEVIATION);
+                }
+                Some(block)
+            }
+            _ => None,
+        };
+        let n_trades_forced = if split.is_some() {
+            trades
+                .iter()
+                .filter(|t| t.exit_reason == ExitReason::ForcedClose)
+                .count() as u64
+        } else {
+            result.n_trades_forced
+        };
 
-        Ok(MetricsS9 {
-            schema: SCHEMA,
+        let metrics = MetricsS9 {
+            schema: if research_block.is_some() {
+                SCHEMA_S11
+            } else {
+                SCHEMA
+            },
             config: ConfigS9 {
                 hashed: result.config.clone(),
                 initial_cash,
@@ -925,7 +1061,7 @@ impl MetricsS9 {
             dataset_hash: inputs.dataset.dataset_hash.clone(),
             data,
             n_trades: n,
-            n_trades_forced: result.n_trades_forced,
+            n_trades_forced,
             forced_close: result.forced_close,
             pnl_net: result.pnl_net,
             pnl_realized: result.pnl_realized,
@@ -992,7 +1128,9 @@ impl MetricsS9 {
             costs: None,
             cost_arithmetic: None,
             cost_counters: None,
-        })
+            research: research_block,
+        };
+        Ok(Built { metrics, split })
     }
 
     /// Construit `metrics.json` d'un profil de coûts s10 (docs/specs/s10.md §12.1).
@@ -1006,6 +1144,33 @@ impl MetricsS9 {
         run: &ProfileRun,
         inputs: MetricsS9Inputs<'_>,
         costs: CostsInputs<'_>,
+    ) -> Result<MetricsS9, ReportError> {
+        if run.result.research.is_some() {
+            return Err(ReportError::Series {
+                detail: "résultat de recherche : utiliser `new_s11_profile` (schéma s11)"
+                    .to_string(),
+            });
+        }
+        Self::profile(run, inputs, costs, None)
+    }
+
+    /// Construit `metrics.json` (`tv4-metrics-s11`) d'un profil de coûts joué en recherche : le corps de
+    /// [`MetricsS9::new_research`], plus les trois blocs de coûts de s10. L'arithmétique de coûts porte sur
+    /// les trades conservés.
+    pub fn new_s11_profile(
+        run: &ProfileRun,
+        inputs: MetricsS9Inputs<'_>,
+        costs: CostsInputs<'_>,
+        research: &ResearchInputs<'_>,
+    ) -> Result<MetricsS9, ReportError> {
+        Self::profile(run, inputs, costs, Some(research))
+    }
+
+    fn profile(
+        run: &ProfileRun,
+        inputs: MetricsS9Inputs<'_>,
+        costs: CostsInputs<'_>,
+        research: Option<&ResearchInputs<'_>>,
     ) -> Result<MetricsS9, ReportError> {
         let result = &run.result;
         let Some(hashed) = result.config.costs.as_ref() else {
@@ -1053,9 +1218,14 @@ impl MetricsS9 {
                 detail: "aucune jambe résolue".to_string(),
             })?;
 
-        let mut metrics = MetricsS9::new(result, inputs)?;
+        let Built { mut metrics, split } = Self::build(result, inputs, research)?;
+        // L'arithmétique de coûts suit les trades des métriques : conservés en recherche.
+        let trades: &[Trade] = match &split {
+            Some(split) => &split.kept,
+            None => &result.trades,
+        };
         let arithmetic = cost_arithmetic::compute(&CostArithmeticInput {
-            trades: &result.trades,
+            trades,
             profile: run.profile,
             decision_tf,
             span_ms: metrics.span_ms(),
@@ -1078,7 +1248,9 @@ impl MetricsS9 {
             .chain((!stress_calibrated).then_some(STOP_STRESS_UNCALIBRATED))
             .chain(defaults_unmeasured.then_some(COST_DEFAULTS_UNMEASURED))
             .collect();
-        metrics.schema = SCHEMA_S10;
+        if research.is_none() {
+            metrics.schema = SCHEMA_S10;
+        }
         metrics.costs = Some(CostsBlock {
             profile: run.profile,
             gates_profile: run.profile.gates(),
@@ -1103,8 +1275,19 @@ impl MetricsS9 {
         self.data.window.end_ms - self.data.window.start_ms
     }
 
-    /// Identifiant du run : le capital y entre (il n'est pas dans `config_hash`).
+    /// Identifiant du run : le capital y entre (il n'est pas dans `config_hash`) et, en recherche,
+    /// l'identité de recherche hachée (docs S11 §8.6).
     pub fn run_id(&self) -> String {
+        if let Some(research) = &self.research {
+            return run_id_s11(
+                &self.config_hash,
+                &self.dataset_hash,
+                self.data.window.start_ms,
+                self.data.window.end_ms,
+                self.config.initial_cash,
+                &research.identity_hash,
+            );
+        }
         run_id_s9(
             &self.config_hash,
             &self.dataset_hash,

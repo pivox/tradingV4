@@ -46,7 +46,7 @@ use super::{
 /// Paire de régime par défaut (docs S9 §6.3).
 const DEFAULT_REGIME_SYMBOL: &str = "BTC-USD";
 /// Monnaie de cotation OKX des jambes (seule valeur de S9).
-const OKX_QUOTE_USDC: &str = "USDC";
+pub(super) const OKX_QUOTE_USDC: &str = "USDC";
 /// Millisecondes dans un jour.
 const DAY_MS: Ts = 86_400_000;
 
@@ -90,12 +90,47 @@ pub struct PortfolioArgs {
     /// sous cette part de l'equity (par exemple 0.015). Réservé à `--sizing compounding`.
     #[arg(long, value_name = "P", allow_negative_numbers = true)]
     pub min_order_bump_risk: Option<f64>,
+    /// Dossier d'univers trimestriel (`tv4 universe build`, S11) : les jambes sont les membres des
+    /// trimestres de la fenêtre de décision d'un dataset de bloc, et les règles d'instrument viennent de
+    /// son `instruments_kraken.toml`. Active le mode portefeuille ; exclusif avec --symbols,
+    /// --instruments-file et --instruments-okx.
+    #[arg(
+        long,
+        value_name = "DOSSIER",
+        conflicts_with_all = ["symbols", "instruments_file", "instruments_okx"]
+    )]
+    pub universe: Option<PathBuf>,
+    /// Sous-ensemble figé de paires (`tv4 universe okx-subset`, S11) : ajoute la ligne `okx_usdc` au run
+    /// de recherche (`full/`, `okx_usdc/`, `lines.json`). Obligatoire pour VALIDATION et HOLDOUT.
+    #[arg(long, value_name = "JSON")]
+    pub okx_subset: Option<PathBuf>,
+    /// Lit un bloc protégé (VALIDATION, HOLDOUT) malgré l'absence des garde-fous de S12 ; tracé dans
+    /// chaque rapport (`research.guard = unguarded`) et sur stderr (docs/specs/s11.md §9.5).
+    #[arg(long, hide = true)]
+    pub unguarded_protected_read: bool,
 }
 
 impl PortfolioArgs {
-    /// Vrai si `--symbols` est donné.
+    /// Vrai si `--symbols` ou `--universe` est donné.
     pub fn is_portfolio(&self) -> bool {
-        self.symbols.is_some()
+        self.symbols.is_some() || self.universe.is_some()
+    }
+
+    /// Vrai si une option propre à la recherche de S11 est donnée (elle exige un dataset de bloc).
+    pub fn has_research_option(&self) -> bool {
+        self.universe.is_some() || self.okx_subset.is_some() || self.unguarded_protected_read
+    }
+
+    /// Paire de régime : `--regime-symbol`, sinon [`DEFAULT_REGIME_SYMBOL`].
+    pub fn regime_symbol_or_default(&self) -> String {
+        self.regime_symbol
+            .clone()
+            .unwrap_or_else(|| DEFAULT_REGIME_SYMBOL.to_string())
+    }
+
+    /// Plafond de positions : `--max-positions`, sinon [`DEFAULT_MAX_POSITIONS`].
+    pub fn max_positions_or_default(&self) -> u16 {
+        self.max_positions.unwrap_or(DEFAULT_MAX_POSITIONS)
     }
 
     /// Refuse toute option du portefeuille donnée sans `--symbols`.
@@ -108,6 +143,8 @@ impl PortfolioArgs {
             ("--regime-symbol", self.regime_symbol.is_some()),
             ("--quote-gap-days", self.quote_gap_days.is_some()),
             ("--min-order-bump-risk", self.min_order_bump_risk.is_some()),
+            ("--okx-subset", self.okx_subset.is_some()),
+            ("--unguarded-protected-read", self.unguarded_protected_read),
         ];
         match given.iter().find(|(_, present)| *present) {
             Some((option, _)) => Err(CliError::PortfolioOptionWithoutSymbols {
@@ -118,7 +155,7 @@ impl PortfolioArgs {
     }
 }
 
-fn option_error(option: &str, detail: impl Into<String>) -> CliError {
+pub(super) fn option_error(option: &str, detail: impl Into<String>) -> CliError {
     CliError::PortfolioOption {
         option: option.to_string(),
         detail: detail.into(),
@@ -196,7 +233,11 @@ impl PreparedPortfolio {
 }
 
 /// Lit le fichier d'instruments OKX et les règles de chaque jambe.
-fn okx_instruments(path: &Path, universe: &[String], quote: &str) -> Result<Instruments, CliError> {
+pub(super) fn okx_instruments(
+    path: &Path,
+    universe: &[String],
+    quote: &str,
+) -> Result<Instruments, CliError> {
     let file = InstrumentsFile::load(path).map_err(|error| match error {
         InstrumentsError::HashMismatch { .. } => CliError::InstrumentsHashMismatch {
             path: path.display().to_string(),
@@ -254,7 +295,7 @@ fn okx_instruments(path: &Path, universe: &[String], quote: &str) -> Result<Inst
 }
 
 /// Règles de S6 (`config/instruments.toml`), par exchange et symbole du dataset.
-fn toml_instruments(
+pub(super) fn toml_instruments(
     args: &RunInputArgs,
     exchange: ExchangeId,
     universe: &[String],
@@ -277,7 +318,7 @@ fn toml_instruments(
 }
 
 /// Segments du dataset pour le rapport : symbole, lignes et bornes.
-fn series_info(series: &[(String, Columns)]) -> Vec<SeriesInfo> {
+pub(super) fn series_info(series: &[(String, Columns)]) -> Vec<SeriesInfo> {
     series
         .iter()
         .map(|(symbol, columns)| SeriesInfo {
@@ -289,29 +330,19 @@ fn series_info(series: &[(String, Columns)]) -> Vec<SeriesInfo> {
         .collect()
 }
 
-pub(super) fn prepare(
+/// Options numériques du mode portefeuille, validées avant toute lecture de dataset.
+pub(super) struct Numeric {
+    pub sizing: SizingMode,
+    pub min_order_bump: Option<f64>,
+    pub quote_gap_ms: Ts,
+}
+
+/// Valide `--capital`, `--sizing`, `--min-order-bump-risk` et `--quote-gap-days`. Partagé avec le mode
+/// recherche de S11 (`research.rs`) : mêmes refus, même ordre.
+pub(super) fn numeric_options(
     args: &RunInputArgs,
     portfolio: &PortfolioArgs,
-) -> Result<PreparedPortfolio, CliError> {
-    if args.fixture.is_some() {
-        return Err(CliError::PortfolioNeedsDataset);
-    }
-    let Some(dataset_arg) = args.dataset.as_deref() else {
-        return Err(CliError::DataSource);
-    };
-    let universe: Vec<String> = portfolio
-        .symbols
-        .as_deref()
-        .unwrap_or_default()
-        .iter()
-        .map(|symbol| symbol.trim().to_string())
-        .collect();
-    if universe.is_empty() || universe.iter().any(String::is_empty) {
-        return Err(option_error(
-            "--symbols",
-            "au moins un symbole, sans élément vide",
-        ));
-    }
+) -> Result<Numeric, CliError> {
     if !(args.capital.is_finite() && args.capital > 0.0) {
         return Err(option_error(
             "--capital",
@@ -349,6 +380,53 @@ pub(super) fn prepare(
             option_error("--quote-gap-days", format!("{days} jours : trop grand"))
         })?,
     };
+    Ok(Numeric {
+        sizing,
+        min_order_bump,
+        quote_gap_ms,
+    })
+}
+
+/// Lit le fichier de paramètres de la stratégie et en fait une construction d'essai.
+pub(super) fn load_params(args: &RunInputArgs) -> Result<toml::Value, CliError> {
+    let params_text = std::fs::read_to_string(&args.params).map_err(|source| CliError::Read {
+        path: args.params.display().to_string(),
+        source,
+    })?;
+    let params =
+        toml::from_str::<toml::Value>(&params_text).map_err(|source| CliError::ParamsToml {
+            path: args.params.display().to_string(),
+            source,
+        })?;
+    // Construction d'essai : une stratégie inconnue ou des paramètres invalides échouent avant tout calcul.
+    registry::build(&args.strategy, &params)?;
+    Ok(params)
+}
+
+pub(super) fn prepare(
+    args: &RunInputArgs,
+    portfolio: &PortfolioArgs,
+) -> Result<PreparedPortfolio, CliError> {
+    if args.fixture.is_some() {
+        return Err(CliError::PortfolioNeedsDataset);
+    }
+    let Some(dataset_arg) = args.dataset.as_deref() else {
+        return Err(CliError::DataSource);
+    };
+    let universe: Vec<String> = portfolio
+        .symbols
+        .as_deref()
+        .unwrap_or_default()
+        .iter()
+        .map(|symbol| symbol.trim().to_string())
+        .collect();
+    if universe.is_empty() || universe.iter().any(String::is_empty) {
+        return Err(option_error(
+            "--symbols",
+            "au moins un symbole, sans élément vide",
+        ));
+    }
+    let numeric = numeric_options(args, portfolio)?;
 
     let shown = dataset_arg.display().to_string();
     let path = resolve_dataset_path(&args.root, dataset_arg)?;
@@ -376,17 +454,7 @@ pub(super) fn prepare(
     };
     let fees = FeeSchedule::load_grid(args.fees, &args.fees_file)?;
 
-    let params_text = std::fs::read_to_string(&args.params).map_err(|source| CliError::Read {
-        path: args.params.display().to_string(),
-        source,
-    })?;
-    let params =
-        toml::from_str::<toml::Value>(&params_text).map_err(|source| CliError::ParamsToml {
-            path: args.params.display().to_string(),
-            source,
-        })?;
-    // Construction d'essai : une stratégie inconnue ou des paramètres invalides échouent avant tout calcul.
-    registry::build(&args.strategy, &params)?;
+    let params = load_params(args)?;
 
     let dataset = DatasetInfo {
         name: loaded.manifest.name.clone(),
@@ -406,14 +474,11 @@ pub(super) fn prepare(
         capital: args.capital,
         min_trades: args.min_trades,
         instruments,
-        regime_symbol: portfolio
-            .regime_symbol
-            .clone()
-            .unwrap_or_else(|| DEFAULT_REGIME_SYMBOL.to_string()),
-        max_positions: portfolio.max_positions.unwrap_or(DEFAULT_MAX_POSITIONS),
-        sizing,
-        min_order_bump,
-        quote_gap_ms,
+        regime_symbol: portfolio.regime_symbol_or_default(),
+        max_positions: portfolio.max_positions_or_default(),
+        sizing: numeric.sizing,
+        min_order_bump: numeric.min_order_bump,
+        quote_gap_ms: numeric.quote_gap_ms,
         strategy_id: args.strategy.clone(),
         params,
     })

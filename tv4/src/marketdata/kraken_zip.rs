@@ -481,6 +481,23 @@ impl KrakenZip {
         }
     }
 
+    /// Lecteur en flux des lignes brutes de l'entrée `name` (`by_name`, nom exact), pour les résolutions
+    /// autres que le 1m (`XBTUSD_1440.csv`) : S11 s'en sert pour dater la dernière bougie d'une paire
+    /// (docs/specs/s11.md §5.2). Même format que [`KrakenZip::rows_1m`].
+    pub fn rows_entry(
+        &mut self,
+        name: &str,
+    ) -> Result<KrakenRawReader<ZipFile<'_, File>>, KrakenZipError> {
+        let path = self.path.clone();
+        match self.archive.by_name(name) {
+            Ok(entry) => Ok(KrakenRawReader::new(entry)),
+            Err(ZipError::FileNotFound) => Err(KrakenZipError::EntryMissing {
+                entry: name.to_string(),
+            }),
+            Err(source) => Err(KrakenZipError::Zip { path, source }),
+        }
+    }
+
     /// Noms des entrées (diagnostic) ; une entrée au nom illisible est ignorée.
     pub fn entry_names(&self) -> Vec<String> {
         self.archive
@@ -712,6 +729,27 @@ mod tests {
         // La vraie paire du piège se lit normalement.
         let ai: KrakenPair = "AIXBTUSD".parse().unwrap();
         assert_eq!(zip.rows_1m(&ai).unwrap().count(), 3);
+    }
+
+    #[test]
+    fn entree_generique_par_nom_exact() {
+        let dir = tempfile::tempdir().unwrap();
+        let chemin = dir.path().join("generique.zip");
+        write_zip(
+            &chemin,
+            &[
+                ("XBTUSD_1440.csv", sample_csv(2).as_bytes()),
+                ("XBTUSD_1.csv", sample_csv(4).as_bytes()),
+            ],
+        );
+        let mut zip = KrakenZip::open_verified(&chemin, &sha_of(&chemin)).unwrap();
+        assert_eq!(zip.rows_entry("XBTUSD_1440.csv").unwrap().count(), 2);
+        assert_eq!(zip.rows_entry("XBTUSD_1.csv").unwrap().count(), 4);
+        match zip.rows_entry("XBTUSD_5.csv") {
+            Err(KrakenZipError::EntryMissing { entry }) => assert_eq!(entry, "XBTUSD_5.csv"),
+            Err(autre) => panic!("EntryMissing attendu : {autre:?}"),
+            Ok(_) => panic!("XBTUSD_5.csv n'existe pas"),
+        }
     }
 
     #[test]

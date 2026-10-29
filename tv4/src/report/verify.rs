@@ -48,9 +48,33 @@
 //! aucun. Un dossier de profils contre un dossier de run, ou l'inverse, est refusé
 //! ([`VerifyError::LayoutMismatch`], code 1). `profiles.json` est relu (schéma, trois profils nommés
 //! baseline, adverse et maker, un `dir` simple pour chacun), chaque sous-dossier est vérifié comme un run
-//! s10 et confronté à `profiles.json` (`run_id`, `config_hash`, `result_hash`, `profiles_id`), puis comparé
-//! à son homologue. `profiles.json` est comparé à l'octet. Un sous-dossier ou un manifeste absent donne
-//! [`VerifyError::ProfilesIncomplete`] (code 1).
+//! s10 (ou s11, voir plus bas) et confronté à `profiles.json` (`run_id`, `config_hash`, `result_hash`,
+//! `profiles_id`), puis comparé à son homologue. `profiles.json` est comparé à l'octet. Un sous-dossier ou
+//! un manifeste absent donne [`VerifyError::ProfilesIncomplete`] (code 1).
+//!
+//! # Recherche (S11, docs/specs/s11.md §9.6)
+//!
+//! Un manifeste `tv4-manifest-s11` forme la quatrième famille : un run de recherche, avec ou sans profil
+//! de coûts. Mêmes contrôles que s9 (et que s10 quand le manifeste porte un `profile`), plus :
+//!
+//! * l'entonnoir tient compte des refus d'entrée de la recherche (`research.legs` et `research.funnel`) ;
+//! * `trades.csv` garde **tous** les trades : les trades purgés (`exit_type = end_of_window`) sont comptés
+//!   à part, les autres égalent `funnel_by_pair[].trades` et `research.purge.trades_kept` (`n_trades`) ;
+//! * `research.identity_hash` est recalculé depuis `research.identity`, et `run_id` du manifeste depuis
+//!   `config_hash`, `dataset_hash`, la fenêtre, le capital et `identity_hash` (`run_id_s11`) ;
+//! * `research.block` et `research.decision_window` sont ceux de `data.block` et `data.decision_window`,
+//!   dans `metrics.json` comme dans le manifeste.
+//!
+//! s11 contre s8, s9 ou s10 donne [`VerifyError::SchemaMismatch`] (code 1). Un dossier de profils s11
+//! contre un dossier de profils s10 aussi : les trois profils d'un dossier sont de la même génération
+//! ([`VerifyError::Profiles`], « pas un run de la même génération »).
+//!
+//! Un dossier qui contient `lines.json` est un **dossier de lignes** (`full/` et `okx_usdc/`, chacun un run
+//! ou un dossier de profils s11) : `verify` en compare deux, ou aucun ([`VerifyError::LayoutMismatch`]
+//! sinon). `lines.json` est relu (schéma, deux lignes `full` puis `okx_usdc`, `run_id` ou `profiles_id` de
+//! chacune égal à celui du dossier, `config_hash` de chaque profil, `lines_id` recalculé), chaque ligne est
+//! comparée à son homologue comme un run ou un dossier de profils, puis `lines.json` est comparé à
+//! l'octet. Code 3 au premier écart, avec les chemins en écart.
 
 use std::fs;
 use std::path::{Component, Path};
@@ -61,8 +85,9 @@ use thiserror::Error;
 use crate::model::hash;
 
 use super::equity::EQUITY_FILE;
-use super::manifest::profiles_id;
+use super::manifest::{profiles_id, run_id_s11};
 use super::profiles::{PROFILES_FILE, PROFILES_SCHEMA};
+use super::research::{LINES_FILE, LINES_SCHEMA, METRICS_BASIS};
 use super::writers::TRADES_FILE;
 use super::{manifest, metrics, metrics_s9};
 
@@ -119,21 +144,39 @@ pub enum VerifyError {
         expected: &'static str,
     },
 
-    /// Deux runs de familles différentes (s8, s9, s10) : ils ne se comparent pas.
+    /// Deux runs de familles différentes (s8, s9, s10, s11) : ils ne se comparent pas.
     #[error(
         "schémas différents : run A `{a}`, run B `{b}` ; comparer deux runs de la même famille"
     )]
     SchemaMismatch { a: String, b: String },
 
-    /// Un dossier de profils (`profiles.json`) contre un dossier de run : ils ne se comparent pas.
-    #[error(
-        "un dossier de profils ne se compare qu'à un dossier de profils : `{a}` est {a_kind}, `{b}` est {b_kind}"
-    )]
+    /// Un dossier de profils (`profiles.json`) ou de lignes (`lines.json`) contre un dossier d'une autre
+    /// nature : ils ne se comparent pas.
+    #[error("{rule} : `{a}` est {a_kind}, `{b}` est {b_kind}")]
     LayoutMismatch {
+        /// La règle violée, au singulier de la nature du dossier spécial.
+        rule: &'static str,
         a: String,
         a_kind: &'static str,
         b: String,
         b_kind: &'static str,
+    },
+
+    /// Un dossier de lignes est incomplet (sous-dossier ou manifeste absent) ou son `lines.json` ne
+    /// décrit pas deux lignes lisibles.
+    #[error("dossier de lignes {label} (`{dir}`) incomplet : {detail}")]
+    LinesIncomplete {
+        label: &'static str,
+        dir: String,
+        detail: String,
+    },
+
+    /// `lines.json` ne correspond pas aux runs qu'il résume, ou une ligne n'est pas un run s11.
+    #[error("dossier de lignes {label} (`{dir}`) incohérent : {detail}")]
+    Lines {
+        label: &'static str,
+        dir: String,
+        detail: String,
     },
 
     /// Un dossier de profils est incomplet (sous-dossier ou manifeste absent) ou son `profiles.json` ne
@@ -145,7 +188,8 @@ pub enum VerifyError {
         detail: String,
     },
 
-    /// `profiles.json` ne correspond pas aux runs qu'il résume, ou un profil n'est pas un run s10.
+    /// `profiles.json` ne correspond pas aux runs qu'il résume, ou un profil n'est pas un run de la même
+    /// génération (s10 ou s11) que les autres.
     #[error("dossier de profils {label} (`{dir}`) incohérent : {detail}")]
     Profiles {
         label: &'static str,
@@ -213,6 +257,7 @@ enum Family {
     S8,
     S9,
     S10,
+    S11,
 }
 
 impl Family {
@@ -221,6 +266,7 @@ impl Family {
             Some(manifest::SCHEMA) => Some(Family::S8),
             Some(manifest::SCHEMA_S9) => Some(Family::S9),
             Some(manifest::SCHEMA_S10) => Some(Family::S10),
+            Some(manifest::SCHEMA_S11) => Some(Family::S11),
             _ => None,
         }
     }
@@ -230,17 +276,24 @@ impl Family {
             Family::S8 => metrics::SCHEMA,
             Family::S9 => metrics_s9::SCHEMA,
             Family::S10 => metrics_s9::SCHEMA_S10,
+            Family::S11 => metrics_s9::SCHEMA_S11,
         }
     }
 
-    /// Vrai pour le mode portefeuille (s9 et s10) : mêmes contrôles d'identités.
+    /// Vrai pour le mode portefeuille (s9, s10 et s11) : mêmes contrôles d'identités.
     fn is_portfolio(self) -> bool {
-        matches!(self, Family::S9 | Family::S10)
+        matches!(self, Family::S9 | Family::S10 | Family::S11)
+    }
+
+    /// Vrai pour les générations qui peuvent former un dossier de profils (s10 et s11).
+    fn can_be_profile(self) -> bool {
+        matches!(self, Family::S10 | Family::S11)
     }
 }
 
 /// Schémas de manifeste acceptés, pour les messages d'erreur.
-const MANIFEST_SCHEMAS: &str = "`tv4-manifest-s8`, `tv4-manifest-s9` ou `tv4-manifest-s10`";
+const MANIFEST_SCHEMAS: &str =
+    "`tv4-manifest-s8`, `tv4-manifest-s9`, `tv4-manifest-s10` ou `tv4-manifest-s11`";
 
 /// Un run lu et vérifié en interne.
 struct LoadedRun {
@@ -311,6 +364,7 @@ fn compare_runs(a: &LoadedRun, b: &LoadedRun) -> Result<Comparison, VerifyError>
         }
     }
     describe_manifest_info(&a.manifest, &b.manifest, &mut lines);
+    describe_research_info(&a.metrics, &b.metrics, &mut lines);
     Ok(Comparison {
         lines,
         different_files,
@@ -318,31 +372,56 @@ fn compare_runs(a: &LoadedRun, b: &LoadedRun) -> Result<Comparison, VerifyError>
 }
 
 /// Nature d'un dossier pour le message de [`VerifyError::LayoutMismatch`].
-fn layout_kind(is_profiles: bool) -> &'static str {
-    if is_profiles {
-        "un dossier de profils"
-    } else {
-        "un dossier de run"
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Layout {
+    Run,
+    Profiles,
+    Lines,
+}
+
+impl Layout {
+    /// Un dossier de lignes (`lines.json`) prime sur un dossier de profils (`profiles.json`), qui prime
+    /// sur un dossier de run.
+    fn of(dir: &Path) -> Layout {
+        if dir.join(LINES_FILE).exists() {
+            Layout::Lines
+        } else if dir.join(PROFILES_FILE).exists() {
+            Layout::Profiles
+        } else {
+            Layout::Run
+        }
+    }
+
+    fn kind(self) -> &'static str {
+        match self {
+            Layout::Run => "un dossier de run",
+            Layout::Profiles => "un dossier de profils",
+            Layout::Lines => "un dossier de lignes",
+        }
     }
 }
 
-/// Compare les dossiers `dir_a` et `dir_b` : deux runs, ou deux dossiers de profils (ceux qui contiennent
-/// `profiles.json`).
+/// Compare les dossiers `dir_a` et `dir_b` : deux runs, deux dossiers de profils (ceux qui contiennent
+/// `profiles.json`) ou deux dossiers de lignes (ceux qui contiennent `lines.json`).
 ///
-/// Rend [`VerifyError`] si l'un des deux est illisible ou incohérent avec son manifeste, ou si l'un est un
-/// dossier de profils et l'autre non ; sinon un compte rendu dont [`VerifyReport::identical`] donne le
-/// verdict.
+/// Rend [`VerifyError`] si l'un des deux est illisible ou incohérent avec son manifeste, ou s'ils ne sont
+/// pas de la même nature ; sinon un compte rendu dont [`VerifyReport::identical`] donne le verdict.
 pub fn verify(dir_a: &Path, dir_b: &Path) -> Result<VerifyReport, VerifyError> {
-    let profiles_a = dir_a.join(PROFILES_FILE).exists();
-    let profiles_b = dir_b.join(PROFILES_FILE).exists();
-    match (profiles_a, profiles_b) {
-        (true, true) => verify_profiles(dir_a, dir_b),
-        (false, false) => verify_runs(dir_a, dir_b),
+    let (layout_a, layout_b) = (Layout::of(dir_a), Layout::of(dir_b));
+    match (layout_a, layout_b) {
+        (Layout::Lines, Layout::Lines) => verify_lines(dir_a, dir_b),
+        (Layout::Profiles, Layout::Profiles) => verify_profiles(dir_a, dir_b),
+        (Layout::Run, Layout::Run) => verify_runs(dir_a, dir_b),
         _ => Err(VerifyError::LayoutMismatch {
+            rule: if layout_a == Layout::Lines || layout_b == Layout::Lines {
+                "un dossier de lignes ne se compare qu'à un dossier de lignes"
+            } else {
+                "un dossier de profils ne se compare qu'à un dossier de profils"
+            },
             a: dir_a.display().to_string(),
-            a_kind: layout_kind(profiles_a),
+            a_kind: layout_a.kind(),
             b: dir_b.display().to_string(),
-            b_kind: layout_kind(profiles_b),
+            b_kind: layout_b.kind(),
         }),
     }
 }
@@ -454,10 +533,22 @@ fn load_profiles(label: &'static str, dir: &Path) -> Result<LoadedProfiles, Veri
             )));
         }
         let run = load_run(label, &sub_dir)?;
-        if run.family != Family::S10 {
+        if !run.family.can_be_profile() {
             return Err(incoherent(format!(
-                "le profil `{name}` n'est pas un run s10 (schéma {})",
+                "le profil `{name}` n'est pas un run s10 ou s11 (schéma {})",
                 shown(&run.manifest, &["schema"])
+            )));
+        }
+        if let Some((first, other)) = runs
+            .first()
+            .map(|(first, other): &(&str, LoadedRun)| (first, other))
+            && other.family != run.family
+        {
+            return Err(incoherent(format!(
+                "le profil `{name}` n'est pas un run de la même génération que `{first}` \
+                 (schéma {} contre {})",
+                shown(&run.manifest, &["schema"]),
+                shown(&other.manifest, &["schema"])
             )));
         }
         // `profiles.json` doit décrire exactement ce run.
@@ -508,14 +599,20 @@ fn load_profiles(label: &'static str, dir: &Path) -> Result<LoadedProfiles, Veri
     Ok(LoadedProfiles { bytes, value, runs })
 }
 
-/// Compare deux dossiers de profils : chaque profil à son homologue, puis `profiles.json` à l'octet.
-fn verify_profiles(dir_a: &Path, dir_b: &Path) -> Result<VerifyReport, VerifyError> {
-    let a = load_profiles("A", dir_a)?;
-    let b = load_profiles("B", dir_b)?;
-    let mut lines = vec![
-        format!("profils A : {}", dir_a.display()),
-        format!("profils B : {}", dir_b.display()),
-    ];
+/// Comparaison de deux dossiers de profils chargés : lignes de compte rendu (sans en-tête ni verdict),
+/// fichiers différents et profils en écart.
+struct ProfilesComparison {
+    lines: Vec<String>,
+    different_files: usize,
+    different_profiles: Vec<&'static str>,
+}
+
+/// Compare chaque profil à son homologue, puis `profiles.json` à l'octet.
+fn compare_profiles(
+    a: &LoadedProfiles,
+    b: &LoadedProfiles,
+) -> Result<ProfilesComparison, VerifyError> {
+    let mut lines = Vec::new();
     let mut different_files = 0usize;
     let mut different_profiles = Vec::new();
     for ((name, run_a), (_, run_b)) in a.runs.iter().zip(&b.runs) {
@@ -542,16 +639,37 @@ fn verify_profiles(dir_a: &Path, dir_b: &Path) -> Result<VerifyReport, VerifyErr
         lines.push(format!("{PROFILES_FILE} : DIFFÉRENT"));
         describe_json_diff(&a.value, &b.value, &mut lines);
     }
+    Ok(ProfilesComparison {
+        lines,
+        different_files,
+        different_profiles,
+    })
+}
+
+/// Compare deux dossiers de profils : chaque profil à son homologue, puis `profiles.json` à l'octet.
+fn verify_profiles(dir_a: &Path, dir_b: &Path) -> Result<VerifyReport, VerifyError> {
+    let a = load_profiles("A", dir_a)?;
+    let b = load_profiles("B", dir_b)?;
+    let mut lines = vec![
+        format!("profils A : {}", dir_a.display()),
+        format!("profils B : {}", dir_b.display()),
+    ];
+    let mut comparison = compare_profiles(&a, &b)?;
+    lines.append(&mut comparison.lines);
+    let different_files = comparison.different_files;
     if different_files == 0 {
         lines.push(format!(
             "verdict : dossiers de profils identiques à l'octet (profiles_id {})",
             shown(&a.value, &["profiles_id"])
         ));
     } else {
-        let detail = if different_profiles.is_empty() {
+        let detail = if comparison.different_profiles.is_empty() {
             String::new()
         } else {
-            format!(" ; profils en écart : {}", different_profiles.join(", "))
+            format!(
+                " ; profils en écart : {}",
+                comparison.different_profiles.join(", ")
+            )
         };
         lines.push(format!(
             "verdict : DIFFÉRENTS ({different_files} fichier(s){detail})"
@@ -561,6 +679,257 @@ fn verify_profiles(dir_a: &Path, dir_b: &Path) -> Result<VerifyReport, VerifyErr
         lines,
         different_files,
     })
+}
+
+// ---------------------------------------------------------------------------------------------
+// Dossier de lignes (S11)
+// ---------------------------------------------------------------------------------------------
+
+/// Noms des deux lignes, dans l'ordre fixe de `lines.json`.
+const LINE_NAMES: [&str; 2] = ["full", "okx_usdc"];
+
+/// Une ligne chargée : un run, ou un dossier de profils.
+enum LineBody {
+    Run(Box<LoadedRun>),
+    Profiles(Box<LoadedProfiles>),
+}
+
+/// Un dossier de lignes chargé et confronté à `lines.json`.
+struct LoadedLines {
+    bytes: Vec<u8>,
+    value: Value,
+    lines: Vec<(&'static str, LineBody)>,
+}
+
+/// Lit `lines.json` et les deux sous-dossiers d'un dossier de lignes.
+fn load_lines(label: &'static str, dir: &Path) -> Result<LoadedLines, VerifyError> {
+    let shown_dir = dir.display().to_string();
+    let incomplete = |detail: String| VerifyError::LinesIncomplete {
+        label,
+        dir: shown_dir.clone(),
+        detail,
+    };
+    let incoherent = |detail: String| VerifyError::Lines {
+        label,
+        dir: shown_dir.clone(),
+        detail,
+    };
+    let bytes = fs::read(dir.join(LINES_FILE)).map_err(|source| VerifyError::Read {
+        label,
+        dir: shown_dir.clone(),
+        file: LINES_FILE,
+        source,
+    })?;
+    let value: Value = serde_json::from_slice(&bytes).map_err(|source| VerifyError::Json {
+        label,
+        dir: shown_dir.clone(),
+        file: LINES_FILE,
+        source,
+    })?;
+    let found = value.get("schema").and_then(Value::as_str);
+    if found != Some(LINES_SCHEMA) {
+        return Err(VerifyError::Schema {
+            label,
+            dir: shown_dir.clone(),
+            file: LINES_FILE,
+            found: found.map_or_else(|| "absent".to_string(), |s| format!("`{s}`")),
+            expected: LINES_SCHEMA,
+        });
+    }
+    let entries = value
+        .get("lines")
+        .and_then(Value::as_array)
+        .filter(|entries| entries.len() == LINE_NAMES.len())
+        .ok_or_else(|| incomplete("`lines.json` ne décrit pas deux lignes".to_string()))?;
+
+    let mut lines: Vec<(&'static str, LineBody)> = Vec::with_capacity(LINE_NAMES.len());
+    let mut ids = Vec::with_capacity(LINE_NAMES.len());
+    for (name, entry) in LINE_NAMES.iter().zip(entries) {
+        let entry_name = entry.get("line").and_then(Value::as_str);
+        if entry_name != Some(name) {
+            return Err(incomplete(format!(
+                "la ligne attendue est `{name}`, `lines.json` porte {entry_name:?}"
+            )));
+        }
+        let sub = entry
+            .get("dir")
+            .and_then(Value::as_str)
+            .filter(|sub| is_plain_dir_name(sub))
+            .ok_or_else(|| incomplete(format!("la ligne `{name}` n'a pas de `dir` simple")))?;
+        let sub_dir = dir.join(sub);
+        let is_profiles = sub_dir.join(PROFILES_FILE).exists();
+        let (body, id) = if is_profiles {
+            let profiles = load_profiles(label, &sub_dir)?;
+            let id = string_at(&profiles.value, &["profiles_id"]).unwrap_or_default();
+            if string_at(entry, &["profiles_id"]).as_deref() != Some(id.as_str()) {
+                return Err(incoherent(format!(
+                    "ligne `{name}` : profiles_id {} dans lines.json et {id} dans `{sub}/profiles.json`",
+                    shown(entry, &["profiles_id"])
+                )));
+            }
+            (LineBody::Profiles(Box::new(profiles)), id)
+        } else {
+            if !sub_dir.join(MANIFEST_FILE).is_file() {
+                return Err(incomplete(format!(
+                    "sous-dossier `{sub}` ou son manifeste absent (ligne `{name}`)"
+                )));
+            }
+            let run = load_run(label, &sub_dir)?;
+            let id = string_at(&run.manifest, &["run_id"]).unwrap_or_default();
+            if string_at(entry, &["run_id"]).as_deref() != Some(id.as_str()) {
+                return Err(incoherent(format!(
+                    "ligne `{name}` : run_id {} dans lines.json et {id} dans le manifeste de `{sub}`",
+                    shown(entry, &["run_id"])
+                )));
+            }
+            (LineBody::Run(Box::new(run)), id)
+        };
+        ids.push(id);
+        lines.push((*name, body));
+    }
+
+    // Chaque run est un run de recherche (s11), de la ligne qui le porte, et son `config_hash` est celui
+    // de `lines.json` pour son profil.
+    let config_hashes = value
+        .get("config_hash")
+        .and_then(Value::as_object)
+        .ok_or_else(|| incoherent("`config_hash` absent ou mal typé".to_string()))?;
+    for (name, body) in &lines {
+        let runs: Vec<(&str, &LoadedRun)> = match body {
+            LineBody::Run(run) => vec![("single", run.as_ref())],
+            LineBody::Profiles(profiles) => profiles.runs.iter().map(|(n, r)| (*n, r)).collect(),
+        };
+        for (profile, run) in runs {
+            if run.family != Family::S11 {
+                return Err(incoherent(format!(
+                    "la ligne `{name}` (profil `{profile}`) n'est pas un run s11 (schéma {})",
+                    shown(&run.manifest, &["schema"])
+                )));
+            }
+            let wanted = config_hashes.get(profile).and_then(Value::as_str);
+            let found = string_at(&run.manifest, &["config_hash"]);
+            if wanted.is_none() || wanted != found.as_deref() {
+                return Err(incoherent(format!(
+                    "ligne `{name}`, profil `{profile}` : config_hash {} dans lines.json et {} dans le \
+                     manifeste",
+                    wanted.unwrap_or("(absent)"),
+                    found.unwrap_or_else(|| "(absent)".to_string())
+                )));
+            }
+            let line_in_metrics = string_at(&run.metrics, &["research", "line"]);
+            if line_in_metrics.as_deref() != Some(name) {
+                return Err(incoherent(format!(
+                    "la ligne `{name}` (profil `{profile}`) porte research.line {line_in_metrics:?}"
+                )));
+            }
+        }
+    }
+    let expected_id = match ids.as_slice() {
+        [full, okx] => hash::blake3_hex(format!("{full}|{okx}").as_bytes()),
+        _ => {
+            return Err(incomplete(
+                "`lines.json` ne décrit pas deux lignes".to_string(),
+            ));
+        }
+    };
+    if string_at(&value, &["lines_id"]).as_deref() != Some(expected_id.as_str()) {
+        return Err(incoherent(format!(
+            "lines_id {} pour {expected_id} recalculé depuis les deux identifiants",
+            shown(&value, &["lines_id"])
+        )));
+    }
+    Ok(LoadedLines {
+        bytes,
+        value,
+        lines,
+    })
+}
+
+/// Compare deux dossiers de lignes : chaque ligne à son homologue, puis `lines.json` à l'octet.
+fn verify_lines(dir_a: &Path, dir_b: &Path) -> Result<VerifyReport, VerifyError> {
+    let a = load_lines("A", dir_a)?;
+    let b = load_lines("B", dir_b)?;
+    let mut lines = vec![
+        format!("lignes A : {}", dir_a.display()),
+        format!("lignes B : {}", dir_b.display()),
+    ];
+    let mut different_files = 0usize;
+    let mut different_lines = Vec::new();
+    for ((name, body_a), (_, body_b)) in a.lines.iter().zip(&b.lines) {
+        let (verdict, mut detail, files) = match (body_a, body_b) {
+            (LineBody::Run(run_a), LineBody::Run(run_b)) => {
+                let comparison = compare_runs(run_a, run_b)?;
+                (
+                    comparison.different_files,
+                    comparison.lines,
+                    comparison.different_files,
+                )
+            }
+            (LineBody::Profiles(pa), LineBody::Profiles(pb)) => {
+                let comparison = compare_profiles(pa, pb)?;
+                (
+                    comparison.different_files,
+                    comparison.lines,
+                    comparison.different_files,
+                )
+            }
+            _ => {
+                return Err(VerifyError::LayoutMismatch {
+                    rule: "une ligne est un run dans les deux dossiers, ou un dossier de profils dans les deux",
+                    a: dir_a.join(name).display().to_string(),
+                    a_kind: line_kind(body_a),
+                    b: dir_b.join(name).display().to_string(),
+                    b_kind: line_kind(body_b),
+                });
+            }
+        };
+        if verdict == 0 {
+            lines.push(format!("ligne {name} : identique"));
+        } else {
+            different_lines.push(*name);
+            lines.push(format!("ligne {name} : DIFFÉRENTE ({verdict} fichier(s))"));
+        }
+        for line in detail.drain(..) {
+            lines.push(format!("  {line}"));
+        }
+        different_files += files;
+    }
+    if a.bytes == b.bytes {
+        lines.push(format!(
+            "{LINES_FILE} : identique ({})",
+            hash::blake3_prefixed(&a.bytes)
+        ));
+    } else {
+        different_files += 1;
+        lines.push(format!("{LINES_FILE} : DIFFÉRENT"));
+        describe_json_diff(&a.value, &b.value, &mut lines);
+    }
+    if different_files == 0 {
+        lines.push(format!(
+            "verdict : dossiers de lignes identiques à l'octet (lines_id {})",
+            shown(&a.value, &["lines_id"])
+        ));
+    } else {
+        let detail = if different_lines.is_empty() {
+            String::new()
+        } else {
+            format!(" ; lignes en écart : {}", different_lines.join(", "))
+        };
+        lines.push(format!(
+            "verdict : DIFFÉRENTS ({different_files} fichier(s){detail})"
+        ));
+    }
+    Ok(VerifyReport {
+        lines,
+        different_files,
+    })
+}
+
+fn line_kind(body: &LineBody) -> &'static str {
+    match body {
+        LineBody::Run(_) => "un run",
+        LineBody::Profiles(_) => "un dossier de profils",
+    }
 }
 
 /// Lit les quatre fichiers d'un run et contrôle sa cohérence interne.
@@ -659,8 +1028,19 @@ fn load_run(label: &'static str, dir: &Path) -> Result<LoadedRun, VerifyError> {
             }
         })?;
     }
-    if family == Family::S10 {
+    // Un run s11 porte des coûts quand c'est un profil (`profile` dans le manifeste).
+    let has_costs = family == Family::S10
+        || (family == Family::S11
+            && (manifest.get("profile").is_some() || metrics.get("costs").is_some()));
+    if has_costs {
         check_costs(&metrics, &manifest).map_err(|detail| VerifyError::Portfolio {
+            label,
+            dir: shown.clone(),
+            detail,
+        })?;
+    }
+    if family == Family::S11 {
+        check_research(&metrics, &manifest).map_err(|detail| VerifyError::Portfolio {
             label,
             dir: shown.clone(),
             detail,
@@ -783,12 +1163,39 @@ fn check_portfolio(metrics: &Value, manifest: &Value, trades_bytes: &[u8]) -> Re
             "sim_by_pair couvre {sim_symbols:?} pour l'univers {symbols:?}"
         ));
     }
+    // Refus de recherche par paire (s11) : fenêtre de décision, hors univers, qualité. Ils s'ajoutent à
+    // l'identité 1 et restent hors de `rejected`.
+    let research = metrics.get("research");
+    let mut refused_by_pair = Vec::with_capacity(pair_symbols.len());
+    for name in &pair_symbols {
+        let refused = match research {
+            None => 0,
+            Some(block) => {
+                let leg = block
+                    .get("legs")
+                    .and_then(Value::as_array)
+                    .and_then(|legs| {
+                        legs.iter()
+                            .find(|leg| leg.get("symbol").and_then(Value::as_str) == Some(name))
+                    })
+                    .ok_or_else(|| format!("research.legs n'a pas de jambe `{name}`"))?;
+                let mut sum = 0u64;
+                for key in RESEARCH_REFUSALS {
+                    sum += uint_at(leg, &[key])
+                        .ok_or_else(|| missing(&format!("research.legs[{name}].{key}")))?;
+                }
+                sum
+            }
+        };
+        refused_by_pair.push(refused);
+    }
+    let refused_total: u64 = refused_by_pair.iter().sum();
     let mut rejected_sum = 0u64;
     // Σ des refus au fill par paire, et Σ de `orders - fills - refus au fill` (expirations et
     // annulations d'entrées, qui ne sont publiées qu'en agrégat).
     let mut at_fill_by_pair_sum = 0u64;
     let mut unfilled_rest_sum = 0u64;
-    for (pair, sim) in pairs.iter().zip(sim_by_pair) {
+    for ((pair, sim), refused) in pairs.iter().zip(sim_by_pair).zip(&refused_by_pair) {
         let name = pair.get("symbol").and_then(Value::as_str).unwrap_or("?");
         for (total, key) in totals.iter_mut().zip(keys) {
             *total += uint_at(pair, &[key])
@@ -811,9 +1218,10 @@ fn check_portfolio(metrics: &Value, manifest: &Value, trades_bytes: &[u8]) -> Re
             format!("{name} : {at_fill} refus au fill pour {rejected} refus d'entrée au total")
         })?;
         // Identité 1 (docs S9 §9.1), exacte par paire.
-        if signals != orders + submit {
+        if signals != orders + submit + refused {
             return Err(format!(
-                "{name} : {signals} signaux d'entrée pour {orders} ordres et {submit} refus à la soumission"
+                "{name} : {signals} signaux d'entrée pour {orders} ordres, {submit} refus à la soumission \
+                 et {refused} refus de recherche"
             ));
         }
         // Identité 2, en inégalité par paire : expirations et annulations ne sont pas publiées par
@@ -843,9 +1251,10 @@ fn check_portfolio(metrics: &Value, manifest: &Value, trades_bytes: &[u8]) -> Re
         .ok_or_else(|| missing("funnel.entry_rejected_max_positions"))?;
     let entry_signals = totals[1];
     let entry_orders = totals[2];
-    if entry_signals != entry_orders + by_reason + max_positions {
+    if entry_signals != entry_orders + by_reason + max_positions + refused_total {
         return Err(format!(
-            "funnel : {entry_signals} signaux d'entrée pour {entry_orders} ordres, {by_reason} refus et {max_positions} refus max_positions"
+            "funnel : {entry_signals} signaux d'entrée pour {entry_orders} ordres, {by_reason} refus, \
+             {max_positions} refus max_positions et {refused_total} refus de recherche"
         ));
     }
     let mut at_fill = 0u64;
@@ -880,31 +1289,40 @@ fn check_portfolio(metrics: &Value, manifest: &Value, trades_bytes: &[u8]) -> Re
         ));
     }
 
-    // trades.csv : chaque symbole appartient à l'univers, et les comptes sont ceux de funnel_by_pair.
+    // trades.csv : chaque symbole appartient à l'univers, et les comptes sont ceux de funnel_by_pair. En
+    // recherche, `trades.csv` garde aussi les trades purgés (`exit_type = end_of_window`), que
+    // `funnel_by_pair` ne compte pas : ils sont comptés à part.
     let mut reader = csv::ReaderBuilder::new()
         .delimiter(b',')
         .from_reader(trades_bytes);
-    let column = reader
+    let headers = reader
         .headers()
         .map_err(|e| format!("trades.csv illisible : {e}"))?
+        .clone();
+    let column = headers
         .iter()
         .position(|name| name == "symbol")
         .ok_or_else(|| "trades.csv n'a pas de colonne `symbol`".to_string())?;
+    let exit_column = headers.iter().position(|name| name == "exit_type");
+    if research.is_some() && exit_column.is_none() {
+        return Err("trades.csv n'a pas de colonne `exit_type`".to_string());
+    }
     let mut counts = vec![0u64; symbols.len()];
+    let mut purged_rows = 0u64;
     for record in reader.records() {
         let record = record.map_err(|e| format!("trades.csv illisible : {e}"))?;
         let symbol = record.get(column).unwrap_or_default();
-        match symbols.iter().position(|s| *s == symbol) {
-            Some(index) => {
-                if let Some(count) = counts.get_mut(index) {
-                    *count += 1;
-                }
-            }
-            None => {
-                return Err(format!(
-                    "trades.csv : le symbole `{symbol}` n'est pas dans data.symbols {symbols:?}"
-                ));
-            }
+        let Some(index) = symbols.iter().position(|s| *s == symbol) else {
+            return Err(format!(
+                "trades.csv : le symbole `{symbol}` n'est pas dans data.symbols {symbols:?}"
+            ));
+        };
+        if research.is_some() && exit_column.and_then(|c| record.get(c)) == Some("end_of_window") {
+            purged_rows += 1;
+            continue;
+        }
+        if let Some(count) = counts.get_mut(index) {
+            *count += 1;
         }
     }
     for (pair, count) in pairs.iter().zip(&counts) {
@@ -912,7 +1330,185 @@ fn check_portfolio(metrics: &Value, manifest: &Value, trades_bytes: &[u8]) -> Re
         let expected = uint_at(pair, &["trades"]).unwrap_or(0);
         if expected != *count {
             return Err(format!(
-                "trades.csv a {count} lignes pour `{name}`, funnel_by_pair en annonce {expected}"
+                "trades.csv a {count} lignes conservées pour `{name}`, funnel_by_pair en annonce {expected}"
+            ));
+        }
+    }
+    if let Some(block) = research {
+        let purged = uint_at(block, &["purge", "trades_purged"])
+            .ok_or_else(|| missing("research.purge.trades_purged"))?;
+        if purged != purged_rows {
+            return Err(format!(
+                "trades.csv a {purged_rows} lignes `end_of_window`, research.purge.trades_purged en annonce {purged}"
+            ));
+        }
+        let kept = uint_at(block, &["purge", "trades_kept"])
+            .ok_or_else(|| missing("research.purge.trades_kept"))?;
+        let kept_rows: u64 = counts.iter().sum();
+        let n_trades = uint_at(metrics, &["n_trades"]).ok_or_else(|| missing("n_trades"))?;
+        if kept != kept_rows || kept != n_trades {
+            return Err(format!(
+                "research.purge.trades_kept = {kept} pour {kept_rows} lignes conservées de trades.csv \
+                 et n_trades = {n_trades}"
+            ));
+        }
+    }
+    Ok(())
+}
+
+/// Les trois compteurs de refus de recherche qui entrent dans l'identité de l'entonnoir d'entrée (le
+/// quatrième, `entries_cancelled_universe`, compte des ordres déjà acceptés).
+const RESEARCH_REFUSALS: [&str; 3] = [
+    "entries_outside_decision_window",
+    "entries_not_in_universe",
+    "entries_excluded_quality",
+];
+
+/// Contrôles propres à un run s11 : le bloc `research` est cohérent avec `data`, avec `trades.csv` (déjà
+/// vu par `check_portfolio`) et avec le manifeste ; l'identité de recherche est recalculée, et le
+/// `run_id` aussi.
+fn check_research(metrics: &Value, manifest: &Value) -> Result<(), String> {
+    let missing = |path: &str| format!("champ `{path}` absent ou mal typé");
+    let research = metrics
+        .get("research")
+        .filter(|r| r.is_object())
+        .ok_or_else(|| missing("research"))?;
+
+    // Identité de recherche : `hash_json` de l'objet tel qu'écrit (clés triées, comme le struct).
+    let identity = research
+        .get("identity")
+        .ok_or_else(|| missing("research.identity"))?;
+    let recomputed = format!(
+        "{}{}",
+        hash::HASH_PREFIX,
+        hash::hash_json(identity).map_err(|e| format!("research.identity non hachable : {e}"))?
+    );
+    let written =
+        string_at(research, &["identity_hash"]).ok_or_else(|| missing("research.identity_hash"))?;
+    if recomputed != written {
+        return Err(format!(
+            "research.identity_hash = {written} pour {recomputed} recalculé depuis research.identity"
+        ));
+    }
+
+    // run_id : recalculé par la formule de S11 depuis les champs du manifeste.
+    let config_hash =
+        string_at(manifest, &["config_hash"]).ok_or_else(|| missing("config_hash"))?;
+    let dataset_hash =
+        string_at(manifest, &["dataset_hash"]).ok_or_else(|| missing("dataset_hash"))?;
+    let start_ms = manifest
+        .pointer("/window/start_ms")
+        .and_then(Value::as_i64)
+        .ok_or_else(|| missing("window.start_ms"))?;
+    let end_ms = manifest
+        .pointer("/window/end_ms")
+        .and_then(Value::as_i64)
+        .ok_or_else(|| missing("window.end_ms"))?;
+    let cash = number_at(manifest, &["initial_cash"]).ok_or_else(|| missing("initial_cash"))?;
+    let run_id = run_id_s11(
+        &config_hash,
+        &dataset_hash,
+        start_ms,
+        end_ms,
+        cash,
+        &written,
+    );
+    if string_at(manifest, &["run_id"]).as_deref() != Some(run_id.as_str()) {
+        return Err(format!(
+            "run_id {} pour {run_id} recalculé (identité de recherche comprise)",
+            shown(manifest, &["run_id"])
+        ));
+    }
+
+    // Le dataset porte le bloc et la fenêtre de décision du bloc `research`, dans metrics.json comme dans
+    // le manifeste.
+    for (root, value) in [("metrics.json", metrics), ("manifest.json", manifest)] {
+        for key in ["block", "decision_window"] {
+            let in_data = value.pointer(&format!("/data/{key}"));
+            let in_research = research.get(key);
+            if in_data.is_none() || in_data != in_research {
+                return Err(format!(
+                    "{root} : data.{key} {} et research.{key} {}",
+                    in_data.map_or_else(|| "(absent)".to_string(), Value::to_string),
+                    in_research.map_or_else(|| "(absent)".to_string(), Value::to_string)
+                ));
+            }
+        }
+    }
+    // Le bloc et la fenêtre de l'identité sont ceux du bloc `research`.
+    if identity.get("block") != research.get("block") {
+        return Err("research.identity.block diffère de research.block".to_string());
+    }
+    let window_start = research
+        .pointer("/decision_window/start_ms")
+        .and_then(Value::as_i64);
+    let window_end = research
+        .pointer("/decision_window/end_ms")
+        .and_then(Value::as_i64);
+    if identity.get("decision_start_ms").and_then(Value::as_i64) != window_start
+        || identity.get("decision_end_ms").and_then(Value::as_i64) != window_end
+    {
+        return Err(
+            "research.identity porte une fenêtre de décision différente de research.decision_window"
+                .to_string(),
+        );
+    }
+    let basis =
+        string_at(research, &["metrics_basis"]).ok_or_else(|| missing("research.metrics_basis"))?;
+    if basis != METRICS_BASIS {
+        return Err(format!(
+            "research.metrics_basis = `{basis}` pour `{METRICS_BASIS}` attendu"
+        ));
+    }
+
+    // Ligne et sous-ensemble : `full` n'a pas de sous-ensemble, `okx_usdc` en a un, dont le hash est
+    // celui de l'identité.
+    let line = string_at(research, &["line"]).ok_or_else(|| missing("research.line"))?;
+    if string_at(identity, &["line"]).as_deref() != Some(line.as_str()) {
+        return Err(format!(
+            "research.line = `{line}` pour {} dans research.identity",
+            shown(identity, &["line"])
+        ));
+    }
+    let subset = research.get("subset").filter(|v| !v.is_null());
+    match (line.as_str(), subset) {
+        ("full", None) => {}
+        ("okx_usdc", Some(subset)) => {
+            if string_at(subset, &["subset_hash"]) != string_at(identity, &["subset_hash"]) {
+                return Err(format!(
+                    "research.subset.subset_hash {} pour {} dans research.identity",
+                    shown(subset, &["subset_hash"]),
+                    shown(identity, &["subset_hash"])
+                ));
+            }
+        }
+        ("full", Some(_)) => return Err("la ligne `full` porte un sous-ensemble".to_string()),
+        ("okx_usdc", None) => {
+            return Err("la ligne `okx_usdc` n'a pas de sous-ensemble".to_string());
+        }
+        (other, _) => return Err(format!("research.line = `{other}` inconnue")),
+    }
+
+    // Σ des jambes = entonnoir de recherche.
+    let legs = research
+        .get("legs")
+        .and_then(Value::as_array)
+        .ok_or_else(|| missing("research.legs"))?;
+    for key in RESEARCH_REFUSALS
+        .iter()
+        .copied()
+        .chain(["entries_cancelled_universe"])
+    {
+        let mut sum = 0u64;
+        for leg in legs {
+            sum +=
+                uint_at(leg, &[key]).ok_or_else(|| missing(&format!("research.legs[].{key}")))?;
+        }
+        let total = uint_at(research, &["funnel", key])
+            .ok_or_else(|| missing(&format!("research.funnel.{key}")))?;
+        if sum != total {
+            return Err(format!(
+                "Σ research.legs.{key} = {sum} pour research.funnel.{key} = {total}"
             ));
         }
     }
@@ -999,6 +1595,24 @@ fn describe_manifest_info(a: &Value, b: &Value, lines: &mut Vec<String>) {
             "information : moteurs différents (comparer deux builds est légitime)".to_string(),
         );
         lines.append(&mut engine_lines);
+    }
+}
+
+/// Information sur l'identité de recherche (s11) : deux runs de blocs ou de lignes différents ne sont pas
+/// censés être identiques. Aucun effet sur le verdict.
+fn describe_research_info(a: &Value, b: &Value, lines: &mut Vec<String>) {
+    let path = ["research", "identity_hash"];
+    if string_at(a, &path) != string_at(b, &path) {
+        lines.push(
+            "attention : identités de recherche différentes (bloc, ligne, sous-ensemble ou jambes), ces \
+             runs ne sont pas censés être identiques"
+                .to_string(),
+        );
+        lines.push(format!(
+            "  research.identity_hash : {} contre {}",
+            shown(a, &path),
+            shown(b, &path)
+        ));
     }
 }
 
