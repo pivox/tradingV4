@@ -1,0 +1,15 @@
+# Dossier de profils d'exemple (données fabriquées, schémas s10)
+
+Ce dossier est un **dossier de profils écrit à la main pour les tests** du control plane, selon `docs/specs/s10.md` §12 et §13. Ce n'est **ni une sortie de `tv4`, ni un résultat de backtest, ni des données de marché** : aucune valeur ne doit être lue comme un résultat de stratégie ou comme un coût de marché.
+
+- Il suit la forme d'un dossier écrit par `tv4 backtest --costs` : `profiles.json` (`tv4-profiles-v1`) et trois runs complets, `baseline/`, `adverse/` et `maker/`, chacun avec `manifest.json` (`tv4-manifest-s10`), `metrics.json` (`tv4-metrics-s10`), `trades.csv` (36 colonnes, `spread_cost` rempli) et `equity.csv`.
+- Il dérive du run portefeuille s9 (`../run-portefeuille/`) : mêmes dix trades de base, mêmes dates, mêmes quantités, mêmes `mfe`, `mae` et R. Une fois pour toutes, un script jetable (non versionné) a recalculé à partir de ces lignes, pour chaque profil : les prix, frais, slippage et spread des fills, le PnL de chaque trade, les agrégats qui en dépendent (PnL, gagnants, profit factor, espérance nette, répartitions par type de sortie, par paire et par année), les trois blocs `costs`, `cost_arithmetic` et `cost_counters` (formules de §12.2) et `profiles.json`. Les tirages de slippage de stop sont inventés (lots 2, 4, 6 et 8) ; le profil adverse porte un stress sur le lot 6, baseline et maker n'en portent aucun.
+- Non recalculés : `equity.csv` (identique dans les trois profils et à celui du run s9), les drawdowns, l'exposition et l'entonnoir. Ils restent ceux du run s9, donc incohérents avec le PnL de chaque profil : le control plane ne recalcule rien et ne le contrôle pas.
+- `min_trades` vaut 5 (30 dans le run s9) pour que les trois profils aient l'effectif requis : baseline et adverse ne sont pas positifs, le profil maker l'est avec 7 entrées sur 10 remplies en maker, d'où l'étiquette « dépend du fill ». Les autres étiquettes et statuts maker sont exercés par les tests, qui modifient une copie de `profiles.json`.
+- Le `manifest.json` ne porte ni `cost_measures_file` ni `cost_measures_hash` (champs facultatifs de s10, absents quand il n'y a pas de fichier de mesures) ; `metrics.costs` les porte à `null`.
+- Les **hashes sont factices** (motifs hexadécimaux répétés, de forme valide) et ne correspondent à aucun contenu réel : le control plane ne recalcule aucun hash (rôle de `tv4 verify`). `config/costs.toml` n'est pas lu.
+- Le TF de décision de la stratégie est 15m (`decision_tf` de `cost_arithmetic`), donc `protocol_tf` vaut `false` et le seuil coût/stop vaut 0,10 R, y compris en maker.
+
+## Conformité aux clés réelles
+
+Le golden Rust `tv4/tests/golden_runs/portfolio_profiles/` (lot E de s10) est la sortie réelle de `tv4 backtest --costs`. `tests/Run/GoldenProfilesRunTest.php` le lit et reste marqué « skipped » tant que ce dossier n'existe pas ; le pilote retire le saut à l'intégration. Après un changement de schéma côté `tv4`, comparer les chemins de clés de cette fixture à ceux du golden et compléter la fixture.

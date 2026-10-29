@@ -4,6 +4,9 @@
 //! moteur fait le reste ici, une fois avant la boucle : agrégation des 1m de la paire de régime en 1d
 //! ([`Mtf`]) et SMA200 des clôtures 1d (colonne complète de [`batch`], `NaN` en warmup).
 //!
+//! La série ([`RegimeSeries`]) est immuable et construite une fois ; le pointeur de lecture est un
+//! curseur à part ([`RegimeFeed`]), neuf à chaque profil de coûts.
+//!
 //! À chaque appel d'une stratégie qui lit le régime, [`RegimeFeed::advance`] avance un pointeur dans les
 //! 1m de la paire de régime tant que `open + 60 000 ≤ now_ms`, et lit le nombre de 1d closes à cet
 //! indice (`closed_count` de [`Mtf`]). Le coût est O(1) amorti. Une 1m absente de la paire de régime
@@ -25,26 +28,22 @@ const DAY_MS: Ts = 86_400_000;
 /// Durée d'une 1m en millisecondes.
 const MINUTE_MS: Ts = 60_000;
 
-/// Bougies 1d de la paire de régime, SMA200 et pointeur de lecture.
-pub(crate) struct RegimeFeed<'a> {
+/// Bougies 1d de la paire de régime et SMA200 : **immuable**, construite une fois par préparation
+/// partagée. Aucune méthode ne la modifie, donc plusieurs profils de coûts la lisent sans se gêner ; le
+/// pointeur de lecture, lui, est dans [`RegimeFeed`] (docs S10 §9.3).
+pub(crate) struct RegimeSeries<'a> {
     mtf: Mtf<'a>,
     sma: Vec<f64>,
-    /// Nombre de 1m de la paire de régime déjà closes à la dernière `now_ms` demandée.
-    consumed: usize,
 }
 
-impl<'a> RegimeFeed<'a> {
+impl<'a> RegimeSeries<'a> {
     /// Construit la série de régime sur les 1m de `m1`. Les 1m ont déjà été contrôlées (alignées,
     /// strictement croissantes) par l'appelant ; `Mtf::build` les contrôle de toute façon.
-    pub(crate) fn new(m1: &'a [Candle]) -> Result<RegimeFeed<'a>, EngineError> {
+    pub(crate) fn new(m1: &'a [Candle]) -> Result<RegimeSeries<'a>, EngineError> {
         let mtf = Mtf::build(m1, &[REGIME_TF])?;
         let closes = mtf.candles(REGIME_TF).unwrap_or(&[]);
         let sma = batch(Sma::new(REGIME_SMA_PERIOD)?, closes.iter().map(|c| c.close));
-        Ok(RegimeFeed {
-            mtf,
-            sma,
-            consumed: 0,
-        })
+        Ok(RegimeSeries { mtf, sma })
     }
 
     /// Bougies 1d de la paire de régime (la dernière peut être incomplète).
@@ -58,25 +57,6 @@ impl<'a> RegimeFeed<'a> {
         let counts = self.mtf.closed_counts(REGIME_TF)?;
         let index = counts.iter().position(|&n| n >= REGIME_SMA_PERIOD)?;
         self.mtf.m1().get(index).map(|c| c.open_time_ms)
-    }
-
-    /// Nombre de bougies 1d closes à `now_ms`. `now_ms` ne doit pas décroître d'un appel à l'autre.
-    pub(crate) fn advance(&mut self, now_ms: Ts) -> usize {
-        let m1 = self.mtf.m1();
-        while m1
-            .get(self.consumed)
-            .is_some_and(|c| c.open_time_ms.saturating_add(MINUTE_MS) <= now_ms)
-        {
-            self.consumed += 1;
-        }
-        if self.consumed == 0 {
-            return 0;
-        }
-        self.mtf
-            .closed_counts(REGIME_TF)
-            .and_then(|counts| counts.get(self.consumed - 1))
-            .copied()
-            .unwrap_or(0)
     }
 
     /// Vue de régime sur les `closed` premières bougies 1d (`closed` vient de [`RegimeFeed::advance`]).
@@ -117,6 +97,50 @@ impl<'a> RegimeFeed<'a> {
     }
 }
 
+/// Curseur de lecture de la série de régime : **neuf à chaque profil** (docs S10 §9.3). Il est la seule
+/// partie mutable : un profil qui oublierait de le remettre à zéro est impossible, puisqu'il en reçoit un
+/// neuf et ne touche jamais la série.
+pub(crate) struct RegimeFeed<'s> {
+    series: &'s RegimeSeries<'s>,
+    /// Nombre de 1m de la paire de régime déjà closes à la dernière `now_ms` demandée.
+    consumed: usize,
+}
+
+impl<'s> RegimeFeed<'s> {
+    /// Curseur au début de la série.
+    pub(crate) fn new(series: &'s RegimeSeries<'s>) -> RegimeFeed<'s> {
+        RegimeFeed {
+            series,
+            consumed: 0,
+        }
+    }
+
+    /// Nombre de bougies 1d closes à `now_ms`. `now_ms` ne doit pas décroître d'un appel à l'autre.
+    pub(crate) fn advance(&mut self, now_ms: Ts) -> usize {
+        let m1 = self.series.mtf.m1();
+        while m1
+            .get(self.consumed)
+            .is_some_and(|c| c.open_time_ms.saturating_add(MINUTE_MS) <= now_ms)
+        {
+            self.consumed += 1;
+        }
+        if self.consumed == 0 {
+            return 0;
+        }
+        self.series
+            .mtf
+            .closed_counts(REGIME_TF)
+            .and_then(|counts| counts.get(self.consumed - 1))
+            .copied()
+            .unwrap_or(0)
+    }
+
+    /// Vue de régime sur les `closed` premières bougies 1d (`closed` vient de [`RegimeFeed::advance`]).
+    pub(crate) fn view(&self, closed: usize) -> Result<RegimeView<'s>, EngineError> {
+        self.series.view(closed)
+    }
+}
+
 /// Le timeframe de régime est le 1d (garde de compilation de l'unité utilisée ci-dessus).
 const _: () = assert!(matches!(REGIME_TF, Timeframe::D1));
 
@@ -150,9 +174,10 @@ mod tests {
     #[test]
     fn la_sma_apparait_apres_200_cloture_1d() {
         let m1 = minutes(203);
-        let mut feed = RegimeFeed::new(&m1).unwrap();
+        let series = RegimeSeries::new(&m1).unwrap();
+        let mut feed = RegimeFeed::new(&series);
         // Premier instant où 200 bougies 1d sont closes : fin de la minute 23:59 du jour 199.
-        let ready = feed.first_ready_open_ms().unwrap();
+        let ready = series.first_ready_open_ms().unwrap();
         assert_eq!(ready, T0 + 199 * DAY_MS + 1439 * MINUTE_MS);
         // Avant : pas de SMA. Le jour 199 n'est pas clos à 23:58.
         let closed = feed.advance(T0 + 199 * DAY_MS + 1439 * MINUTE_MS);
@@ -171,8 +196,8 @@ mod tests {
     #[test]
     fn la_serie_trop_courte_n_a_jamais_de_sma() {
         let m1 = minutes(50);
-        let feed = RegimeFeed::new(&m1).unwrap();
-        assert_eq!(feed.first_ready_open_ms(), None);
+        let series = RegimeSeries::new(&m1).unwrap();
+        assert_eq!(series.first_ready_open_ms(), None);
     }
 
     #[test]
@@ -180,7 +205,8 @@ mod tests {
         let mut m1 = minutes(3);
         // Retire la 1m 23:59 du jour 0.
         m1.retain(|c| c.open_time_ms != T0 + 1439 * MINUTE_MS);
-        let mut feed = RegimeFeed::new(&m1).unwrap();
+        let series = RegimeSeries::new(&m1).unwrap();
+        let mut feed = RegimeFeed::new(&series);
         // À 00:00 du jour 1, la 1d du jour 0 n'est pas encore close (sa dernière 1m manque).
         assert_eq!(feed.advance(T0 + DAY_MS), 0);
         // Elle l'est à la fin de la première 1m du jour 1.
@@ -199,12 +225,31 @@ mod tests {
                 c.close = 50.0;
             }
         }
-        let feed = RegimeFeed::new(&m1).unwrap();
-        let (bull, bear) = feed.day_counts(T0 + 205 * DAY_MS, T0 + 225 * DAY_MS);
+        let series = RegimeSeries::new(&m1).unwrap();
+        let (bull, bear) = series.day_counts(T0 + 205 * DAY_MS, T0 + 225 * DAY_MS);
         // Jour d : juge la 1d du jour d - 1. Haussiers tant que le jour d - 1 ≤ 209 : d = 205..=210.
         assert_eq!(bull, 6);
         assert_eq!(bear, 15);
-        assert_eq!(feed.day_counts(T0 + 10 * DAY_MS, T0 + 20 * DAY_MS), (0, 0));
-        assert_eq!(feed.day_counts(T0 + 20 * DAY_MS, T0 + 10 * DAY_MS), (0, 0));
+        assert_eq!(
+            series.day_counts(T0 + 10 * DAY_MS, T0 + 20 * DAY_MS),
+            (0, 0)
+        );
+        assert_eq!(
+            series.day_counts(T0 + 20 * DAY_MS, T0 + 10 * DAY_MS),
+            (0, 0)
+        );
+    }
+
+    #[test]
+    fn deux_curseurs_sur_une_meme_serie_sont_independants() {
+        let m1 = minutes(203);
+        let series = RegimeSeries::new(&m1).unwrap();
+        let mut first = RegimeFeed::new(&series);
+        assert_eq!(first.advance(T0 + 200 * DAY_MS), 200);
+        // Un curseur neuf repart de zéro : la série n'a gardé aucune trace du premier.
+        let mut second = RegimeFeed::new(&series);
+        assert_eq!(second.advance(T0 + 100 * DAY_MS), 100);
+        assert_eq!(first.advance(T0 + 201 * DAY_MS), 201);
+        assert_eq!(second.advance(T0 + 200 * DAY_MS), 200);
     }
 }

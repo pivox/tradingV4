@@ -10,6 +10,10 @@
 //! paires sur un cash commun, `engine::run_portfolio`, schémas `tv4-metrics-s9` et `tv4-manifest-s9`.
 //! Sans `--symbols`, le chemin de S8 ne change pas, et toute option du portefeuille est refusée
 //! ([`CliError::PortfolioOptionWithoutSymbols`]) pour qu'aucun run S8 ne croie l'appliquer.
+//!
+//! Avec `--costs` (S10, module `profiles`, mode portefeuille seulement), trois runs de profils de coûts
+//! sont écrits sous `--out` (`baseline/`, `adverse/`, `maker/`) puis `profiles.json`. Sans `--costs`, les
+//! chemins de S8 et de S9 ne changent pas.
 
 use std::fs::{self, File};
 use std::io::Read;
@@ -22,15 +26,19 @@ use super::{CliError, now_ms};
 use crate::engine::{self, CellConfig, DEFAULT_MIN_TRADES};
 use crate::marketdata::kraken;
 use crate::model::hash;
-use crate::model::{Candle, ExchangeId, FeeSchedule, InstrumentRules, Slippage, Timeframe, Ts};
+use crate::model::{
+    Candle, ExchangeId, FeeGridId, FeeSchedule, InstrumentRules, Slippage, Timeframe, Ts,
+};
 use crate::report::manifest::{ManifestInputs, OutputFiles, Timings};
 use crate::report::{self, DataInfo, DatasetRef, EngineInfo, Manifest, Metrics, TradesContext};
 use crate::sim::SimRules;
 use crate::store::{self, Columns, GapsPolicy, Window, dsh};
 use crate::strategy::{Strategy, registry};
 use portfolio::PortfolioArgs;
+pub use profiles::CostArgs;
 
 mod portfolio;
+mod profiles;
 
 /// Symbole canonique de la fixture (XBTUSD Kraken, docs/03 §4).
 const FIXTURE_SYMBOL: &str = "BTC-USD";
@@ -42,6 +50,9 @@ const MINUTE_MS: Ts = 60_000;
 const MANIFEST_FILE: &str = "manifest.json";
 /// Rapport HTML rendu par `tv4:report` à côté d'un run.
 const REPORT_FILE: &str = "report.html";
+/// Slippage scalaire du chemin hérité (S8 et S9) quand `--slippage-bps` n'est pas donné, en points de
+/// base. Avec `--costs`, l'option est refusée : le slippage vient du profil de coûts (S10 §14.1).
+const DEFAULT_SLIPPAGE_BPS: f64 = 5.0;
 /// Taille du tampon de lecture du binaire pour son hash.
 const BINARY_HASH_BUFFER: usize = 64 * 1024;
 
@@ -66,9 +77,9 @@ pub struct RunInputArgs {
     /// Fichier TOML des paramètres de la stratégie.
     #[arg(long, value_name = "TOML")]
     pub params: PathBuf,
-    /// Grille de frais (section de --fees-file).
-    #[arg(long, value_name = "EXCHANGE", default_value = "okx")]
-    pub fees: ExchangeId,
+    /// Grille de frais (section de --fees-file) : `okx_regular` (alias `okx`) ou `bitvavo_usdc`.
+    #[arg(long, value_name = "GRILLE", default_value = "okx")]
+    pub fees: FeeGridId,
     /// Fichier des grilles de frais, relatif au dossier courant.
     #[arg(long, value_name = "TOML", default_value = "config/fees.toml")]
     pub fees_file: PathBuf,
@@ -76,14 +87,9 @@ pub struct RunInputArgs {
     /// au dossier courant.
     #[arg(long, value_name = "TOML", default_value = "config/instruments.toml")]
     pub instruments_file: PathBuf,
-    /// Slippage en points de base (nombre fini dans [0, 10 000[).
-    #[arg(
-        long,
-        value_name = "BPS",
-        default_value = "5",
-        allow_negative_numbers = true
-    )]
-    pub slippage_bps: Slippage,
+    /// Slippage en points de base (nombre fini dans [0, 10 000[), 5 par défaut. Refusé avec --costs.
+    #[arg(long, value_name = "BPS", allow_negative_numbers = true)]
+    pub slippage_bps: Option<Slippage>,
     /// Capital initial, dans la monnaie de cotation des données.
     #[arg(
         long,
@@ -102,12 +108,23 @@ pub struct RunInputArgs {
     pub min_trades: u32,
 }
 
+impl RunInputArgs {
+    /// Slippage scalaire du chemin hérité : celui de `--slippage-bps`, sinon [`DEFAULT_SLIPPAGE_BPS`].
+    pub(super) fn legacy_slippage(&self) -> Result<Slippage, CliError> {
+        match self.slippage_bps {
+            Some(slippage) => Ok(slippage),
+            None => Ok(Slippage::from_bps(DEFAULT_SLIPPAGE_BPS)?),
+        }
+    }
+}
+
 /// Arguments de `tv4 backtest`.
 #[derive(Debug, Args)]
 pub struct BacktestArgs {
     #[command(flatten)]
     pub inputs: RunInputArgs,
-    /// Dossier de sortie (créé au besoin) ; défaut `<root>/runs/<run_id>`.
+    /// Dossier de sortie (créé au besoin) ; défaut `<root>/runs/<run_id>`, ou
+    /// `<root>/runs/<profiles_id>` avec `--costs`.
     #[arg(long, value_name = "DOSSIER")]
     pub out: Option<PathBuf>,
     /// Pas d'échantillonnage de `equity.csv` (1m, 5m, 15m, 30m, 1h, 4h, 12h, 1d).
@@ -116,6 +133,9 @@ pub struct BacktestArgs {
     /// Options du mode portefeuille (S9) : `--symbols` l'active.
     #[command(flatten)]
     pub portfolio: PortfolioArgs,
+    /// Options des profils de coûts (S10) : `--costs` les active, exige `--symbols`.
+    #[command(flatten)]
+    pub costs: CostArgs,
 }
 
 /// Run préparé : données lues et vérifiées, paramètres lus, tout ce qu'il faut pour rejouer.
@@ -165,7 +185,7 @@ pub(super) fn prepare(args: &RunInputArgs) -> Result<PreparedRun, CliError> {
         _ => return Err(CliError::DataSource),
     };
 
-    let fees = FeeSchedule::load(args.fees, &args.fees_file)?;
+    let fees = FeeSchedule::load_grid(args.fees, &args.fees_file)?;
     let instrument = InstrumentRules::load(input.exchange, &input.symbol, &args.instruments_file)?;
 
     let params_text = fs::read_to_string(&args.params).map_err(|source| CliError::Read {
@@ -189,7 +209,7 @@ pub(super) fn prepare(args: &RunInputArgs) -> Result<PreparedRun, CliError> {
         fixture_blake3: input.fixture_blake3,
         fees,
         instrument,
-        slippage: args.slippage_bps,
+        slippage: args.legacy_slippage()?,
         capital: args.capital,
         min_trades: args.min_trades,
         strategy_id: args.strategy.clone(),
@@ -211,6 +231,11 @@ struct Input {
 /// `tv4 backtest` : prépare le run, rejoue la stratégie, écrit `metrics.json`, `trades.csv`,
 /// `equity.csv` puis `manifest.json`.
 pub(super) fn run(args: &BacktestArgs) -> Result<(), CliError> {
+    // Les refus d'usage de S10 viennent avant toute lecture de fichier.
+    args.costs.check(&args.portfolio, &args.inputs)?;
+    if args.costs.is_costs() {
+        return profiles::run(args);
+    }
     if args.portfolio.is_portfolio() {
         return portfolio::run(args);
     }
@@ -272,8 +297,10 @@ pub(super) fn run(args: &BacktestArgs) -> Result<(), CliError> {
     // Un dossier de sortie existant (même `run_id` sous un autre commit) ne doit pas garder l'ancien
     // manifeste, qui marque un run complet, pendant que les autres fichiers sont réécrits : une
     // interruption laisserait des fichiers du nouveau run sous le manifeste de l'ancien. Le manifeste
-    // est réécrit en dernier ; le rapport HTML d'un rendu précédent est périmé lui aussi.
-    for stale in [MANIFEST_FILE, REPORT_FILE] {
+    // est réécrit en dernier ; le rapport HTML d'un rendu précédent est périmé lui aussi, et le
+    // `profiles.json` d'un run `--costs` précédent aussi : verify et le control plane classent un dossier
+    // sur sa seule présence, un run s8 ne doit pas y rester pris pour un dossier de profils.
+    for stale in [MANIFEST_FILE, REPORT_FILE, report::profiles::PROFILES_FILE] {
         remove_stale(&out, stale)?;
     }
     report::write_bytes_atomic(&out, "metrics.json", &metrics_bytes)?;
@@ -403,7 +430,7 @@ fn is_valid_name(name: &str) -> bool {
 
 /// Chemin du manifeste désigné par `--dataset`. Un nom nu se résout en `<root>/datasets/<nom>.json` ;
 /// sinon un chemin, où un chemin absolu remplace la racine (comportement de `Path::join`).
-fn resolve_dataset_path(root: &Path, dataset: &Path) -> Result<PathBuf, CliError> {
+pub(super) fn resolve_dataset_path(root: &Path, dataset: &Path) -> Result<PathBuf, CliError> {
     let shown = dataset.display().to_string();
     if is_bare_name(&shown) {
         if !is_valid_name(&shown) {

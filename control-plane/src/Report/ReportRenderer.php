@@ -8,6 +8,7 @@ use App\Report\Chart\DrawdownChart;
 use App\Report\Chart\HistogramChart;
 use App\Report\Chart\LineChart;
 use App\Report\Chart\ScatterChart;
+use App\Run\Dto\ProfilesReport;
 use App\Run\Dto\RunReport;
 use Twig\Environment;
 
@@ -32,11 +33,28 @@ final class ReportRenderer
 
     public function render(RunReport $run): string
     {
+        return $this->twig->render('report/standalone.html.twig', $this->context($run));
+    }
+
+    /**
+     * Rapport d'un dossier de profils de coûts : la section « Profils de coûts », puis la fiche complète du
+     * profil baseline. Les fiches adverse et maker se rendent depuis leurs sous-dossiers.
+     */
+    public function renderProfiles(ProfilesReport $profiles): string
+    {
+        return $this->twig->render('report/standalone.html.twig', $this->context($profiles->baseline()) + ['profiles' => $profiles]);
+    }
+
+    /**
+     * @return array<string, mixed>
+     */
+    private function context(RunReport $run): array
+    {
         $equity = $run->equity;
         $histogram = $run->metrics->distribution->histogramR;
         $shown = array_slice($run->trades, 0, self::MAX_TRADE_ROWS);
 
-        return $this->twig->render('report/standalone.html.twig', [
+        return [
             'run' => $run,
             'manifest' => $run->manifest,
             'metrics' => $run->metrics,
@@ -52,6 +70,6 @@ final class ReportRenderer
             'hiddenTrades' => count($run->trades) - count($shown),
             'windowStart' => $this->format->dateTime($run->manifest->window->startMs),
             'windowEnd' => $this->format->dateTime($run->manifest->window->endMs),
-        ]);
+        ];
     }
 }

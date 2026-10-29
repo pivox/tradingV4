@@ -499,20 +499,22 @@ fn backtest_erreurs_d_usage() {
         args
     };
     assert_eq!(tv4_owned(&sans_fixture).status.code(), Some(2));
+    // `--fees kraken` n'est plus une grille de frais : refusé à l'analyse (S10 §3.3), comme `binance` et
+    // `okx_xperps`.
     for extra in [
         ["--slippage-bps", "nan"],
         ["--slippage-bps", "-1"],
         ["--fees", "binance"],
+        ["--fees", "kraken"],
+        ["--fees", "okx_xperps"],
     ] {
         let sortie = tv4_owned(&avec(&extra));
         assert_eq!(sortie.status.code(), Some(2), "{extra:?}");
     }
     // Code 1 : erreur applicative.
-    for extra in [["--capital", "0"], ["--fees", "kraken"]] {
-        let sortie = tv4_owned(&avec(&extra));
-        assert_eq!(sortie.status.code(), Some(1), "{extra:?}");
-        assert!(!out.join("metrics.json").exists(), "{extra:?}");
-    }
+    let sortie = tv4_owned(&avec(&["--capital", "0"]));
+    assert_eq!(sortie.status.code(), Some(1));
+    assert!(!out.join("metrics.json").exists());
 }
 
 #[test]

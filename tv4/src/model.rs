@@ -5,8 +5,10 @@
 //! temps est un `i64` en millisecondes UTC, docs/03 §5) et les prix, quantités et volumes sont des
 //! `f64` (docs/03 §5.1).
 
+pub mod costs;
 pub mod hash;
 pub mod instrument;
+pub mod rng;
 
 pub use instrument::InstrumentRules;
 
@@ -79,6 +81,31 @@ pub enum ModelError {
     /// La section de l'exchange manque dans le fichier de frais.
     #[error("aucune grille de frais pour `{exchange}` dans la configuration")]
     FeesNotFound { exchange: ExchangeId },
+
+    /// Chaîne qui ne désigne aucune grille de frais nommée (`okx_xperps` n'existe pas : décision du
+    /// 13/10, 18:35).
+    #[error(
+        "grille de frais inconnue : `{0}` (attendues : okx_regular, bitvavo_usdc ; alias : okx)"
+    )]
+    UnknownFeeGrid(String),
+
+    /// La section de la grille manque dans le fichier de frais (une ancienne copie avec `[okx]` est
+    /// refusée ici, sans repli silencieux).
+    #[error("section `[{grid}]` absente de la configuration des frais")]
+    FeeGridNotFound { grid: FeeGridId },
+
+    /// `config/costs.toml` (ou une valeur résolue d'un profil de coûts) est invalide. `field` nomme
+    /// le champ, et la jambe et le profil pour une valeur résolue.
+    #[error("coûts : `{field}` invalide, {reason}")]
+    CostsInvalid { field: String, reason: String },
+
+    /// Le fichier de mesures `tv4-cost-measures-v1` est invalide.
+    #[error("mesures de coûts : `{field}` invalide, {reason}")]
+    MeasuresInvalid { field: String, reason: String },
+
+    /// Symbole dont on ne peut pas tirer l'actif de base (pas de `-`, ou base vide).
+    #[error("symbole `{symbol}` : l'actif de base est introuvable (forme attendue : BASE-QUOTE)")]
+    CostsSymbol { symbol: String },
 
     /// Frais hors bornes.
     #[error("`{name}` vaut {value} bps, hors des bornes autorisées (0 à {max})")]
@@ -389,6 +416,70 @@ impl FromStr for ExchangeId {
     }
 }
 
+/// Grille de frais nommée (docs/specs/s10.md §3) : le nom des sections de `config/fees.toml` et, dans
+/// les runs s10, celui du bloc haché `costs.fee_grid.grid`.
+///
+/// `ExchangeId` reste l'identifiant des **données** (dossiers, `dataset_hash`) ; `FeeGridId` ne
+/// désigne que des frais. `okx_xperps` n'est pas une variante : il tombe dans
+/// [`ModelError::UnknownFeeGrid`] (décision du 13/10, 18:35).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum FeeGridId {
+    /// OKX Europe spot, grille Regular (0,20 % maker, 0,35 % taker).
+    OkxRegular,
+    /// Hypothèse de recherche pour la stratégie grid (docs/03 §15.3).
+    BitvavoUsdc,
+}
+
+impl FeeGridId {
+    /// Rendu canonique, identique à la forme sérialisée et au nom de section de `fees.toml`.
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            FeeGridId::OkxRegular => "okx_regular",
+            FeeGridId::BitvavoUsdc => "bitvavo_usdc",
+        }
+    }
+
+    /// Identifiant de lieu que porte `FeeSchedule.exchange` : il garde la sérialisation héritée
+    /// (`"exchange":"okx"`) et donc les hashes des chemins s8 et s9.
+    pub const fn legacy_exchange(self) -> ExchangeId {
+        match self {
+            FeeGridId::OkxRegular => ExchangeId::Okx,
+            FeeGridId::BitvavoUsdc => ExchangeId::BitvavoUsdc,
+        }
+    }
+
+    /// Grille qui correspond à un lieu d'exécution ; `None` pour Kraken, qui n'a pas de grille.
+    ///
+    /// La correspondance est bijective tant que `FeeGridId` n'a que deux variantes (s10 §9.2).
+    pub const fn from_legacy_exchange(exchange: ExchangeId) -> Option<FeeGridId> {
+        match exchange {
+            ExchangeId::Okx => Some(FeeGridId::OkxRegular),
+            ExchangeId::BitvavoUsdc => Some(FeeGridId::BitvavoUsdc),
+            ExchangeId::Kraken => None,
+        }
+    }
+}
+
+impl fmt::Display for FeeGridId {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
+impl FromStr for FeeGridId {
+    type Err = ModelError;
+
+    /// `okx` est l'alias d'analyse de `okx_regular` ; tout autre nom est refusé.
+    fn from_str(text: &str) -> Result<FeeGridId, ModelError> {
+        match text {
+            "okx_regular" | "okx" => Ok(FeeGridId::OkxRegular),
+            "bitvavo_usdc" => Ok(FeeGridId::BitvavoUsdc),
+            autre => Err(ModelError::UnknownFeeGrid(autre.to_string())),
+        }
+    }
+}
+
 /// Vérifie qu'une valeur en points de base est dans `0..=max`.
 fn check_bps(name: &'static str, value: u32, max: u32) -> Result<(), ModelError> {
     if value > max {
@@ -443,23 +534,54 @@ impl FeeSchedule {
         f64::from(self.taker_bps) / BPS_PER_UNIT
     }
 
-    /// Lit la section de `exchange` dans un texte TOML au format de `config/fees.toml`.
-    pub fn from_toml_str(exchange: ExchangeId, text: &str) -> Result<FeeSchedule, ModelError> {
+    /// Lit la section de `grid` dans un texte TOML au format de `config/fees.toml`.
+    ///
+    /// Le `FeeSchedule` produit porte `grid.legacy_exchange()` : sa sérialisation reste celle des
+    /// chemins s8 et s9. Une section absente donne [`ModelError::FeeGridNotFound`].
+    pub fn from_toml_str_grid(grid: FeeGridId, text: &str) -> Result<FeeSchedule, ModelError> {
         let sections: BTreeMap<String, FeeEntry> = toml::from_str(text)?;
-        match sections.get(exchange.as_str()) {
-            Some(entree) => FeeSchedule::new(exchange, entree.maker_bps, entree.taker_bps),
-            None => Err(ModelError::FeesNotFound { exchange }),
+        match sections.get(grid.as_str()) {
+            Some(entree) => {
+                FeeSchedule::new(grid.legacy_exchange(), entree.maker_bps, entree.taker_bps)
+            }
+            None => Err(ModelError::FeeGridNotFound { grid }),
         }
     }
 
-    /// Lit la section de `exchange` dans un fichier TOML (en pratique `config/fees.toml`).
+    /// Lit la section de `grid` dans un fichier TOML (en pratique `config/fees.toml`).
+    pub fn load_grid(grid: FeeGridId, path: &Path) -> Result<FeeSchedule, ModelError> {
+        let text = read_config_text(path)?;
+        FeeSchedule::from_toml_str_grid(grid, &text)
+    }
+
+    /// Lit la grille d'un lieu d'exécution dans un texte TOML : `Okx` lit `[okx_regular]`,
+    /// `BitvavoUsdc` lit `[bitvavo_usdc]`, et `Kraken` (aucune grille : on n'y trade pas) donne
+    /// [`ModelError::FeesNotFound`].
+    pub fn from_toml_str(exchange: ExchangeId, text: &str) -> Result<FeeSchedule, ModelError> {
+        match FeeGridId::from_legacy_exchange(exchange) {
+            Some(grid) => FeeSchedule::from_toml_str_grid(grid, text),
+            None => {
+                // Le TOML est lu avant le refus, comme avant S10 : un fichier invalide reste une
+                // erreur de TOML.
+                let _: BTreeMap<String, FeeEntry> = toml::from_str(text)?;
+                Err(ModelError::FeesNotFound { exchange })
+            }
+        }
+    }
+
+    /// Lit la grille d'un lieu d'exécution dans un fichier TOML (en pratique `config/fees.toml`).
     pub fn load(exchange: ExchangeId, path: &Path) -> Result<FeeSchedule, ModelError> {
-        let text = std::fs::read_to_string(path).map_err(|source| ModelError::ConfigRead {
-            path: path.display().to_string(),
-            source,
-        })?;
+        let text = read_config_text(path)?;
         FeeSchedule::from_toml_str(exchange, &text)
     }
+}
+
+/// Lit un fichier de configuration en texte, avec l'erreur de lecture du module.
+pub(crate) fn read_config_text(path: &Path) -> Result<String, ModelError> {
+    std::fs::read_to_string(path).map_err(|source| ModelError::ConfigRead {
+        path: path.display().to_string(),
+        source,
+    })
 }
 
 /// Slippage scalaire en points de base, en `f64` (docs/03 §7.2 : `slippage_bps` du manifeste).
@@ -794,16 +916,93 @@ mod tests {
     }
 
     #[test]
+    fn grilles_nommees_et_alias() {
+        for (texte, attendu) in [
+            ("okx_regular", FeeGridId::OkxRegular),
+            ("okx", FeeGridId::OkxRegular),
+            ("bitvavo_usdc", FeeGridId::BitvavoUsdc),
+        ] {
+            assert_eq!(texte.parse::<FeeGridId>().unwrap(), attendu, "{texte}");
+        }
+        assert_eq!(FeeGridId::OkxRegular.as_str(), "okx_regular");
+        assert_eq!(
+            serde_json::to_string(&FeeGridId::BitvavoUsdc).unwrap(),
+            "\"bitvavo_usdc\""
+        );
+        assert_eq!(FeeGridId::OkxRegular.legacy_exchange(), ExchangeId::Okx);
+        assert_eq!(
+            FeeGridId::from_legacy_exchange(ExchangeId::BitvavoUsdc),
+            Some(FeeGridId::BitvavoUsdc)
+        );
+        assert_eq!(FeeGridId::from_legacy_exchange(ExchangeId::Kraken), None);
+    }
+
+    #[test]
+    fn grilles_inconnues_refusees_avec_la_liste_attendue() {
+        for nom in ["okx_xperps", "kraken", "binance", "", "OKX"] {
+            let erreur = nom.parse::<FeeGridId>().unwrap_err();
+            assert!(matches!(erreur, ModelError::UnknownFeeGrid(_)), "{nom}");
+            let message = erreur.to_string();
+            assert!(message.contains(&format!("`{nom}`")), "{message}");
+            assert!(
+                message.contains("okx_regular, bitvavo_usdc") && message.contains("alias : okx"),
+                "{message}"
+            );
+        }
+    }
+
+    #[test]
+    fn config_fees_toml_a_la_section_okx_regular_et_pas_okx() {
+        let texte = std::fs::read_to_string(FEES_TOML).unwrap();
+        let sections: BTreeMap<String, toml::Value> = toml::from_str(&texte).unwrap();
+        assert!(sections.contains_key("okx_regular"));
+        assert!(sections.contains_key("bitvavo_usdc"));
+        assert!(
+            !sections.contains_key("okx"),
+            "l'ancienne section est renommée"
+        );
+    }
+
+    #[test]
+    fn la_grille_okx_regular_garde_la_serialisation_heritee() {
+        let par_grille =
+            FeeSchedule::load_grid(FeeGridId::OkxRegular, Path::new(FEES_TOML)).unwrap();
+        let par_lieu = FeeSchedule::load(ExchangeId::Okx, Path::new(FEES_TOML)).unwrap();
+        assert_eq!(par_grille, par_lieu);
+        assert_eq!(
+            serde_json::to_string(&par_lieu).unwrap(),
+            r#"{"exchange":"okx","maker_bps":20,"taker_bps":35}"#
+        );
+    }
+
+    #[test]
+    fn ancienne_section_okx_refusee_sans_repli() {
+        let ancienne = "[okx]\nmaker_bps = 20\ntaker_bps = 35\n";
+        let erreur = FeeSchedule::from_toml_str_grid(FeeGridId::OkxRegular, ancienne).unwrap_err();
+        assert!(matches!(
+            erreur,
+            ModelError::FeeGridNotFound {
+                grid: FeeGridId::OkxRegular
+            }
+        ));
+        assert!(erreur.to_string().contains("[okx_regular]"));
+        let par_lieu = FeeSchedule::from_toml_str(ExchangeId::Okx, ancienne);
+        assert!(matches!(par_lieu, Err(ModelError::FeeGridNotFound { .. })));
+    }
+
+    #[test]
     fn fichier_de_frais_absent_ou_invalide() {
         let absent = FeeSchedule::load(ExchangeId::Okx, Path::new("/n/existe/pas.toml"));
         assert!(matches!(absent, Err(ModelError::ConfigRead { .. })));
-        let invalide = FeeSchedule::from_toml_str(ExchangeId::Okx, "[okx]\nmaker_bps = \"vingt\"");
+        let invalide =
+            FeeSchedule::from_toml_str(ExchangeId::Okx, "[okx_regular]\nmaker_bps = \"vingt\"");
         assert!(matches!(invalide, Err(ModelError::ConfigToml(_))));
-        let incomplet = FeeSchedule::from_toml_str(ExchangeId::Okx, "[okx]\nmaker_bps = 20");
+        let incomplet =
+            FeeSchedule::from_toml_str(ExchangeId::Okx, "[okx_regular]\nmaker_bps = 20");
         assert!(matches!(incomplet, Err(ModelError::ConfigToml(_))));
         let inconnu = FeeSchedule::from_toml_str(
             ExchangeId::Okx,
-            "[okx]\nmaker_bps = 20\ntaker_bps = 35\nrebate_bps = 1",
+            "[okx_regular]\nmaker_bps = 20\ntaker_bps = 35\nrebate_bps = 1",
         );
         assert!(
             matches!(inconnu, Err(ModelError::ConfigToml(_))),
@@ -822,8 +1021,10 @@ mod tests {
                 ..
             })
         ));
-        let toml =
-            FeeSchedule::from_toml_str(ExchangeId::Okx, "[okx]\nmaker_bps = 99999\ntaker_bps = 1");
+        let toml = FeeSchedule::from_toml_str(
+            ExchangeId::Okx,
+            "[okx_regular]\nmaker_bps = 99999\ntaker_bps = 1",
+        );
         assert!(matches!(
             toml,
             Err(ModelError::BpsOutOfRange {

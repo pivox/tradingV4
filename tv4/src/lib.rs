@@ -9,6 +9,7 @@
 //! - `engine` produit un résultat pur : il n'écrit rien (c'est `report`) et ne remonte pas vers `cli` ;
 //! - `report` lit les résultats de `engine` et `sim` : il ne connaît pas `strategy` et ne remonte pas
 //!   vers `cli` ;
+//! - `research` ne dépend ni de `cli`, ni de `report`, ni de `strategy` ;
 //! - `indicators` ne dépend que de `model` ;
 //! - `marketdata` ne dépend que de `model` ;
 //! - `mtf` ne dépend que de `model` ;
@@ -30,6 +31,7 @@ pub mod marketdata;
 pub mod model;
 pub mod mtf;
 pub mod report;
+pub mod research;
 pub mod sim;
 pub mod store;
 pub mod strategy;

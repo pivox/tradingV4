@@ -7,6 +7,10 @@ namespace App\Run;
 use App\Run\Csv\EquityCsvReader;
 use App\Run\Csv\TradesCsvReader;
 use App\Run\Dto\ConfigInfo;
+use App\Run\Dto\CostArithmetic;
+use App\Run\Dto\CostCounters;
+use App\Run\Dto\CostLeg;
+use App\Run\Dto\CostsBlock;
 use App\Run\Dto\DataSeries;
 use App\Run\Dto\Distribution;
 use App\Run\Dto\EngineInfo;
@@ -40,9 +44,11 @@ use App\Run\Json\JsonObject;
  * Lit les quatre fichiers d'un run (`manifest.json`, `metrics.json`, `trades.csv`, `equity.csv`) et
  * les valide. Aucun hash ni aucune métrique n'est recalculé : `tv4` reste la source de vérité.
  *
- * Deux générations de schémas sont acceptées, chacune en comparaison stricte de valeur : s8 (une paire)
- * et s9 (portefeuille). Le manifeste et les métriques d'un même run doivent être de la même génération.
- * Les blocs propres à s9 sont lus s'ils sont présents ; un run s8 se lit exactement comme avant.
+ * Trois générations de schémas sont acceptées, chacune en comparaison stricte de valeur : s8 (une paire),
+ * s9 (portefeuille) et s10 (portefeuille joué avec un profil de coûts). Le manifeste et les métriques d'un même
+ * run doivent être de la même génération. Les blocs propres à s9 sont lus s'ils sont présents ; un run s8 se
+ * lit exactement comme avant. En s10, les blocs `costs`, `cost_arithmetic` et `cost_counters` sont obligatoires,
+ * `fees` et `slippage_bps` n'existent plus et la grille de frais se lit dans `costs.fee_grid` de la config.
  */
 final class RunDirectoryReader
 {
@@ -52,6 +58,8 @@ final class RunDirectoryReader
     public const MANIFEST_SCHEMA_S9 = 'tv4-manifest-s9';
     public const METRICS_SCHEMA_S8 = 'tv4-metrics-s8';
     public const METRICS_SCHEMA_S9 = 'tv4-metrics-s9';
+    public const MANIFEST_SCHEMA_S10 = 'tv4-manifest-s10';
+    public const METRICS_SCHEMA_S10 = 'tv4-metrics-s10';
 
     public function __construct(
         private readonly TradesCsvReader $tradesReader,
@@ -74,12 +82,14 @@ final class RunDirectoryReader
             }
         }
 
-        $manifestSchemas = [self::MANIFEST_SCHEMA_S8, self::MANIFEST_SCHEMA_S9];
-        $metricsSchemas = [self::METRICS_SCHEMA_S8, self::METRICS_SCHEMA_S9];
+        $manifestSchemas = [self::MANIFEST_SCHEMA_S8, self::MANIFEST_SCHEMA_S9, self::MANIFEST_SCHEMA_S10];
+        $metricsSchemas = [self::METRICS_SCHEMA_S8, self::METRICS_SCHEMA_S9, self::METRICS_SCHEMA_S10];
         $manifestJson = $this->json($dir, self::MANIFEST_FILE, $manifestSchemas);
         $metricsJson = $this->json($dir, self::METRICS_FILE, $metricsSchemas);
-        $portfolio = self::MANIFEST_SCHEMA_S9 === $manifestJson->string('schema');
-        if ($portfolio !== (self::METRICS_SCHEMA_S9 === $metricsJson->string('schema'))) {
+        $generation = self::generation($manifestJson->string('schema'));
+        $costs = 10 === $generation;
+        $portfolio = $generation >= 9;
+        if ($generation !== self::generation($metricsJson->string('schema'))) {
             throw InvalidRunException::invalidValue(
                 self::METRICS_FILE,
                 'schema',
@@ -91,8 +101,8 @@ final class RunDirectoryReader
             );
         }
 
-        $manifest = $this->manifest($manifestJson, $portfolio);
-        $metrics = $this->metrics($metricsJson, $portfolio);
+        $manifest = $this->manifest($manifestJson, $portfolio, $costs);
+        $metrics = $this->metrics($metricsJson, $portfolio, $costs);
 
         if ($manifest->configHash !== $metrics->configHash) {
             throw InvalidRunException::invalidValue(self::METRICS_FILE, 'config_hash', 'différent de celui du manifeste');
@@ -105,12 +115,39 @@ final class RunDirectoryReader
             throw InvalidRunException::invalidValue(self::METRICS_FILE, 'instruments.instruments_hash', 'différent de celui du manifeste');
         }
 
+        $this->checkCostsConsistency($manifest, $metrics);
+
         return new RunReport(
             $manifest,
             $metrics,
             $this->tradesReader->read($dir . '/' . TradesCsvReader::FILE),
             $this->equityReader->read($dir . '/' . EquityCsvReader::FILE),
         );
+    }
+
+    /** Génération d'un nom de schéma accepté : 8, 9 ou 10 (suffixe `-s8`, `-s9`, `-s10`). */
+    private static function generation(string $schema): int
+    {
+        return match (true) {
+            str_ends_with($schema, '-s10') => 10,
+            str_ends_with($schema, '-s9') => 9,
+            default => 8,
+        };
+    }
+
+    /** En s10, le manifeste et les métriques du même run annoncent le même profil et le même fichier de coûts. */
+    private function checkCostsConsistency(Manifest $manifest, Metrics $metrics): void
+    {
+        $costs = $metrics->costs;
+        if (null === $costs) {
+            return;
+        }
+        if (null !== $manifest->profile && $manifest->profile !== $costs->profile) {
+            throw InvalidRunException::invalidValue(self::METRICS_FILE, 'costs.profile', 'différent de celui du manifeste');
+        }
+        if (null !== $manifest->costsFileHash && $manifest->costsFileHash !== $costs->costsFileHash) {
+            throw InvalidRunException::invalidValue(self::METRICS_FILE, 'costs.costs_file_hash', 'différent de celui du manifeste');
+        }
     }
 
     /**
@@ -134,7 +171,7 @@ final class RunDirectoryReader
         return $json;
     }
 
-    private function manifest(JsonObject $j, bool $portfolio): Manifest
+    private function manifest(JsonObject $j, bool $portfolio, bool $costs): Manifest
     {
         $data = $j->object('data');
         // s9 : le bloc `data` reprend la fenêtre, le hash et son format ; le haut du manifeste reste prioritaire.
@@ -157,7 +194,7 @@ final class RunDirectoryReader
             hashFormat: $portfolio && !$j->has('hash_format') ? $data->string('hash_format') : $j->string('hash_format'),
             resultHash: $j->string('result_hash'),
             verdict: $j->string('verdict'),
-            config: $this->config($j->object('config'), $portfolio),
+            config: $this->config($j->object('config'), $portfolio, $costs),
             data: $portfolio ? $this->portfolioData($data) : new ManifestData(
                 source: $data->string('source'),
                 dataset: $data->nullableString('dataset'),
@@ -198,6 +235,12 @@ final class RunDirectoryReader
             schema: $j->string('schema'),
             instrumentsHash: $portfolio && $j->has('instruments_hash') ? $j->nullableString('instruments_hash') : null,
             instrumentsFile: $portfolio && $j->has('instruments_file') ? $j->nullableString('instruments_file') : null,
+            profile: $costs ? $this->optionalString($j, 'profile') : null,
+            costsFile: $costs ? $this->optionalString($j, 'costs_file') : null,
+            costsFileHash: $costs ? $this->optionalString($j, 'costs_file_hash') : null,
+            costMeasuresFile: $costs ? $this->optionalString($j, 'cost_measures_file') : null,
+            costMeasuresHash: $costs ? $this->optionalString($j, 'cost_measures_hash') : null,
+            profilesId: $costs ? $this->optionalString($j, 'profiles_id') : null,
         );
     }
 
@@ -260,16 +303,19 @@ final class RunDirectoryReader
         return $j->has($path) && !$j->isNull($path);
     }
 
-    private function config(JsonObject $c, bool $portfolio): ConfigInfo
+    /** En s10, la grille se lit dans `costs.fee_grid` et le slippage scalaire n'existe plus. */
+    private function config(JsonObject $c, bool $portfolio, bool $costs): ConfigInfo
     {
+        $fees = $costs ? 'costs.fee_grid' : 'fees';
+
         return new ConfigInfo(
             strategyId: $c->string('strategy.id'),
             strategyVersion: $c->string('strategy.version'),
             strategyParams: $c->object('strategy')->scalarMap('params'),
-            feesExchange: $c->string('fees.exchange'),
-            makerBps: $c->float('fees.maker_bps'),
-            takerBps: $c->float('fees.taker_bps'),
-            slippageBps: $c->float('slippage_bps'),
+            feesExchange: $c->string($costs ? 'costs.fee_grid.grid' : 'fees.exchange'),
+            makerBps: $c->float($fees . '.maker_bps'),
+            takerBps: $c->float($fees . '.taker_bps'),
+            slippageBps: $costs ? null : $c->float('slippage_bps'),
             initialCash: $c->float('initial_cash'),
             minTrades: $c->int('min_trades'),
             warmupBars: $c->int('warmup_bars'),
@@ -294,7 +340,7 @@ final class RunDirectoryReader
         return $rules;
     }
 
-    private function metrics(JsonObject $j, bool $portfolio): Metrics
+    private function metrics(JsonObject $j, bool $portfolio, bool $costs): Metrics
     {
         $signals = $j->object('signals');
 
@@ -356,7 +402,122 @@ final class RunDirectoryReader
             executability: $portfolio && $this->hasBlock($j, 'executability') ? $this->executability($j->object('executability')) : null,
             g1Executable: $portfolio && $this->hasBlock($j, 'g1_executable') ? $this->g1($j->object('g1_executable')) : null,
             signalsRejectedMaxPositions: $portfolio ? $signals->int('rejected_max_positions') : null,
+            costs: $costs ? $this->costs($j->object('costs')) : null,
+            costArithmetic: $costs ? $this->costArithmetic($j->object('cost_arithmetic')) : null,
+            costCounters: $costs ? $this->costCounters($j->object('cost_counters'), true) : null,
         );
+    }
+
+    private function costs(JsonObject $o): CostsBlock
+    {
+        return new CostsBlock(
+            profile: $o->string('profile'),
+            gatesProfile: $o->bool('gates_profile'),
+            rulesVersion: $o->string('rules_version'),
+            feeGrid: $o->string('fee_grid'),
+            seed: $o->int('seed'),
+            costsFile: $o->string('costs_file'),
+            costsFileHash: $o->string('costs_file_hash'),
+            costMeasuresFile: $this->optionalString($o, 'cost_measures_file'),
+            costMeasuresHash: $this->optionalString($o, 'cost_measures_hash'),
+            stressCalibrated: $o->bool('stress_calibrated'),
+            stressCalibrationRef: $this->optionalString($o, 'stress_calibration_ref'),
+            legs: array_map($this->costLeg(...), $o->objectList('legs')),
+        );
+    }
+
+    private function costLeg(JsonObject $o): CostLeg
+    {
+        return new CostLeg(
+            symbol: $o->string('symbol'),
+            class: $o->string('class'),
+            classSource: $o->string('class_source'),
+            spreadSource: $o->string('spread_source'),
+            slippageSource: $o->string('slippage_source'),
+            halfSpreadBps: $o->float('half_spread_bps'),
+            marketSlippageBps: $o->float('market_slippage_bps'),
+            measuredP95HalfSpreadBps: $this->optionalFloat($o, 'measured_p95_half_spread_bps'),
+            stopSlippageBps: [
+                'p50' => $o->float('stop_slippage_bps.p50'),
+                'p95' => $o->float('stop_slippage_bps.p95'),
+                'p99' => $o->float('stop_slippage_bps.p99'),
+                'p100' => $o->float('stop_slippage_bps.p100'),
+            ],
+            stopSlippageMeanBps: $o->float('stop_slippage_mean_bps'),
+            stressProbability: $o->float('stress_probability'),
+            stressDrop: $o->float('stress_drop'),
+            entry: $o->string('entry'),
+            makerFillProbability: $this->optionalFloat($o, 'maker_fill_probability'),
+            makerTtlMinutes: $this->optionalInt($o, 'maker_ttl_minutes'),
+            adverseSelectionBps: $o->float('adverse_selection_bps'),
+        );
+    }
+
+    /** Les clés du bloc sont celles de docs/specs/s10.md §12.2 : chacune est obligatoire, sa valeur peut être nulle. */
+    private function costArithmetic(JsonObject $o): CostArithmetic
+    {
+        $breakdown = [];
+        foreach ($o->scalarMap('cost_breakdown') as $name => $value) {
+            if (!is_int($value) && !is_float($value)) {
+                throw InvalidRunException::wrongType(
+                    self::METRICS_FILE,
+                    'cost_arithmetic.cost_breakdown.' . $name,
+                    'un nombre',
+                    get_debug_type($value),
+                );
+            }
+            $breakdown[$name] = (float) $value;
+        }
+
+        return new CostArithmetic(
+            decisionTf: $o->string('decision_tf'),
+            protocolTf: $o->bool('protocol_tf'),
+            roundTripCostMean: $o->nullableFloat('round_trip_cost_mean'),
+            roundTripCostRateMean: $o->nullableFloat('round_trip_cost_rate_mean'),
+            roundTripCostRateMedian: $o->nullableFloat('round_trip_cost_rate_median'),
+            costBreakdown: $breakdown,
+            costRMean: $o->nullableFloat('cost_r_mean'),
+            costRMedian: $o->nullableFloat('cost_r_median'),
+            tradesWithR: $o->int('trades_with_r'),
+            costRLimit: $o->float('cost_r_limit'),
+            costRPass: $this->nullableBool($o, 'cost_r_pass'),
+            grossExpectancy: $o->nullableFloat('gross_expectancy'),
+            costToGross: $o->nullableFloat('cost_to_gross'),
+            costThirdPass: $o->bool('cost_third_pass'),
+            grossMedianRate: $o->nullableFloat('gross_median_rate'),
+            grossMedianVsOwnCostPass: $this->nullableBool($o, 'gross_median_vs_own_cost_pass'),
+            tradesPerYear: $o->nullableFloat('trades_per_year'),
+            capitalFractionMean: $o->nullableFloat('capital_fraction_mean'),
+            hurdleAnnual: $o->nullableFloat('hurdle_annual'),
+        );
+    }
+
+    /** `cost_counters` : la somme des jambes (avec `by_pair`) ou une ligne de `by_pair` (sans `symbol` au total). */
+    private function costCounters(JsonObject $o, bool $withPairs): CostCounters
+    {
+        return new CostCounters(
+            symbol: $withPairs ? null : $o->string('symbol'),
+            stopFillsDrawn: $o->int('stop_fills_drawn'),
+            stopStressFills: $o->int('stop_stress_fills'),
+            makerEntriesConverted: $o->int('maker_entries_converted'),
+            makerEntriesTakenAtArrival: $o->int('maker_entries_taken_at_arrival'),
+            makerFillDraws: $o->int('maker_fill_draws'),
+            makerFills: $o->int('maker_fills'),
+            makerFillMissed: $o->int('maker_fill_missed'),
+            makerEntriesFilledMaker: $o->int('maker_entries_filled_maker'),
+            spreadCostTotal: $o->float('spread_cost_total'),
+            adverseSelectionTotal: $o->float('adverse_selection_total'),
+            makerEntryMakerShare: $o->nullableFloat('maker_entry_maker_share'),
+            byPair: $withPairs
+                ? array_map(fn (JsonObject $p): CostCounters => $this->costCounters($p, false), $o->objectList('by_pair'))
+                : [],
+        );
+    }
+
+    /** Booléen dont la clé est obligatoire et la valeur peut être nulle. */
+    private function nullableBool(JsonObject $o, string $path): ?bool
+    {
+        return $o->isNull($path) ? null : $o->bool($path);
     }
 
     /**

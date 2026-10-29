@@ -58,6 +58,11 @@ pub struct Trade {
     pub entry_price: f64,
     pub entry_fee: f64,
     pub entry_slippage: f64,
+    /// Part de spread de l'entrée, en devise de cotation (s10 §6.3). Fill taker : part de l'impact due au
+    /// demi-spread, déjà comprise dans le prix (`entry_slippage + entry_spread` = impact total). Fill au
+    /// repos du profil maker : débit de sélection adverse, hors du prix, retiré du cash et du PnL.
+    /// Chemin hérité : toujours `0.0`.
+    pub entry_spread: f64,
     pub entry_liquidity: Liquidity,
     pub exit_signal_ms: Ts,
     /// Instant d'arrivée de l'ordre de sortie : `active_from_ms` d'un ordre en attente, `entry_ms` du
@@ -70,9 +75,12 @@ pub struct Trade {
     pub exit_price: f64,
     pub exit_fee: f64,
     pub exit_slippage: f64,
+    /// Part de spread de la sortie, même sens que `entry_spread`.
+    pub exit_spread: f64,
     pub exit_liquidity: Liquidity,
     pub qty: f64,
-    /// Produit net de la part de vente moins coût net de la part de lot (frais compris).
+    /// Produit net de la part de vente moins coût net de la part de lot (frais compris, et débits de
+    /// sélection adverse du profil maker).
     pub pnl_net: f64,
     /// Excursion favorable maximale en quote : `qty × (plus haut − prix d'entrée)`.
     pub mfe: f64,
@@ -108,6 +116,10 @@ pub(super) struct Lot {
     pub cost: f64,
     pub fee: f64,
     pub slippage: f64,
+    /// Part de spread (taker) ou débit de sélection adverse (maker) de l'entrée, au prorata comme `fee`.
+    pub spread: f64,
+    /// Débit de sélection adverse retiré du cash à l'entrée (`0.0` hors profil maker), au prorata.
+    pub debit: f64,
     pub liquidity: Liquidity,
     pub capped: bool,
     pub tag: &'static str,

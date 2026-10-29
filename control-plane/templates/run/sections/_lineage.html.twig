@@ -66,7 +66,11 @@
         {%- endif %}
       </td>
     </tr>
-{% endif %}
+{% if metrics.isCosts %}    <tr><th scope="row">Profil de coûts</th><td><code>{{ metrics.costs.profile }}</code> ({{ metrics.costs.gatesProfile ? 'profil de porte' : 'profil informatif, hors portes' }}) · graine {{ metrics.costs.seed|int }} · grille <code>{{ metrics.costs.feeGrid }}</code> · modèle de coûts <code>{{ metrics.costs.rulesVersion }}</code></td></tr>
+    <tr><th scope="row"><code>costs_file_hash</code></th><td><code>{{ metrics.costs.costsFile }}</code> : <code class="hash">{{ metrics.costs.costsFileHash }}</code></td></tr>
+    {% if metrics.costs.costMeasuresHash is not null %}<tr><th scope="row"><code>cost_measures_hash</code></th><td>{% if metrics.costs.costMeasuresFile is not null %}<code>{{ metrics.costs.costMeasuresFile }}</code> : {% endif %}<code class="hash">{{ metrics.costs.costMeasuresHash }}</code></td></tr>
+    {% endif %}{% if manifest.profilesId is not null %}<tr><th scope="row"><code>profiles_id</code></th><td><code class="hash">{{ manifest.profilesId }}</code></td></tr>
+{% endif %}{% endif %}{% endif %}
   </table>
   <p class="absent-note"><strong>Absent au jalon 1.</strong> <code>version_hash</code> : le jalon 1 identifie la version du code par la version de la stratégie. Reproductibilité (« rejoué le …, identique à l'octet ») et bouton « Rejouer » : aucun <code>tv4 verify</code> n'est enregistré dans le run, jalon 2.</p>
 </section>

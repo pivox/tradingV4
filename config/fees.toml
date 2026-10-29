@@ -1,9 +1,10 @@
 # Grilles de frais en points de base (1 bp = 0,01 %). Source : docs/03-architecture.md §4 et CLAUDE.md.
 
-# OKX Europe spot, grille Regular : 0,20 % maker, 0,35 % taker. Le compte du propriétaire affiche 0,20 % le
-# 14/10/2026, lu comme le maker de cette grille (docs/04-protocole-recherche.md §10, décision 7) ; le taker
-# sera relu par `GET /api/v5/account/trade-fee`.
-[okx]
+# OKX Europe spot, grille Regular (nom `okx_regular`, alias d'analyse `okx`) : 0,20 % maker, 0,35 % taker.
+# Le compte du propriétaire affiche 0,20 % le 14/10/2026, lu comme le maker de cette grille
+# (docs/04-protocole-recherche.md §10, décision 7) ; le taker sera relu par
+# `GET /api/v5/account/trade-fee`. Le nom `okx_xperps` n'existe pas (décision du 13/10, 18:35).
+[okx_regular]
 maker_bps = 20
 taker_bps = 35
 

@@ -1,0 +1,109 @@
+{% set mk = profiles.maker %}
+{% set gt = profiles.gates %}
+<section id="profils" class="section" aria-labelledby="profils-titre">
+  <h2 id="profils-titre">Profils de coûts</h2>
+  <p class="note">Trois runs du même dataset et de la même configuration, joués avec les profils de coûts baseline, adverse et maker (docs/specs/s10.md). Les portes se jugent sur baseline <strong>et</strong> adverse ; le profil maker est informatif. Les valeurs sont celles que <code>tv4</code> a écrites dans <code>profiles.json</code> et dans chaque sous-dossier ; le control plane ne recalcule ni étiquette ni porte.</p>
+
+  <p class="badge label-{{ profiles.label }}">Étiquette : <strong>{{ profiles.labelFr }}</strong> (<code>{{ profiles.label }}</code>)</p>
+  {% if profiles.label == 'fill_dependent' %}
+  <p class="callout fill-dependent"><strong>Dépend du fill.</strong> Ni baseline ni adverse ne sont positifs ; le profil maker, informatif, l'est (espérance nette {{ mk.expectancyNet|money }} par trade, {{ mk.nTrades|int }} trades) {% if mk.makerEntryMakerShare is not null %}avec {{ mk.makerEntryMakerShare|pct }} des entrées converties remplies en maker (seuil {{ mk.minMakerEntryShare|pct }}){% else %}sans aucune entrée convertie : la stratégie n'émet que des limits{% endif %}. Ce résultat dépend du taux de fill réel, que seul le paper trading mesure.</p>
+  {% elseif profiles.label == 'indeterminate' %}
+  <p>Baseline ou adverse a moins de trades que le minimum du run : aucune conclusion sur les coûts.</p>
+  {% elseif profiles.label == 'passes_costs' %}
+  <p>Baseline et adverse sont tous deux positifs : la stratégie tient les coûts.</p>
+  {% elseif profiles.label == 'cost_fragile' %}
+  <p>Baseline positif, adverse non positif : le résultat ne survit pas au profil de coûts adverse.</p>
+  {% else %}
+  {% set baselinePositive = profiles.profile('baseline').positive %}
+  {% set adversePositive = profiles.profile('adverse').positive %}
+  {% if not baselinePositive and not adversePositive %}
+  <p>Baseline et adverse non positifs, sans profil maker positif et majoritairement rempli en maker.</p>
+  {% elseif not baselinePositive %}
+  <p>Baseline non positif, adverse positif : les deux profils ne jouent pas les mêmes trades (fills, tirages de stop, taille des lignes), aucune conclusion favorable sur les coûts.</p>
+  {% else %}
+  <p>Étiquette négative malgré un baseline positif : se référer au tableau des profils ci-dessous.</p>
+  {% endif %}
+  {% endif %}
+
+  <div class="scroll">
+  <table class="data">
+    <thead>
+      <tr>
+        <th scope="col">Profil</th><th scope="col">Rôle</th><th scope="col" class="num">Trades</th><th scope="col">Verdict du run</th>
+        <th scope="col" class="num">Espérance nette</th><th scope="col" class="num">Espérance (R)</th><th scope="col" class="num">PnL net</th>
+        <th scope="col" class="num">Coût aller-retour moyen</th><th scope="col" class="num">Coût / stop (R)</th><th scope="col" class="num">Seuil (R)</th>
+        <th scope="col">Seuil respecté</th><th scope="col">Coût ≤ 1/3 du brut</th><th scope="col">Positif</th>
+      </tr>
+    </thead>
+    <tbody>
+    {% for p in profiles.profiles %}
+      <tr{% if not p.isGate %} class="gate-off"{% endif %}>
+        <th scope="row"><code>{{ p.name }}</code></th>
+        <td>{{ p.isGate ? 'porte' : 'informatif' }}</td>
+        <td class="num">{{ p.nTrades|int }}</td>
+        <td><code>{{ p.verdict }}</code></td>
+        <td class="num {{ p.expectancyNet is not null and p.expectancyNet < 0 ? 'neg' : 'pos' }}">{{ p.expectancyNet|money }}</td>
+        <td class="num">{{ p.expectancyR|num(2) }}</td>
+        <td class="num {{ p.pnlNet < 0 ? 'neg' : 'pos' }}">{{ p.pnlNet|money }}</td>
+        <td class="num">{{ p.roundTripCostRateMean|pct }}</td>
+        <td class="num">{{ p.costRMean|num(2) }}</td>
+        <td class="num">{% if profiles.costRLimit(p.name) is null %}—{% else %}≤ {{ profiles.costRLimit(p.name)|num(2) }}{% endif %}</td>
+        <td>{{ p.costRPass|yesno }}</td>
+        <td>{{ p.costThirdPass|yesno }}</td>
+        <td>{{ p.positive|yesno }}</td>
+      </tr>
+    {% endfor %}
+    </tbody>
+  </table>
+  </div>
+  <p class="note">Espérance nette positive et effectif au moins égal à <code>min_trades</code> : « Positif ». Coût / stop : coût aller-retour moyen en multiples du risque (R) du stop, contre 0,10 R (0,15 R en maker sur 4h ou 1h).</p>
+
+  <div class="cols">
+    <table class="kv">
+      <caption>Portes croisées (baseline et adverse)</caption>
+      <thead><tr><th scope="col">Élément</th><th scope="col">Baseline</th><th scope="col">Adverse</th></tr></thead>
+      <tbody>
+        <tr><th scope="row">Coût / stop sous le seuil</th><td>{{ gt.costRBaseline|yesno }}</td><td>{{ gt.costRAdverse|yesno }}</td></tr>
+        <tr><th scope="row">Coût ≤ 1/3 de l'expectancy brute</th><td>{{ gt.costThirdBaseline|yesno }}</td><td>{{ gt.costThirdAdverse|yesno }}</td></tr>
+      </tbody>
+    </table>
+    <table class="kv">
+      <caption>Autres éléments de porte</caption>
+      <tbody>
+        <tr><th scope="row">Gain brut médian ≥ 2 × coût baseline</th><td>{{ gt.grossMedianVs2xBaselineCost|yesno }}</td></tr>
+        <tr><th scope="row">Baseline et adverse positifs</th><td>{{ gt.bothGateProfilesPositive|yesno }}</td></tr>
+      </tbody>
+    </table>
+    <table class="kv">
+      <caption>Profil maker (informatif)</caption>
+      <tbody>
+        <tr><th scope="row">Statut</th><td><code>{{ mk.status }}</code> : {% if mk.status == 'positive' %}positif{% elseif mk.status == 'positive_mostly_taker' %}positif, mais entrées surtout prises en taker{% elseif mk.status == 'non_positive' %}espérance nette non positive{% else %}trop peu de trades{% endif %}</td></tr>
+        <tr><th scope="row">Trades</th><td class="num">{{ mk.nTrades|int }}</td></tr>
+        <tr><th scope="row">Espérance nette</th><td class="num">{{ mk.expectancyNet|money }}</td></tr>
+        <tr><th scope="row">Entrées converties en limit</th><td class="num">{{ mk.entriesConverted|int }}</td></tr>
+        <tr class="sub"><th scope="row">prises à l'arrivée (taker)</th><td class="num">{{ mk.entriesTakenAtArrival|int }}</td></tr>
+        <tr class="sub"><th scope="row">remplies en maker</th><td class="num">{{ mk.entriesFilledMaker|int }}</td></tr>
+        <tr><th scope="row">Part remplie en maker</th><td class="num">{{ mk.makerEntryMakerShare|pct }} (seuil {{ mk.minMakerEntryShare|pct }})</td></tr>
+      </tbody>
+    </table>
+  </div>
+  <p class="note">« Dépend du fill » exige un profil maker positif, d'effectif suffisant, dont la part d'entrées remplies en maker atteint le seuil : un maker positif surtout pris en taker ne dit rien du taux de fill.</p>
+
+  <table class="kv">
+    <caption>Identité du dossier</caption>
+    <tbody>
+      <tr><th scope="row"><code>profiles_id</code></th><td><code class="hash">{{ profiles.profilesId }}</code></td></tr>
+      <tr><th scope="row"><code>dataset_hash</code></th><td><code class="hash">{{ profiles.datasetHash }}</code></td></tr>
+      <tr><th scope="row"><code>costs_file_hash</code></th><td><code class="hash">{{ profiles.costsFileHash }}</code></td></tr>
+      {% if profiles.costMeasuresHash is not null %}<tr><th scope="row"><code>cost_measures_hash</code></th><td><code class="hash">{{ profiles.costMeasuresHash }}</code></td></tr>{% endif %}
+      <tr><th scope="row">Grille de frais</th><td><code>{{ profiles.feeGrid }}</code></td></tr>
+      <tr><th scope="row">Graine du tirage</th><td class="num">{{ profiles.seed|int }}</td></tr>
+      <tr><th scope="row">Capital initial</th><td class="num">{{ profiles.initialCash|money }}</td></tr>
+      <tr><th scope="row">Stress calibré</th><td>{{ profiles.stressCalibrated|yesno }}{% if not profiles.stressCalibrated %} : la probabilité de stress est provisoire (<code>stop_stress_uncalibrated</code>){% endif %}</td></tr>
+      {% for p in profiles.profiles %}
+      <tr class="sub"><th scope="row"><code>run_id</code> {{ p.name }}</th><td><code class="hash">{{ p.runId }}</code> (<code>{{ p.dir }}/</code>)</td></tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  <p class="note">La fiche complète qui suit est celle du profil <strong>baseline</strong>. Les fiches adverse et maker se rendent depuis leurs sous-dossiers (<code>tv4:report &lt;dossier&gt;/adverse</code>).</p>
+</section>

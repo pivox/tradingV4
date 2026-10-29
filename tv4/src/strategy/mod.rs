@@ -310,6 +310,18 @@ pub trait Strategy: Send {
     fn uses_regime(&self) -> bool {
         false
     }
+
+    /// TF dont la clôture déclenche une entrée (docs S10 §4.5). Par défaut le plus grand TF déclaré ;
+    /// une stratégie dont le grand TF n'est qu'un filtre la surcharge. Il fixe le TTL de l'entrée du
+    /// profil maker et entre dans le `config_hash` des runs s10 seulement (`costs.entry.decision_tf`) :
+    /// aucun hash hérité ne le lit.
+    fn decision_tf(&self) -> Timeframe {
+        self.timeframes()
+            .iter()
+            .copied()
+            .max()
+            .unwrap_or(Timeframe::M1)
+    }
 }
 
 /// Vérifie la déclaration d'une stratégie ; appelée par `registry::build`.
@@ -484,6 +496,24 @@ mod tests {
             validate_declaration(&duplicate),
             Err(StrategyError::DuplicateIndicator { name: "a", .. })
         ));
+    }
+
+    #[test]
+    fn le_tf_de_decision_par_defaut_est_le_plus_grand_tf_declare() {
+        let declared = |timeframes| Declared {
+            timeframes,
+            specs: vec![],
+        };
+        assert_eq!(declared(vec![Timeframe::H1]).decision_tf(), Timeframe::H1);
+        // L'ordre de déclaration ne compte pas.
+        assert_eq!(
+            declared(vec![Timeframe::D1, Timeframe::M15, Timeframe::H4]).decision_tf(),
+            Timeframe::D1
+        );
+        assert_eq!(
+            declared(vec![Timeframe::M15, Timeframe::H1]).decision_tf(),
+            Timeframe::H1
+        );
     }
 
     #[test]

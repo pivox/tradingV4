@@ -194,6 +194,12 @@ impl Strategy for SmaCross {
         }
     }
 
+    /// Le TF des croisements, jamais celui du filtre de tendance : `sma_cross_2tf` décide en 15m
+    /// (docs S10 §4.5).
+    fn decision_tf(&self) -> Timeframe {
+        self.p.tf
+    }
+
     fn on_bar(&mut self, ctx: &BarContext<'_>, out: &mut Vec<Signal>) {
         let tf = self.p.tf;
         if !ctx.just_closed(tf) {
@@ -285,6 +291,17 @@ mod tests {
             }),
         })
         .unwrap()
+    }
+
+    #[test]
+    fn le_tf_de_decision_est_celui_des_croisements() {
+        // Sans filtre, comme avec un filtre 1h : 15m, jamais le TF de tendance.
+        assert_eq!(strategy().decision_tf(), Timeframe::M15);
+        assert_eq!(strategy_2tf().decision_tf(), Timeframe::M15);
+        assert_eq!(
+            strategy_2tf().timeframes(),
+            &[Timeframe::M15, Timeframe::H1]
+        );
     }
 
     /// Une bougie 15m de test par pas : close 100, valeurs inventées.

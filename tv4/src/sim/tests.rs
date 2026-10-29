@@ -4,6 +4,7 @@
 
 use super::*;
 use crate::model::ExchangeId;
+use crate::model::costs::LegCost;
 use proptest::prelude::*;
 
 const T0: Ts = 1_704_067_200_000;
@@ -2811,5 +2812,245 @@ proptest! {
         };
         let fees = FeeSchedule::new(ExchangeId::Okx, maker, taker).unwrap();
         comparer_book_et_simulateur(&operations, fees, rules, cash, slippage)?;
+    }
+}
+
+// ---------------------------------------------------------------------------------------------
+// S10 : le coût hérité rejoue S9 au bit
+// ---------------------------------------------------------------------------------------------
+
+/// Instruction d'une opération non-bougie (`None` pour une bougie).
+fn instruction_of(op: &Op) -> Option<Instruction> {
+    Some(match op.clone() {
+        Op::Enter {
+            size,
+            amount,
+            limit,
+            stop,
+            tp,
+        } => {
+            let size = match size {
+                0 => SizeSpec::Quote(amount),
+                1 => SizeSpec::PctEquity((amount / 1e5).clamp(1e-6, 1.0)),
+                _ => SizeSpec::RiskPct((amount / 1e5).clamp(1e-6, 1.0)),
+            };
+            Instruction::Enter {
+                size,
+                price: limit.map_or(OrderPrice::Market, |(price, ttl_bars)| OrderPrice::Limit {
+                    price,
+                    ttl_bars,
+                }),
+                stop,
+                take_profit: tp,
+                tag: "e",
+            }
+        }
+        Op::Exit(limit) => Instruction::Exit {
+            price: limit.map_or(OrderPrice::Market, |(price, ttl_bars)| OrderPrice::Limit {
+                price,
+                ttl_bars,
+            }),
+            tag: "x",
+        },
+        Op::Place {
+            buy,
+            price,
+            amount,
+            slot,
+            ttl,
+        } => Instruction::Place {
+            side: if buy { Side::Buy } else { Side::Sell },
+            price,
+            size: SizeSpec::Quote(amount),
+            ttl_bars: ttl,
+            slot,
+            tag: "p",
+        },
+        Op::CancelSlot(slot) => Instruction::CancelSlot { slot },
+        Op::CancelAll => Instruction::CancelAll,
+        Op::MoveStop(stop) => Instruction::MoveStop { stop },
+        Op::Bar { .. } => return None,
+    })
+}
+
+/// Bougie d'une opération `Op::Bar`.
+fn candle_of(op: &Op, index: i64) -> Option<Candle> {
+    match op {
+        Op::Bar {
+            open,
+            up,
+            down,
+            close,
+            volume,
+        } => {
+            let high = open * (1.0 + up);
+            let low = open * (1.0 - down);
+            let close = low + (high - low) * close;
+            Some(bar_v(index, *open, high, low, close, *volume))
+        }
+        _ => None,
+    }
+}
+
+/// Rejoue les opérations sur `sim` et rend une empreinte textuelle de tout ce qui est observable. Le
+/// format `Debug` des `f64` distingue `-0.0` de `0.0` : l'égalité de deux empreintes est une égalité au bit.
+fn empreinte_simulateur(operations: &[Op], mut sim: Simulator) -> Vec<String> {
+    let mut index = 0i64;
+    let mut last = flat(0, 100.0);
+    let mut out = Vec::new();
+    for op in operations {
+        if let Some(candle) = candle_of(op, index) {
+            last = candle;
+            index += 1;
+            out.push(format!(
+                "{:?}",
+                sim.on_bar(&last).map_err(|e| e.to_string())
+            ));
+            out.push(format!(
+                "{:?} {:?} {:?} {:?} {}",
+                sim.cash(),
+                sim.qty(),
+                sim.quote_free(),
+                sim.qty_free(),
+                sim.pending_len()
+            ));
+        } else if let Some(instruction) = instruction_of(op) {
+            let ctx = SubmitContext {
+                signal_ms: T0 + index * 60_000,
+                equity: sim.equity_at(last.close),
+                ref_price: last.close,
+            };
+            out.push(format!("{:?}", sim.submit(instruction, ctx)));
+        }
+    }
+    out.push(format!("{:?} {:?}", sim.counters(), sim.detail()));
+    out.push(format!("{:?}", sim.cost_counters()));
+    out.push(format!(
+        "{:?}",
+        sim.finish(&last).map_err(|e| e.to_string())
+    ));
+    out
+}
+
+/// Même chose pour un portefeuille à une jambe, jusqu'au `BookOutcome` final.
+fn empreinte_portefeuille(operations: &[Op], mut book: Book) -> Vec<String> {
+    let mut index = 0i64;
+    let mut last = flat(0, 100.0);
+    let mut out = Vec::new();
+    for op in operations {
+        if let Some(candle) = candle_of(op, index) {
+            last = candle;
+            index += 1;
+            out.push(format!(
+                "{:?}",
+                book.on_bar(0, &last).map_err(|e| e.to_string())
+            ));
+            out.push(format!(
+                "{:?} {:?} {:?} {:?}",
+                book.cash(),
+                book.equity(),
+                book.quote_free(),
+                book.pending_len(0)
+            ));
+        } else if let Some(instruction) = instruction_of(op) {
+            let ctx = SubmitContext {
+                signal_ms: T0 + index * 60_000,
+                equity: book.equity(),
+                ref_price: last.close,
+            };
+            out.push(format!("{:?}", book.submit(0, instruction, ctx, None)));
+        }
+    }
+    out.push(format!(
+        "{:?}",
+        book.close_all_at_end(&[Some(last)])
+            .map_err(|e| e.to_string())
+    ));
+    out.push(format!("{:?}", book.into_outcome()));
+    out
+}
+
+proptest! {
+    #![proptest_config(ProptestConfig::with_cases(400))]
+
+    /// `Simulator::new` et `Simulator::with_cost(LegCost::legacy(..))` rendent les mêmes trades, le
+    /// même cash et les mêmes compteurs au bit, compteurs de coûts nuls compris (docs S10 §2.3).
+    #[test]
+    fn le_cout_herite_rejoue_new_au_bit(
+        taker in 0u32..=500,
+        maker in 0u32..=500,
+        slippage in 0.0f64..200.0,
+        stress in prop_oneof![Just(0.0f64), 0.0f64..60.0],
+        cash in 1.0f64..1e7,
+        delay in 0u32..=3,
+        cross in 0u32..=3,
+        tp_first in any::<bool>(),
+        operations in ops(),
+    ) {
+        let rules = SimRules {
+            activation_delay_bars: delay,
+            limit_cross_ticks: cross,
+            intrabar: if tp_first { IntrabarRule::TpFirst } else { IntrabarRule::StopFirst },
+            stop_stress_bps: stress,
+            ..SimRules::default()
+        };
+        let fees = FeeSchedule::new(ExchangeId::Okx, maker, taker).unwrap();
+        let old = Simulator::new(fees, bps(slippage), rules, inst(), cash, 8).unwrap();
+        let new = Simulator::with_cost(
+            fees,
+            LegCost::legacy(bps(slippage), stress),
+            rules,
+            inst(),
+            cash,
+            8,
+        )
+        .unwrap();
+        let a = empreinte_simulateur(&operations, old);
+        let b = empreinte_simulateur(&operations, new);
+        prop_assert_eq!(a, b);
+    }
+
+    /// Même propriété pour `Book::new` et `Book::with_costs` à une jambe, jusqu'au `BookOutcome`.
+    #[test]
+    fn le_cout_herite_rejoue_book_new_au_bit(
+        taker in 0u32..=500,
+        maker in 0u32..=500,
+        slippage in 0.0f64..200.0,
+        stress in prop_oneof![Just(0.0f64), 0.0f64..60.0],
+        cash in 1.0f64..1e7,
+        delay in 0u32..=3,
+        cross in 0u32..=3,
+        tp_first in any::<bool>(),
+        operations in ops(),
+    ) {
+        let rules = SimRules {
+            activation_delay_bars: delay,
+            limit_cross_ticks: cross,
+            intrabar: if tp_first { IntrabarRule::TpFirst } else { IntrabarRule::StopFirst },
+            stop_stress_bps: stress,
+            ..SimRules::default()
+        };
+        let fees = FeeSchedule::new(ExchangeId::Okx, maker, taker).unwrap();
+        let config = BookConfig {
+            fees,
+            slippage: bps(slippage),
+            rules,
+            initial_cash: cash,
+            max_positions: 1,
+            mode: SizingMode::Compounding,
+            min_order_bump_max_risk: None,
+            trades_capacity: 8,
+        };
+        let old = Book::new(config, &[inst()]).unwrap();
+        let with_costs = BookConfig { slippage: Slippage::ZERO, ..config };
+        let new = Book::with_costs(
+            with_costs,
+            &[inst()],
+            &[LegCost::legacy(bps(slippage), stress)],
+        )
+        .unwrap();
+        let a = empreinte_portefeuille(&operations, old);
+        let b = empreinte_portefeuille(&operations, new);
+        prop_assert_eq!(a, b);
     }
 }

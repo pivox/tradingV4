@@ -7,8 +7,9 @@ namespace App\Tests\Support;
 use RuntimeException;
 
 /**
- * Copie d'un run d'exemple (s8 par défaut, ou le run portefeuille s9) dans un dossier temporaire, modifiable fichier par fichier, pour fabriquer
- * des runs invalides sans toucher à la fixture versionnée.
+ * Copie d'un run d'exemple (s8 par défaut, le run portefeuille s9, ou le dossier de profils s10) dans un dossier
+ * temporaire, modifiable fichier par fichier, pour fabriquer des runs invalides sans toucher à la fixture versionnée.
+ * Les chemins d'un dossier de profils s'écrivent avec leur sous-dossier (`baseline/metrics.json`).
  */
 final class RunFixture
 {
@@ -16,6 +17,9 @@ final class RunFixture
 
     /** Run portefeuille écrit à la main selon docs/specs/s9.md §13 (schémas s9). */
     public const PORTFOLIO_SOURCE = __DIR__ . '/../fixtures/run-portefeuille';
+
+    /** Dossier de profils écrit à la main selon docs/specs/s10.md §12 et §13 (`profiles.json` et trois runs s10). */
+    public const PROFILES_SOURCE = __DIR__ . '/../fixtures/run-profils';
 
     /** @var list<string> */
     public const FILES = ['manifest.json', 'metrics.json', 'trades.csv', 'equity.csv'];
@@ -40,6 +44,33 @@ final class RunFixture
     public static function copyPortfolio(): self
     {
         return self::copy(self::PORTFOLIO_SOURCE);
+    }
+
+    /** Copie du dossier de profils : `profiles.json` et les sous-dossiers `baseline/`, `adverse/` et `maker/`. */
+    public static function copyProfiles(string $source = self::PROFILES_SOURCE): self
+    {
+        $directory = sys_get_temp_dir() . '/tv4-report-test-' . bin2hex(random_bytes(6));
+        $run = new self($directory);
+        $run->copyTree($source, $directory);
+
+        return $run;
+    }
+
+    private function copyTree(string $source, string $target): void
+    {
+        if (!is_dir($target) && !mkdir($target, 0o755, true)) {
+            throw new RuntimeException('dossier temporaire impossible à créer : ' . $target);
+        }
+        foreach (scandir($source) ?: [] as $entry) {
+            if ('.' === $entry || '..' === $entry || 'README.md' === $entry) {
+                continue;
+            }
+            if (is_dir($source . '/' . $entry)) {
+                $this->copyTree($source . '/' . $entry, $target . '/' . $entry);
+            } elseif (!copy($source . '/' . $entry, $target . '/' . $entry)) {
+                throw new RuntimeException('copie impossible : ' . $source . '/' . $entry);
+            }
+        }
     }
 
     /**
@@ -196,9 +227,18 @@ final class RunFixture
 
     public function cleanup(): void
     {
-        foreach (glob($this->directory . '/*') ?: [] as $file) {
-            unlink($file);
+        $this->removeTree($this->directory);
+    }
+
+    private function removeTree(string $directory): void
+    {
+        foreach (scandir($directory) ?: [] as $name) {
+            if ('.' === $name || '..' === $name) {
+                continue;
+            }
+            $entry = $directory . '/' . $name;
+            is_dir($entry) ? $this->removeTree($entry) : unlink($entry);
         }
-        rmdir($this->directory);
+        rmdir($directory);
     }
 }

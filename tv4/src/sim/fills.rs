@@ -4,30 +4,35 @@
 //! L'ordre des opérations flottantes est imposé et ne change pas (aucun `mul_add`) : c'est lui qui
 //! rend le résultat identique d'un process à l'autre.
 
-use crate::model::{Candle, Slippage};
+use crate::model::Candle;
 
-/// Prix d'un achat market à l'open `open` : `open × (1 + slippage)`.
-pub(super) fn market_buy_price(open: f64, slippage: Slippage) -> f64 {
-    slippage.buy_price(open)
+// Les prix taker prennent le taux composé `rate = h + s` (demi-spread plus slippage market, s10 §6.2),
+// calculé une fois par `LegCost::taker_rate`. Pour le chemin hérité `h = 0.0` et `0.0 + s = s` exactement :
+// `reference × (1.0 + rate)` rend les mêmes bits que `Slippage::buy_price`, et `reference × (1.0 − rate)`
+// ceux de `Slippage::sell_price`.
+
+/// Prix d'un achat market à l'open `open` : `open × (1 + (h + s))`.
+pub(super) fn market_buy_price(open: f64, rate: f64) -> f64 {
+    open * (1.0 + rate)
 }
 
-/// Prix d'une vente market à l'open (ou d'une clôture forcée au close) : `ref × (1 − slippage)`.
-pub(super) fn market_sell_price(reference: f64, slippage: Slippage) -> f64 {
-    slippage.sell_price(reference)
+/// Prix d'une vente market à l'open (ou d'une clôture forcée au close) : `ref × (1 − (h + s))`.
+pub(super) fn market_sell_price(reference: f64, rate: f64) -> f64 {
+    reference * (1.0 - rate)
 }
 
 /// Prix d'un achat limit déjà marketable à son arrivée et dont l'open franchit encore la limite
-/// (`open < limite`) : `min(open × (1 + slippage), limite)`. L'ordre prend la liquidité (taker) au prix
+/// (`open < limite`) : `min(open × (1 + (h + s)), limite)`. L'ordre prend la liquidité (taker) au prix
 /// d'un achat market, plafonné par sa limite.
-pub(super) fn marketable_buy_price(limit: f64, open: f64, slippage: Slippage) -> f64 {
-    let price = slippage.buy_price(open);
+pub(super) fn marketable_buy_price(limit: f64, open: f64, rate: f64) -> f64 {
+    let price = market_buy_price(open, rate);
     if price <= limit { price } else { limit }
 }
 
 /// Prix d'une vente limit (ou d'un take-profit) marketable à l'arrivée dont l'open franchit encore la
-/// limite (`open > limite`) : `max(open × (1 − slippage), limite)`.
-pub(super) fn marketable_sell_price(limit: f64, open: f64, slippage: Slippage) -> f64 {
-    let price = slippage.sell_price(open);
+/// limite (`open > limite`) : `max(open × (1 − (h + s)), limite)`.
+pub(super) fn marketable_sell_price(limit: f64, open: f64, rate: f64) -> f64 {
+    let price = market_sell_price(open, rate);
     if price >= limit { price } else { limit }
 }
 
@@ -69,15 +74,47 @@ pub(super) fn sell_cross_level(limit: f64, tick: f64, kt: f64) -> f64 {
 mod tests {
     use super::*;
 
-    fn bps(value: f64) -> Slippage {
-        Slippage::from_bps(value).unwrap()
+    use crate::model::Slippage;
+
+    /// Taux composé d'un slippage scalaire seul (`h = 0`) : la valeur que `LegCost::legacy` précalcule.
+    fn bps(value: f64) -> f64 {
+        Slippage::from_bps(value).unwrap().rate()
     }
 
     #[test]
     fn prix_market_avec_slippage() {
         assert!((market_buy_price(100.0, bps(10.0)) - 100.1).abs() < 1e-9);
         assert!((market_sell_price(110.0, bps(10.0)) - 109.89).abs() < 1e-9);
-        assert_eq!(market_buy_price(100.0, Slippage::ZERO), 100.0);
+        assert_eq!(market_buy_price(100.0, 0.0), 100.0);
+    }
+
+    #[test]
+    fn le_taux_compose_rejoue_le_slippage_scalaire_au_bit() {
+        for value in [0.0, 0.1, 1.0, 5.0, 12.345, 199.9] {
+            let slippage = Slippage::from_bps(value).unwrap();
+            let rate = 0.0 + slippage.rate();
+            for price in [0.5, 99.95, 100.0, 63_412.7] {
+                assert_eq!(
+                    market_buy_price(price, rate).to_bits(),
+                    slippage.buy_price(price).to_bits()
+                );
+                assert_eq!(
+                    market_sell_price(price, rate).to_bits(),
+                    slippage.sell_price(price).to_bits()
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn le_taux_compose_additionne_demi_spread_et_slippage() {
+        // h = 5 bp, s = 3 bp : 8 bp de chaque côté.
+        let rate = 0.0005 + 0.0003;
+        assert_eq!(market_buy_price(100.0, rate), 100.0 * (1.0 + rate));
+        assert_eq!(market_sell_price(100.0, rate), 100.0 * (1.0 - rate));
+        // Plafonné par la limite : 100.08 au-dessus de 100.05.
+        assert_eq!(marketable_buy_price(100.05, 100.0, rate), 100.05);
+        assert_eq!(marketable_sell_price(99.95, 100.0, rate), 99.95);
     }
 
     #[test]
@@ -85,11 +122,11 @@ mod tests {
         // Achat : open × (1 + slippage) sous la limite, sinon la limite.
         assert!((marketable_buy_price(100.0, 98.0, bps(10.0)) - 98.098).abs() < 1e-9);
         assert_eq!(marketable_buy_price(98.05, 98.0, bps(10.0)), 98.05);
-        assert_eq!(marketable_buy_price(99.0, 98.0, Slippage::ZERO), 98.0);
+        assert_eq!(marketable_buy_price(99.0, 98.0, 0.0), 98.0);
         // Vente : open × (1 − slippage) au-dessus de la limite, sinon la limite.
         assert!((marketable_sell_price(100.0, 103.0, bps(10.0)) - 102.897).abs() < 1e-9);
         assert_eq!(marketable_sell_price(102.95, 103.0, bps(10.0)), 102.95);
-        assert_eq!(marketable_sell_price(102.0, 103.0, Slippage::ZERO), 103.0);
+        assert_eq!(marketable_sell_price(102.0, 103.0, 0.0), 103.0);
     }
 
     #[test]

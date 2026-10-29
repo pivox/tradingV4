@@ -4,7 +4,10 @@ declare(strict_types=1);
 
 namespace App\Run\Dto;
 
-/** Contenu de `manifest.json` (schémas `tv4-manifest-s8` et `tv4-manifest-s9`). */
+/**
+ * Contenu de `manifest.json` (schémas `tv4-manifest-s8`, `tv4-manifest-s9` et `tv4-manifest-s10`).
+ * Les champs `profile`, `costs_file*`, `cost_measures*` et `profiles_id` n'existent qu'en s10 et peuvent y manquer.
+ */
 final readonly class Manifest
 {
     /**
@@ -28,6 +31,12 @@ final readonly class Manifest
         public string $schema = 'tv4-manifest-s8',
         public ?string $instrumentsHash = null,
         public ?string $instrumentsFile = null,
+        public ?string $profile = null,
+        public ?string $costsFile = null,
+        public ?string $costsFileHash = null,
+        public ?string $costMeasuresFile = null,
+        public ?string $costMeasuresHash = null,
+        public ?string $profilesId = null,
     ) {
     }
 }

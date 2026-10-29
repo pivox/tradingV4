@@ -25,12 +25,13 @@ use std::mem;
 
 use serde::Serialize;
 
+use crate::model::costs::LegCost;
 use crate::model::{Candle, FeeSchedule, InstrumentRules, Side, Slippage, Ts};
 
 use super::orders::{OrderType, Origin};
 use super::{
-    Instruction, PendingView, PositionView, Rejection, SimCounters, SimDetail, SimError, SimRules,
-    Simulator, SubmitContext, Trade,
+    CostCounters, Instruction, PendingView, PositionView, Rejection, SimCounters, SimDetail,
+    SimError, SimRules, Simulator, SubmitContext, Trade,
 };
 
 /// Mode de sizing du portefeuille (docs S9 §7.1). Le `Book` s'en sert pour l'invariant 4 et pour refuser
@@ -94,6 +95,8 @@ pub struct BookOutcome {
     /// Compteurs de chaque jambe, dans l'ordre des jambes.
     pub counters: Vec<SimCounters>,
     pub details: Vec<SimDetail>,
+    /// Compteurs de coûts de s10 de chaque jambe, dans l'ordre des jambes (nuls pour un coût hérité).
+    pub cost_by_leg: Vec<CostCounters>,
     /// Entrées refusées par `max_positions`, par jambe.
     pub max_positions_rejected: Vec<u64>,
     /// Plus grand nombre de jambes en position observé.
@@ -121,8 +124,39 @@ pub struct Book {
 
 impl Book {
     /// Construit une jambe par instrument, dans l'ordre donné. Le cash des jambes est mis à zéro : seul
-    /// `shared.cash` porte le capital.
+    /// `shared.cash` porte le capital. Le coût de chaque jambe est le coût hérité (`config.slippage`,
+    /// `config.rules.stop_stress_bps`) : S9 au bit.
     pub fn new(config: BookConfig, instruments: &[InstrumentRules]) -> Result<Book, SimError> {
+        Book::build(config, instruments, None)
+    }
+
+    /// Comme [`Book::new`], avec un [`LegCost`] par jambe (s10 §6) : `costs[k]` est le coût de la jambe
+    /// `k`, `costs.len()` doit valoir `instruments.len()`. Le slippage scalaire de `config` doit être nul
+    /// (le slippage market vit dans le coût de chaque jambe), et `config.rules.stop_stress_bps` aussi
+    /// quand le stop d'une jambe est tiré.
+    pub fn with_costs(
+        config: BookConfig,
+        instruments: &[InstrumentRules],
+        costs: &[LegCost],
+    ) -> Result<Book, SimError> {
+        if costs.len() != instruments.len() {
+            return Err(SimError::InvalidRules {
+                reason: "il faut exactement un coût par jambe du portefeuille",
+            });
+        }
+        if config.slippage != Slippage::ZERO {
+            return Err(SimError::InvalidRules {
+                reason: "le slippage scalaire du portefeuille doit être nul avec des coûts par jambe",
+            });
+        }
+        Book::build(config, instruments, Some(costs))
+    }
+
+    fn build(
+        config: BookConfig,
+        instruments: &[InstrumentRules],
+        costs: Option<&[LegCost]>,
+    ) -> Result<Book, SimError> {
         if instruments.is_empty() || instruments.len() > usize::from(u16::MAX) {
             return Err(SimError::InvalidRules {
                 reason: "un portefeuille compte entre 1 et 65 535 jambes",
@@ -146,15 +180,25 @@ impl Book {
             }
         }
         let mut legs = Vec::with_capacity(instruments.len());
-        for instrument in instruments {
-            let mut leg = Simulator::new(
-                config.fees,
-                config.slippage,
-                config.rules,
-                *instrument,
-                config.initial_cash,
-                0,
-            )?;
+        for (k, instrument) in instruments.iter().enumerate() {
+            let mut leg = match costs.and_then(|costs| costs.get(k)) {
+                Some(cost) => Simulator::with_cost(
+                    config.fees,
+                    *cost,
+                    config.rules,
+                    *instrument,
+                    config.initial_cash,
+                    0,
+                )?,
+                None => Simulator::new(
+                    config.fees,
+                    config.slippage,
+                    config.rules,
+                    *instrument,
+                    config.initial_cash,
+                    0,
+                )?,
+            };
             leg.cash = 0.0;
             leg.bump_max_risk_pct = config.min_order_bump_max_risk;
             legs.push(leg);
@@ -405,6 +449,11 @@ impl Book {
         self.legs.get(k).map(Simulator::detail)
     }
 
+    /// Compteurs de coûts de s10 de la jambe `k`.
+    pub fn cost_counters(&self, k: usize) -> Option<&CostCounters> {
+        self.legs.get(k).map(Simulator::cost_counters)
+    }
+
     /// Journal de trades et jambe de chaque trade (alignés).
     pub fn trades(&self) -> (&[Trade], &[u16]) {
         (&self.shared.trades, &self.trade_legs)
@@ -444,6 +493,7 @@ impl Book {
         BookOutcome {
             counters: self.legs.iter().map(|leg| leg.counters).collect(),
             details: self.legs.iter().map(|leg| leg.detail).collect(),
+            cost_by_leg: self.legs.iter().map(|leg| leg.cost_counters).collect(),
             trades: self.shared.trades,
             trade_legs: self.trade_legs,
             cash: self.shared.cash,

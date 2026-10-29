@@ -1,0 +1,181 @@
+{
+    "config": {
+        "costs": {
+            "entry": {
+                "decision_tf": "15m",
+                "mode": "taker"
+            },
+            "fee_grid": {
+                "grid": "okx_regular",
+                "maker_bps": 20,
+                "taker_bps": 35
+            },
+            "legs": {
+                "BTC-USD": {
+                    "adverse_selection_bps": 0.0,
+                    "class": "major",
+                    "half_spread_bps": 1.0,
+                    "market_slippage_bps": 3.0,
+                    "stop_slippage_bps": {
+                        "p100": 600.0,
+                        "p50": 15.0,
+                        "p95": 150.0,
+                        "p99": 600.0
+                    },
+                    "stress_drop": 0.03,
+                    "stress_probability": 0.06
+                },
+                "ETH-USD": {
+                    "adverse_selection_bps": 0.0,
+                    "class": "major",
+                    "half_spread_bps": 1.0,
+                    "market_slippage_bps": 3.0,
+                    "stop_slippage_bps": {
+                        "p100": 600.0,
+                        "p50": 15.0,
+                        "p95": 150.0,
+                        "p99": 600.0
+                    },
+                    "stress_drop": 0.03,
+                    "stress_probability": 0.06
+                }
+            },
+            "profile": "adverse",
+            "rules_version": "c1",
+            "seed": 1
+        },
+        "initial_cash": 300.0,
+        "instruments": {
+            "BTC-USD": {
+                "lot_size": 1e-08,
+                "min_notional": 0.0,
+                "min_qty": 0.0001,
+                "tick_size": 0.1
+            },
+            "ETH-USD": {
+                "lot_size": 1e-08,
+                "min_notional": 0.0,
+                "min_qty": 0.001,
+                "tick_size": 0.01
+            }
+        },
+        "instruments_hash": "blake3:1257900c1257900c1257900c1257900c1257900c1257900c1257900c1257900c",
+        "min_trades": 5,
+        "portfolio": {
+            "liquidity_window_days": 90,
+            "max_positions": 2,
+            "min_order_bump": null,
+            "priority": "signal_time_then_liquidity_90d",
+            "quote_gap_ms": 604800000,
+            "regime": null,
+            "sizing": "research",
+            "universe": [
+                "BTC-USD",
+                "ETH-USD"
+            ]
+        },
+        "schema": "tv4-portfolio-config-v2",
+        "sim_rules": {
+            "activation_delay_bars": 1,
+            "intrabar": "stop_first",
+            "limit_cross_ticks": 1,
+            "market_buy_cash_margin": 0.05,
+            "max_pending": 64,
+            "max_volume_share": 0.005,
+            "stop_stress_bps": 0.0,
+            "tp_ignored_on_fill_bar": true,
+            "version": "s6.1",
+            "zero_volume_no_fill": true
+        },
+        "strategy": {
+            "id": "sma_cross",
+            "params": {
+                "fast": 20,
+                "slow": 50,
+                "stop_atr_mult": 2.0,
+                "tf": "15m"
+            },
+            "version": "1.1.0"
+        },
+        "tv4_version": "0.1.0",
+        "warmup_bars": 50
+    },
+    "config_hash": "ad7e0002ad7e0002ad7e0002ad7e0002ad7e0002ad7e0002ad7e0002ad7e0002",
+    "costs_file": "config/costs.toml",
+    "costs_file_hash": "blake3:c057f11ec057f11ec057f11ec057f11ec057f11ec057f11ec057f11ec057f11e",
+    "data": {
+        "dataset": "exemple_portefeuille",
+        "dataset_hash": "blake3:da7a9001da7a9001da7a9001da7a9001da7a9001da7a9001da7a9001da7a9001",
+        "exchange": "kraken",
+        "gaps_policy": "skip",
+        "hash_format": "dsh-v1",
+        "regime_symbol": null,
+        "series": [
+            {
+                "first_ms": 1609429200000,
+                "last_ms": 1610165340000,
+                "rows": 12270,
+                "symbol": "BTC-USD"
+            },
+            {
+                "first_ms": 1609429200000,
+                "last_ms": 1610165340000,
+                "rows": 12254,
+                "symbol": "ETH-USD"
+            }
+        ],
+        "source": "dataset",
+        "symbols": [
+            "BTC-USD",
+            "ETH-USD"
+        ],
+        "tf": "1m",
+        "window": {
+            "end": "2021-01-09T04:10:00Z",
+            "end_ms": 1610165400000,
+            "start": "2021-01-01T04:10:00Z",
+            "start_ms": 1609474200000
+        }
+    },
+    "dataset_hash": "blake3:da7a9001da7a9001da7a9001da7a9001da7a9001da7a9001da7a9001da7a9001",
+    "engine": {
+        "binary_hash": "blake3:b1a49001b1a49001b1a49001b1a49001b1a49001b1a49001b1a49001b1a49001",
+        "git_sha": "f4b1c8e0d001",
+        "profile": "release",
+        "rustc": "1.97.0",
+        "rustc_commit": "2d8144b7880597b6e6d3dfd63a9a9efae3f533d3",
+        "target": "x86_64-unknown-linux-gnu",
+        "target_cpu": "x86-64-v3",
+        "tv4_version": "0.1.0"
+    },
+    "hash_format": "dsh-v1",
+    "initial_cash": 300.0,
+    "instruments_file": "instruments/okx/spot-20261028T124500Z.json",
+    "instruments_hash": "blake3:1257900c1257900c1257900c1257900c1257900c1257900c1257900c1257900c",
+    "outputs": {
+        "equity_step": "1h",
+        "files": {
+            "equity.csv": "blake3:e001ad7ee001ad7ee001ad7ee001ad7ee001ad7ee001ad7ee001ad7ee001ad7e",
+            "metrics.json": "blake3:3e74ad7e3e74ad7e3e74ad7e3e74ad7e3e74ad7e3e74ad7e3e74ad7e3e74ad7e",
+            "trades.csv": "blake3:7e5aad7e7e5aad7e7e5aad7e7e5aad7e7e5aad7e7e5aad7e7e5aad7e7e5aad7e"
+        }
+    },
+    "profile": "adverse",
+    "profiles_id": "9f0f1e509f0f1e509f0f1e509f0f1e509f0f1e509f0f1e509f0f1e509f0f1e50",
+    "result_hash": "blake3:7e5a00027e5a00027e5a00027e5a00027e5a00027e5a00027e5a00027e5a0002",
+    "run_id": "5e7fad7e5e7fad7e5e7fad7e5e7fad7e5e7fad7e5e7fad7e5e7fad7e5e7fad7e",
+    "schema": "tv4-manifest-s10",
+    "started_at": "2026-10-27T12:00:00Z",
+    "timings": {
+        "cli_cold_ms": 398,
+        "load_ms": 312,
+        "run_ms": 41
+    },
+    "verdict": "rejected_negative_expectancy",
+    "window": {
+        "end": "2021-01-09T04:10:00Z",
+        "end_ms": 1610165400000,
+        "start": "2021-01-01T04:10:00Z",
+        "start_ms": 1609474200000
+    }
+}

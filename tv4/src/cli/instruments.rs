@@ -93,7 +93,7 @@ pub(super) fn fetch(args: &FetchArgs) -> Result<(), CliError> {
 }
 
 /// Refuse d'écraser un fichier existant (lien symbolique compris).
-fn refuse_existing(path: &Path) -> Result<(), CliError> {
+pub(super) fn refuse_existing(path: &Path) -> Result<(), CliError> {
     if fs::symlink_metadata(path).is_ok() {
         return Err(CliError::OutputExists {
             path: path.display().to_string(),
@@ -104,7 +104,7 @@ fn refuse_existing(path: &Path) -> Result<(), CliError> {
 
 /// Écrit `path` de façon durable : `<nom>.tmp`, `sync_all`, `rename`, `sync_all` du dossier
 /// (docs/03 §5.1). Le dossier est créé au besoin.
-fn write_new_durable(path: &Path, bytes: &[u8]) -> Result<(), CliError> {
+pub(super) fn write_new_durable(path: &Path, bytes: &[u8]) -> Result<(), CliError> {
     let io = |at: &Path| {
         let shown = at.display().to_string();
         move |source: std::io::Error| {

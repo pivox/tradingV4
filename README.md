@@ -10,8 +10,10 @@ Depuis la racine du dépôt, sur la fixture de 10 000 bougies (le dataset `btcus
 
 ```sh
 # Run : metrics.json, trades.csv, equity.csv puis manifest.json (écrit en dernier) dans --out
-# (défaut : <root>/runs/<run_id>). Dans un dossier existant, l'ancien manifest.json et l'ancien
-# report.html sont supprimés avant l'écriture : un dossier sans manifeste n'est pas un run complet
+# (défaut : <root>/runs/<run_id>, ou <root>/runs/<profiles_id> avec --costs, mode s10 de
+# docs/specs/s10.md). Dans un dossier existant, l'ancien manifest.json, l'ancien report.html et
+# un ancien profiles.json sont supprimés avant l'écriture : un dossier sans manifeste n'est pas
+# un run complet
 cargo run --release --bin tv4 -- backtest --fixture fixtures/kraken_xbtusd_1m.csv --strategy sma_cross \
   --params config/strategies/sma_cross.toml --fees okx --out runs/exemple-a
 

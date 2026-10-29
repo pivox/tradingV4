@@ -134,33 +134,65 @@ pub(super) fn okx_inst_id(symbol: &str, quote: &str) -> String {
 }
 
 /// Règles d'instrument des jambes et ce que le rapport en dit.
-struct Instruments {
-    rules: Vec<InstrumentRules>,
-    info: InstrumentsInfo,
+pub(super) struct Instruments {
+    pub rules: Vec<InstrumentRules>,
+    pub info: InstrumentsInfo,
     /// Une entrée par jambe si les règles viennent d'un fichier OKX.
-    okx_pairs: Option<Vec<OkxPair>>,
-    hash: Option<String>,
+    pub okx_pairs: Option<Vec<OkxPair>>,
+    pub hash: Option<String>,
     /// Chemin du fichier tel que donné.
-    file_as_given: Option<String>,
+    pub file_as_given: Option<String>,
 }
 
 /// Run préparé : dataset chargé et vérifié, règles, frais, paramètres.
-struct PreparedPortfolio {
-    dataset: DatasetInfo,
-    series: Vec<(String, Columns)>,
-    universe: Vec<String>,
-    fees: FeeSchedule,
-    slippage: Slippage,
-    capital: f64,
-    min_trades: u32,
-    instruments: Instruments,
-    regime_symbol: String,
-    max_positions: u16,
-    sizing: SizingMode,
-    min_order_bump: Option<f64>,
-    quote_gap_ms: Ts,
-    strategy_id: String,
-    params: toml::Value,
+pub(super) struct PreparedPortfolio {
+    pub dataset: DatasetInfo,
+    pub series: Vec<(String, Columns)>,
+    pub universe: Vec<String>,
+    pub fees: FeeSchedule,
+    /// Slippage scalaire du chemin hérité ; le mode `--costs` ne l'utilise pas (il est refusé).
+    pub slippage: Slippage,
+    pub capital: f64,
+    pub min_trades: u32,
+    pub instruments: Instruments,
+    pub regime_symbol: String,
+    pub max_positions: u16,
+    pub sizing: SizingMode,
+    pub min_order_bump: Option<f64>,
+    pub quote_gap_ms: Ts,
+    pub strategy_id: String,
+    pub params: toml::Value,
+}
+
+impl PreparedPortfolio {
+    /// Configuration du moteur, avec le slippage scalaire donné (celui du chemin hérité, ou
+    /// [`Slippage::ZERO`] pour les profils de coûts de S10).
+    pub fn portfolio_config(&self, slippage: Slippage) -> PortfolioConfig<'_> {
+        PortfolioConfig {
+            universe: &self.universe,
+            regime_symbol: &self.regime_symbol,
+            fees: self.fees,
+            slippage,
+            initial_cash: self.capital,
+            sim_rules: SimRules::default(),
+            instruments: &self.instruments.rules,
+            instruments_hash: self.instruments.hash.as_deref(),
+            max_positions: self.max_positions,
+            sizing: self.sizing,
+            min_order_bump_max_risk: self.min_order_bump,
+            quote_gap_ms: self.quote_gap_ms,
+            min_trades: self.min_trades,
+        }
+    }
+
+    /// Une stratégie fraîche par jambe, dans l'ordre de l'univers.
+    pub fn build_strategies(&self) -> Result<Vec<Box<dyn Strategy>>, CliError> {
+        let mut strategies: Vec<Box<dyn Strategy>> = Vec::with_capacity(self.universe.len());
+        for _ in &self.universe {
+            strategies.push(registry::build(&self.strategy_id, &self.params)?);
+        }
+        Ok(strategies)
+    }
 }
 
 /// Lit le fichier d'instruments OKX et les règles de chaque jambe.
@@ -257,7 +289,10 @@ fn series_info(series: &[(String, Columns)]) -> Vec<SeriesInfo> {
         .collect()
 }
 
-fn prepare(args: &RunInputArgs, portfolio: &PortfolioArgs) -> Result<PreparedPortfolio, CliError> {
+pub(super) fn prepare(
+    args: &RunInputArgs,
+    portfolio: &PortfolioArgs,
+) -> Result<PreparedPortfolio, CliError> {
     if args.fixture.is_some() {
         return Err(CliError::PortfolioNeedsDataset);
     }
@@ -339,7 +374,7 @@ fn prepare(args: &RunInputArgs, portfolio: &PortfolioArgs) -> Result<PreparedPor
         )?,
         None => toml_instruments(args, exchange, &universe)?,
     };
-    let fees = FeeSchedule::load(args.fees, &args.fees_file)?;
+    let fees = FeeSchedule::load_grid(args.fees, &args.fees_file)?;
 
     let params_text = std::fs::read_to_string(&args.params).map_err(|source| CliError::Read {
         path: args.params.display().to_string(),
@@ -367,7 +402,7 @@ fn prepare(args: &RunInputArgs, portfolio: &PortfolioArgs) -> Result<PreparedPor
         series: loaded.series,
         universe,
         fees,
-        slippage: args.slippage_bps,
+        slippage: args.legacy_slippage()?,
         capital: args.capital,
         min_trades: args.min_trades,
         instruments,
@@ -386,7 +421,7 @@ fn prepare(args: &RunInputArgs, portfolio: &PortfolioArgs) -> Result<PreparedPor
 
 /// Colonnes d'une paire pour le calcul de G0 ; une série absente donne des colonnes vides (le moteur a
 /// déjà refusé un symbole absent du dataset).
-fn market_of<'a>(series: &'a [(String, Columns)], symbol: &str) -> LegMarket<'a> {
+pub(super) fn market_of<'a>(series: &'a [(String, Columns)], symbol: &str) -> LegMarket<'a> {
     match series.iter().find(|(name, _)| name == symbol) {
         Some((_, columns)) => LegMarket {
             open_time_ms: columns.open_time_ms(),
@@ -410,25 +445,8 @@ pub(super) fn run(args: &BacktestArgs) -> Result<(), CliError> {
     let started_at_ms = now_ms()?;
 
     let prepared = prepare(&args.inputs, &args.portfolio)?;
-    let mut strategies: Vec<Box<dyn Strategy>> = Vec::with_capacity(prepared.universe.len());
-    for _ in &prepared.universe {
-        strategies.push(registry::build(&prepared.strategy_id, &prepared.params)?);
-    }
-    let config = PortfolioConfig {
-        universe: &prepared.universe,
-        regime_symbol: &prepared.regime_symbol,
-        fees: prepared.fees,
-        slippage: prepared.slippage,
-        initial_cash: prepared.capital,
-        sim_rules: SimRules::default(),
-        instruments: &prepared.instruments.rules,
-        instruments_hash: prepared.instruments.hash.as_deref(),
-        max_positions: prepared.max_positions,
-        sizing: prepared.sizing,
-        min_order_bump_max_risk: prepared.min_order_bump,
-        quote_gap_ms: prepared.quote_gap_ms,
-        min_trades: prepared.min_trades,
-    };
+    let strategies = prepared.build_strategies()?;
+    let config = prepared.portfolio_config(prepared.slippage);
     let load_ms = elapsed_ms(t0);
 
     let t_run = Instant::now();
@@ -481,7 +499,9 @@ pub(super) fn run(args: &BacktestArgs) -> Result<(), CliError> {
 
     // Même discipline que S8 : le manifeste, qui marque un run complet, et le rapport HTML d'un rendu
     // précédent sont retirés avant de réécrire les autres fichiers, et le manifeste est écrit en dernier.
-    for stale in [MANIFEST_FILE, REPORT_FILE] {
+    // Le `profiles.json` d'un run `--costs` précédent l'est aussi : verify et le control plane classent un
+    // dossier sur sa seule présence.
+    for stale in [MANIFEST_FILE, REPORT_FILE, report::profiles::PROFILES_FILE] {
         remove_stale(&out, stale)?;
     }
     report::write_bytes_atomic(&out, "metrics.json", &metrics_bytes)?;
