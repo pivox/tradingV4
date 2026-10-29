@@ -138,7 +138,7 @@
   {% endif %}
   <p class="note">Au-delà de 1 % de bougies absentes, un trimestre est exclu pour la paire et le TF concernés : la paire n'ouvre aucune position pendant ce trimestre quand le TF exclu est celui de décision de la stratégie. Le 1m n'exclut jamais rien (décision du 15/10).</p>
 
-  {% if manifest.researchInputs is not null %}
+  {% if manifest.researchInputs is not empty %}
   <table class="kv">
     <caption>Entrées de la recherche (<code>manifest.research_inputs</code>)</caption>
     <tbody>

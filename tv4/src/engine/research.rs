@@ -454,6 +454,10 @@ impl ResearchState {
         self.decision_start_ms
     }
 
+    pub(super) fn decision_end_ms(&self) -> Ts {
+        self.decision_end_ms
+    }
+
     /// Pose l'éligibilité de chaque jambe à la première minute de grille `t`, sans rien annuler : aucun
     /// ordre n'existe encore.
     pub(super) fn init_at(&mut self, t: Ts) {
@@ -470,7 +474,7 @@ impl ResearchState {
 
     /// Avance l'éligibilité de la jambe `k` à la minute de grille `t` (étape 1). Rend vrai si la jambe
     /// était éligible à la minute précédente et ne l'est plus : ses entrées en attente doivent être
-    /// annulées si elle est à plat.
+    /// annulées, qu'elle soit à plat ou en position (les ventes, les sorties et le stop restent).
     pub(super) fn leaves_at(&mut self, k: usize, t: Ts) -> bool {
         let Some(leg) = self.legs.get_mut(k) else {
             return false;

@@ -26,8 +26,11 @@ use tv4::model::universe::{Member, UniverseQuarter};
 use tv4::model::{
     Candle, InstrumentRules, QualitySchedule, QuarterExclusion, Timeframe, Ts, UniverseSchedule,
 };
+use tv4::report::research::split_trades;
+use tv4::sim::ExitReason;
 use tv4::store::Columns;
 use tv4::store::time::days_from_civil;
+use tv4::store::{GapsPolicy, fill_gaps};
 use tv4::strategy::{
     BarContext, IndicatorKind, IndicatorSpec, OrderKind, Signal, Size, Strategy, registry,
 };
@@ -647,6 +650,411 @@ fn une_jambe_en_position_qui_sort_de_l_univers_va_a_son_terme() {
             .entries_not_in_universe,
         0
     );
+}
+
+/// Limit d'achat autonome (`PlaceLimit`, slot 1) à `price`, pour 30 de cotation, valable très longtemps.
+fn place_buy(price: f64) -> Signal {
+    Signal::PlaceLimit {
+        side: tv4::model::Side::Buy,
+        price,
+        size: Size::Quote(30.0),
+        ttl_bars: 1_000_000,
+        slot: 1,
+        tag: "place",
+    }
+}
+
+/// Marché de la frontière D = 2026-10-01 pour AAA (100 puis 85 à partir de D + 20 min) et BBB (plat).
+fn boundary_market_drop() -> Vec<(String, Columns)> {
+    let from = at(2026, 9, 30, 22, 0);
+    let d = at(2026, 10, 1, 0, 0);
+    let drop = d + 20 * MINUTE;
+    let aaa: Vec<Candle> = (0..4 * 60)
+        .map(|m| {
+            let open_ms = from + m * MINUTE;
+            flat_bar(open_ms, if open_ms >= drop { 85.0 } else { 100.0 }, 10.0)
+        })
+        .collect();
+    data(vec![
+        ("AAA-USD", aaa),
+        ("BBB-USD", flat(from, 4 * 60, 100.0)),
+    ])
+}
+
+/// AAA achète au marché à D - 60 min et pose une limit d'achat à 90 à D - 30 min ; si `sell_after`,
+/// elle vend tout à D + 10 min. AAA est absente du trimestre de D, BBB reste membre.
+fn run_place_buy_left(sell_after: bool) -> PortfolioResult {
+    let d = at(2026, 10, 1, 0, 0);
+    let series = boundary_market_drop();
+    let universe = names(&["AAA-USD", "BBB-USD"]);
+    let mut plan = vec![
+        (d - 60 * MINUTE, buy_quote(50.0)),
+        (d - 30 * MINUTE, place_buy(90.0)),
+    ];
+    if sell_after {
+        plan.push((d + 10 * MINUTE, sell_all()));
+    }
+    let (aaa, _) = Scripted::new(plan);
+    let (bbb, _) = Scripted::new(Vec::new());
+    let mut env = Env::new(
+        at(2026, 9, 30, 23, 0),
+        at(2026, 10, 1, 2, 0),
+        UniverseSpec::Quarterly {
+            rules_hash: "blake3:rules".to_string(),
+        },
+    );
+    env.schedule = Some(schedule(vec![
+        quarter("2026-Q3", &["AAA-USD", "BBB-USD"]),
+        quarter("2026-Q4", &["BBB-USD"]),
+    ]));
+    research(&series, vec![Box::new(aaa), Box::new(bbb)], &universe, &env).unwrap()
+}
+
+#[test]
+fn les_limits_d_achat_d_une_jambe_en_position_qui_sort_de_l_univers_sont_annulees() {
+    let d = at(2026, 10, 1, 0, 0);
+    // La limit d'achat à 90 serait remplie à D + 20 min (prix 85) : elle est annulée à D, la position
+    // ouverte à D - 60 min va à son terme (clôture forcée), aucune entrée ne remplit après D.
+    let result = run_place_buy_left(false);
+    assert!(
+        result.trades.iter().all(|trade| trade.entry_ms < d),
+        "aucune entrée remplie hors univers : {:?}",
+        result.trades.iter().map(|t| t.entry_ms).collect::<Vec<_>>()
+    );
+    assert_eq!(result.trades.len(), 1);
+    assert_eq!(result.trades[0].entry_ms, d - 59 * MINUTE);
+    assert_eq!(result.sim.orders_cancelled, 1);
+    let research = result.research.as_ref().unwrap();
+    assert_eq!(research.legs[0].counters.entries_cancelled_universe, 1);
+    assert_eq!(research.totals.entries_cancelled_universe, 1);
+    assert_funnel_identity(&result);
+}
+
+#[test]
+fn la_limit_d_achat_annulee_n_ouvre_pas_de_position_neuve_apres_la_vente() {
+    let d = at(2026, 10, 1, 0, 0);
+    // Variante : la position est vendue à D + 10 min, la limit (annulée à D) ne remplit pas à D + 20 min.
+    let result = run_place_buy_left(true);
+    assert_eq!(result.trades.len(), 1, "aucune position neuve");
+    assert_eq!(result.trades[0].entry_ms, d - 59 * MINUTE);
+    assert!(!result.trades[0].forced_close);
+    assert_eq!(result.sim.orders_cancelled, 1);
+    assert_eq!(
+        result
+            .research
+            .as_ref()
+            .unwrap()
+            .totals
+            .entries_cancelled_universe,
+        1
+    );
+    assert_funnel_identity(&result);
+}
+
+/// Stratégie 1h qui rejoue un plan de signaux, chacun émis une fois au premier appel de `now_ms` au
+/// moins égal à sa date.
+struct PlannedH1 {
+    tfs: [Timeframe; 1],
+    plan: Vec<(Ts, Signal)>,
+    fired: Vec<bool>,
+}
+
+impl PlannedH1 {
+    fn boxed(plan: Vec<(Ts, Signal)>) -> Box<dyn Strategy> {
+        let fired = vec![false; plan.len()];
+        Box::new(PlannedH1 {
+            tfs: [Timeframe::H1],
+            plan,
+            fired,
+        })
+    }
+}
+
+impl Strategy for PlannedH1 {
+    fn id(&self) -> &'static str {
+        "planned_h1"
+    }
+    fn version(&self) -> &'static str {
+        "0.0.0"
+    }
+    fn params_json(&self) -> serde_json::Value {
+        serde_json::json!({})
+    }
+    fn timeframes(&self) -> &[Timeframe] {
+        &self.tfs
+    }
+    fn indicators(&self) -> Vec<IndicatorSpec> {
+        Vec::new()
+    }
+    fn warmup_bars(&self) -> usize {
+        0
+    }
+    fn on_bar(&mut self, ctx: &BarContext<'_>, out: &mut Vec<Signal>) {
+        for ((at, signal), fired) in self.plan.iter().zip(self.fired.iter_mut()) {
+            if !*fired && ctx.now_ms() >= *at {
+                *fired = true;
+                out.push(*signal);
+            }
+        }
+    }
+}
+
+#[test]
+fn une_exclusion_qualite_annule_les_limits_d_achat_d_une_jambe_en_position() {
+    // Variante qualité : AAA reste membre mais son 1h est exclu en 2026-Q4. Elle achète au marché et pose
+    // sa limit d'achat à 23:00 (D - 60 min), le prix baisse à D + 20 min : la limit est annulée à D.
+    let d = at(2026, 10, 1, 0, 0);
+    let series = boundary_market_drop();
+    let universe = names(&["AAA-USD", "BBB-USD"]);
+    let run = |excluded: bool| {
+        // Les deux signaux de AAA partent au même appel de 23:00.
+        let strategies: Vec<Box<dyn Strategy>> = vec![
+            PlannedH1::boxed(vec![
+                (d - 60 * MINUTE, buy_quote(50.0)),
+                (d - 60 * MINUTE, place_buy(90.0)),
+            ]),
+            PlannedH1::boxed(Vec::new()),
+        ];
+        let mut env = Env::new(
+            at(2026, 9, 30, 23, 0),
+            at(2026, 10, 1, 2, 0),
+            fixed(&["AAA-USD", "BBB-USD"]),
+        );
+        if excluded {
+            env.quality = exclusions(&[("AAA-USD", "2026-Q4", &[Timeframe::H1])]);
+        }
+        research(&series, strategies, &universe, &env).unwrap()
+    };
+    // Témoin : sans exclusion, la limit remplit à D + 20 min.
+    let kept = run(false);
+    assert_eq!(kept.trades.len(), 2);
+    assert_eq!(kept.sim.orders_cancelled, 0);
+
+    let excluded = run(true);
+    assert!(
+        excluded.trades.iter().all(|trade| trade.entry_ms < d),
+        "aucune entrée remplie après l'exclusion"
+    );
+    assert_eq!(excluded.sim.orders_cancelled, 1);
+    assert_eq!(
+        excluded
+            .research
+            .as_ref()
+            .unwrap()
+            .totals
+            .entries_cancelled_universe,
+        1
+    );
+    assert_funnel_identity(&excluded);
+}
+
+/// Fenêtre de décision [2026-07-10, 2026-07-20) : AAA est plate et cotée jusqu'à la dernière minute de la
+/// fenêtre ; BBB entre au marché au début, puis sa dernière bougie ouvre à `decision_end - 7 j - 60 s +
+/// delta`, si bien que l'échéance de son trou de cotation tombe à `decision_end + delta`.
+fn run_gap_at_window_end(delta: Ts) -> PortfolioResult {
+    let start = at(2026, 7, 10, 0, 0);
+    let end = at(2026, 7, 20, 0, 0);
+    let last_open = end - 7 * DAY - MINUTE + delta;
+    let series = data(vec![
+        ("AAA-USD", flat(start, (end - start) / MINUTE, 100.0)),
+        (
+            "BBB-USD",
+            flat(start, (last_open - start) / MINUTE + 1, 100.0),
+        ),
+    ]);
+    let universe = names(&["AAA-USD", "BBB-USD"]);
+    let (aaa, _) = Scripted::new(Vec::new());
+    let (bbb, _) = Scripted::new(vec![(start + 10 * MINUTE, buy_quote(50.0))]);
+    let env = Env::new(start, end, fixed(&["AAA-USD", "BBB-USD"]));
+    research(&series, vec![Box::new(aaa), Box::new(bbb)], &universe, &env).unwrap()
+}
+
+#[test]
+fn une_echeance_de_trou_a_decision_end_donne_une_cloture_forcee_purgee() {
+    let end = at(2026, 7, 20, 0, 0);
+    // delta = -60 s : l'échéance tombe à decision_end - 60 s, dans la grille. Sortie par trou de
+    // cotation, trade conservé.
+    let before = run_gap_at_window_end(-MINUTE);
+    assert_eq!(before.trades.len(), 1);
+    assert_eq!(before.trades[0].exit_reason, ExitReason::QuoteGap);
+    assert_eq!(before.trades[0].exit_ms, end - MINUTE);
+    let split = split_trades(&before, end).expect("trade conservé");
+    assert_eq!((split.kept.len(), split.purged), (1, 0));
+
+    // delta = 0 et +60 s : le trou n'est pas soldé en `quote_gap` à decision_end (ni après). La position
+    // passe à la clôture forcée de fin de fenêtre, que la règle de purge retire ; plus d'erreur.
+    for delta in [0, MINUTE] {
+        let result = run_gap_at_window_end(delta);
+        assert_eq!(result.trades.len(), 1, "delta = {delta}");
+        assert_eq!(result.trades[0].exit_reason, ExitReason::ForcedClose);
+        let split = split_trades(&result, end).expect("trade purgé, sans erreur");
+        assert_eq!((split.kept.len(), split.purged), (0, 1), "delta = {delta}");
+        assert_funnel_identity(&result);
+    }
+}
+
+// ---------------------------------------------------------------------------------------------
+// Aucun fill dans une minute synthétique (docs S11 §6.4, critère 6)
+// ---------------------------------------------------------------------------------------------
+
+/// Minutes synthétiques du trou : `[GAP_FROM, GAP_TO)` minutes après le début de la fenêtre.
+const GAP_FROM: i64 = 30;
+const GAP_TO: i64 = 40;
+
+/// Bougie réelle de la minute `i` après `first_ms`, volume 10.
+fn real_bar(first_ms: Ts, i: i64, high: f64, low: f64) -> Candle {
+    Candle {
+        open_time_ms: first_ms + i * MINUTE,
+        open: 100.0,
+        high,
+        low,
+        close: 100.0,
+        volume: 10.0,
+        trades: None,
+    }
+}
+
+/// Dataset de 60 minutes autour de 100, sans les minutes `[GAP_FROM, GAP_TO)`, passé par
+/// `zero_volume_marked` : les minutes du trou sont insérées plates au dernier close, à volume nul, et
+/// marquées synthétiques. `high_before` et `high_after` sont les plus hauts des bougies réelles avant et
+/// après le trou. Rend les colonnes et les instants synthétiques.
+fn gapped_market(first_ms: Ts, high_before: f64, high_after: f64) -> (Columns, Vec<Ts>) {
+    let candles: Vec<Candle> = (0..60)
+        .filter(|i| !(GAP_FROM..GAP_TO).contains(i))
+        .map(|i| {
+            let high = if i < GAP_FROM {
+                high_before
+            } else {
+                high_after
+            };
+            real_bar(first_ms, i, high, 99.8)
+        })
+        .collect();
+    let columns = fill_gaps(
+        Columns::from_candles(&candles),
+        Timeframe::M1,
+        GapsPolicy::ZeroVolumeMarked,
+    )
+    .expect("politique de trous");
+    let synthetic: Vec<Ts> = columns
+        .open_time_ms()
+        .iter()
+        .zip(columns.synthetic())
+        .filter(|(_, flag)| **flag)
+        .map(|(t, _)| *t)
+        .collect();
+    assert_eq!(synthetic.len() as i64, GAP_TO - GAP_FROM);
+    (columns, synthetic)
+}
+
+/// Joue `plan` sur AAA-USD (marché à trou) en mode recherche et vérifie qu'aucun fill, d'entrée comme de
+/// sortie, n'a eu lieu dans une minute synthétique (la clôture forcée de fin de fenêtre est exclue : elle
+/// a lieu à la dernière minute, réelle).
+fn play_gapped(
+    high_before: f64,
+    high_after: f64,
+    plan: Vec<(Ts, Signal)>,
+) -> (PortfolioResult, Vec<Ts>) {
+    let first_ms = at(2026, 7, 10, 0, 0);
+    let (columns, synthetic) = gapped_market(first_ms, high_before, high_after);
+    let series = vec![("AAA-USD".to_string(), columns)];
+    let universe = names(&["AAA-USD"]);
+    let (strategy, _) = Scripted::new(plan);
+    let env = Env::new(first_ms, first_ms + 60 * MINUTE, fixed(&["AAA-USD"]));
+    let result = research(&series, vec![Box::new(strategy)], &universe, &env).unwrap();
+    for trade in &result.trades {
+        assert!(
+            !synthetic.contains(&trade.entry_ms),
+            "entrée dans la minute synthétique {}",
+            trade.entry_ms
+        );
+        if !trade.forced_close {
+            assert!(
+                !synthetic.contains(&trade.exit_ms),
+                "sortie dans la minute synthétique {}",
+                trade.exit_ms
+            );
+        }
+    }
+    (result, synthetic)
+}
+
+/// Entrée au marché de 50 de cotation, avec stop et take-profit éventuels.
+fn entry_with(stop: Option<f64>, take_profit: Option<f64>) -> Signal {
+    Signal::EnterLong {
+        size: Size::Quote(50.0),
+        kind: OrderKind::Market,
+        stop,
+        take_profit,
+        tag: "entree",
+    }
+}
+
+#[test]
+fn le_mode_recherche_ne_remplit_jamais_dans_une_minute_synthetique() {
+    let first_ms = at(2026, 7, 10, 0, 0);
+    let minute = |i: i64| first_ms + i * MINUTE;
+
+    // Entrée : décidée à la clôture de la minute 28, elle serait active à la minute 30 (synthétique) ; le
+    // premier fill possible est la première 1m réelle après le trou.
+    let (entry, _) = play_gapped(100.2, 100.2, vec![(minute(29), buy_quote(50.0))]);
+    assert_eq!(entry.trades.len(), 1);
+    assert_eq!(entry.trades[0].entry_order_ms, minute(30));
+    assert_eq!(entry.trades[0].entry_ms, minute(GAP_TO));
+
+    // Stop : entrée à la minute 22, stop initial à 99,0 (jamais touché). Un `MoveStop` à 100,5, au-dessus
+    // du prix plat des minutes synthétiques (100), devient actif à la minute 30, dans le trou : il serait
+    // franchi par une synthétique. La sortie a lieu à la première 1m réelle, au stop.
+    let (stop, _) = play_gapped(
+        100.2,
+        100.2,
+        vec![
+            (minute(21), entry_with(Some(99.0), None)),
+            (minute(29), Signal::MoveStop { stop: 100.5 }),
+        ],
+    );
+    assert_eq!(stop.trades.len(), 1);
+    let trade = stop.trades[0];
+    assert_eq!(trade.entry_ms, minute(22));
+    assert_eq!(trade.exit_reason, ExitReason::Stop);
+    assert_eq!(trade.exit_ms, minute(GAP_TO));
+
+    // Take-profit : entrée à la minute 22 avec un take-profit à 100,5, jamais atteint avant le trou
+    // (plus haut 100,2) ; les synthétiques sont plates à 100. La première 1m réelle après le trou monte à
+    // 101 : sortie au take-profit à cette minute, et à aucune minute du trou.
+    let (tp, _) = play_gapped(
+        100.2,
+        101.0,
+        vec![(minute(21), entry_with(None, Some(100.5)))],
+    );
+    assert_eq!(tp.trades.len(), 1);
+    let trade = tp.trades[0];
+    assert_eq!(trade.entry_ms, minute(22));
+    assert_eq!(trade.exit_reason, ExitReason::TakeProfit);
+    assert_eq!(trade.exit_ms, minute(GAP_TO));
+
+    // Sortie limit marketable (prix 99,0 sous le marché, comme un take-profit déjà franchi) décidée à la
+    // minute 29, active à la minute 30 : elle ne part ni à l'open d'une synthétique ni dans le trou, mais
+    // à la première 1m réelle.
+    let exit_limit = Signal::ExitLong {
+        kind: OrderKind::Limit {
+            price: 99.0,
+            ttl_bars: 600,
+        },
+        tag: "sortie",
+    };
+    let (exit, _) = play_gapped(
+        100.2,
+        100.2,
+        vec![
+            (minute(21), entry_with(None, None)),
+            (minute(29), exit_limit),
+        ],
+    );
+    assert_eq!(exit.trades.len(), 1);
+    assert_eq!(exit.trades[0].entry_ms, minute(22));
+    assert_eq!(exit.trades[0].exit_ms, minute(GAP_TO));
+    assert!(!exit.trades[0].forced_close);
 }
 
 #[test]

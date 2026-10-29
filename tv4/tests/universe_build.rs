@@ -797,6 +797,68 @@ fn passe_1_accepte_une_serie_et_rejette_une_serie_bloquante() {
     }
 }
 
+/// Écart déclaré (s11 §4.2 et §17, drapeau `rejection_uses_full_series`) : le rejet d'une série
+/// bloquante se juge sur la série complète. Un défaut postérieur à `D` retire la paire du trimestre de
+/// `D` (sans changer le classement des autres) et la 13e du classement entre. Ce test fige ce
+/// comportement : la causalité de §4.2 vaut pour les règles 1 à 6 des séries acceptées, pas pour le
+/// rejet bloquant.
+#[test]
+fn un_rejet_bloquant_posterieur_a_d_retire_la_paire_et_fait_entrer_la_treizieme() {
+    let fin_couverture = D + 10 * DAY;
+    // Treize paires AAA à MMM, volumes décroissants : AAA est la plus liquide, MMM la 13e.
+    let bases: Vec<String> = ('A'..='M').map(|c| format!("{c}{c}{c}")).collect();
+    assert_eq!(bases.len(), TOP_N + 1);
+    let entrees = |defaut_apres_d: Option<&str>| -> Vec<PairEntry> {
+        let mut entrees = Vec::new();
+        for (i, base) in bases.iter().enumerate() {
+            let mut candles = eligible_series(ws(), (bases.len() - i) as f64);
+            if defaut_apres_d == Some(base.as_str()) {
+                // Une minute à D + 5 j dont low > high : série bloquante, hors de toute fenêtre de D.
+                let mut mauvaise = candle(D + 5 * DAY, 10.0, 1.0);
+                mauvaise.low = mauvaise.high + 1.0;
+                candles.push(mauvaise);
+            }
+            let controlee = check_m1(lignes_brutes(&candles).into_iter(), fin_couverture);
+            match scan_checked(&controlee).unwrap() {
+                PairScan::Accepted(stats) => entrees.push(PairEntry {
+                    candidate: candidate(&format!("{base}USD")),
+                    stats: *stats,
+                }),
+                PairScan::Rejected { reasons } => {
+                    assert_eq!(defaut_apres_d, Some(base.as_str()));
+                    assert_eq!(reasons, ["ohlc_error"]);
+                }
+            }
+        }
+        entrees
+    };
+
+    let propre = select_at(&entrees(None), D, &config()).unwrap();
+    let membres: Vec<&str> = propre
+        .members()
+        .iter()
+        .map(|m| m.candidate.symbol.as_str())
+        .collect();
+    assert_eq!(membres.first(), Some(&"AAA-USD"));
+    assert_eq!(membres.last(), Some(&"LLL-USD"));
+    assert_eq!(propre.eligible_count(), 13);
+
+    // Un seul défaut, 5 jours après D, sur la plus liquide.
+    let avec_defaut = select_at(&entrees(Some("AAA")), D, &config()).unwrap();
+    let membres: Vec<&str> = avec_defaut
+        .members()
+        .iter()
+        .map(|m| m.candidate.symbol.as_str())
+        .collect();
+    assert!(!membres.contains(&"AAA-USD"));
+    assert_eq!(membres.first(), Some(&"BBB-USD"));
+    assert_eq!(membres.last(), Some(&"MMM-USD"));
+    assert_eq!(avec_defaut.members()[0].rank, 1);
+
+    // Le drapeau le déclare dans universe.json (règles, donc dans le rules_hash).
+    assert!(universe_rules(&config()).rejection_uses_full_series);
+}
+
 // ---------------------------------------------------------------------------------------------
 // Hashes d'entrée : égaux au dataset_hash du store
 // ---------------------------------------------------------------------------------------------
@@ -1173,6 +1235,8 @@ fn les_regles_ecrites_sont_les_constantes_du_module() {
     assert_eq!(regles.quotes, ["USD", "USDT"]);
     assert_eq!(regles.quote_preference, regles.quotes);
     assert!(regles.quality_uses_quarter_data);
+    // Écart déclaré (s11 §17) : le rejet d'une série bloquante se juge sur la série complète.
+    assert!(regles.rejection_uses_full_series);
     assert!(regles.config_file_hash.starts_with("blake3:"));
     let mut tries = regles.excluded_bases.clone();
     tries.sort();

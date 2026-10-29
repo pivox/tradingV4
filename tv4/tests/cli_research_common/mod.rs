@@ -88,6 +88,68 @@ pub fn ecrire_zip_variante(chemin: &Path, variante: u64) -> String {
     sha256_fichier(chemin)
 }
 
+/// Zip **synthétique** aux entrées choisies : les quatre paires du marché ordinaire (mêmes tirages que
+/// [`ecrire_zip_variante`] à `variante` 0), `extras` (nom d'entrée, contenu) en plus, et le
+/// `MANIFEST.json` seulement si `avec_manifeste`. Rend le SHA-256 du zip écrit.
+pub fn ecrire_zip_entrees(
+    chemin: &Path,
+    avec_manifeste: bool,
+    extras: &[(&str, Vec<u8>)],
+) -> String {
+    let debut = secs(2025, 6, 1);
+    let fin = secs(2026, 10, 1);
+    let manifeste = manifeste_synthetique("2026-09-30");
+    let base = [
+        ("XBTUSD_1.csv", csv_paire(1, debut, fin, 60_000.0, 40.0)),
+        ("ETHUSD_1.csv", csv_paire(2, debut, fin, 3_000.0, 400.0)),
+        ("SOLUSD_1.csv", csv_paire(3, debut, fin, 150.0, 4_000.0)),
+        (
+            "ADAUSD_1.csv",
+            csv_paire(4, secs(2026, 5, 1), fin, 0.5, 90_000.0),
+        ),
+    ];
+    let mut entrees: Vec<(&str, &[u8])> = Vec::new();
+    if avec_manifeste {
+        entrees.push(("MANIFEST.json", manifeste.as_slice()));
+    }
+    for (nom, texte) in &base {
+        entrees.push((nom, texte.as_bytes()));
+    }
+    for (nom, octets) in extras {
+        entrees.push((nom, octets.as_slice()));
+    }
+    ecrire_zip(chemin, &entrees);
+    sha256_fichier(chemin)
+}
+
+/// CSV Kraken synthétique d'une paire (voir [`csv_paire`]) pour les entrées supplémentaires d'un zip.
+pub fn csv_synthetique(seed: u64, debut: (i64, u32, u32), base: f64, volume: f64) -> Vec<u8> {
+    csv_paire(
+        seed,
+        secs(debut.0, debut.1, debut.2),
+        secs(2026, 10, 1),
+        base,
+        volume,
+    )
+    .into_bytes()
+}
+
+/// Corrompt la signature de l'en-tête local de l'entrée `nom` d'un zip écrit : le répertoire central reste
+/// valide (le zip s'ouvre, l'entrée est listée) mais la lecture de l'entrée échoue. À faire avant de
+/// calculer le SHA-256 du zip.
+pub fn corrompre_en_tete_local(chemin: &Path, nom: &str) {
+    let mut octets = fs::read(chemin).expect("zip à corrompre");
+    let position = octets
+        .windows(nom.len())
+        .position(|fenetre| fenetre == nom.as_bytes())
+        .expect("nom de l'entrée dans l'en-tête local");
+    // L'en-tête local (30 octets fixes) précède le nom, et sa signature est `PK\x03\x04`.
+    let signature = position - 30;
+    assert_eq!(&octets[signature..signature + 4], b"PK\x03\x04");
+    octets[signature + 3] = 0x05;
+    fs::write(chemin, octets).expect("zip corrompu");
+}
+
 pub fn tv4(args: &[String]) -> Output {
     Command::new(env!("CARGO_BIN_EXE_tv4"))
         .args(args)

@@ -347,6 +347,10 @@ pub struct UniverseRules {
     pub quality_threshold: f64,
     pub quality_tfs: Vec<Timeframe>,
     pub quality_uses_quarter_data: bool,
+    /// Le rejet d'une paire à série bloquante est jugé sur sa série complète, y compris les minutes
+    /// postérieures à la date `D` d'un trimestre : la paire quitte alors tous les trimestres, et la
+    /// suivante du classement la remplace (s11 §4.2 et §17).
+    pub rejection_uses_full_series: bool,
     /// `blake3:` des octets de `config/universe.toml`.
     pub config_file_hash: String,
     pub rules_version: String,
@@ -600,8 +604,10 @@ fn write_if_changed(path: &Path, text: &str) -> Result<(), StoreError> {
 /// Écrit un dossier d'univers : les CSV, `instruments_kraken.toml`, puis `universe.json` en dernier.
 /// Rend le contenu de `universe.json` avec ses hashes.
 ///
-/// **Immutabilité (s11 §4.5).** Si `dir` contient déjà un `universe.json`, il est relu et vérifié, puis :
-/// les règles doivent être identiques ([`StoreError::UniverseRulesChanged`]), et chaque trimestre déjà
+/// **Immutabilité (s11 §4.5).** Si `dir` contient déjà un `universe.json`, sa partie figée est relue et
+/// vérifiée (`universe.json` et CSV de trimestres ; ni le fichier d'instruments ni les `eligible_<date>.csv`,
+/// réécrits juste après, de sorte qu'une écriture interrompue avant `universe.json` n'interdit pas de
+/// rejouer la commande), puis : les règles doivent être identiques ([`StoreError::UniverseRulesChanged`]), et chaque trimestre déjà
 /// présent doit être reproduit à l'octet, CSV et entrée de `quarters` ([`StoreError::FrozenQuarterChanged`]).
 /// Un dump plus récent n'ajoute donc que des trimestres. Rien n'est écrit si une de ces vérifications
 /// échoue. `instruments_kraken.toml`, les dates `--at` et les diagnostics ne sont pas figés.
@@ -755,8 +761,12 @@ pub fn write_universe(dir: &Path, build: &UniverseBuild) -> Result<UniverseFile,
     file.report_hash = file.compute_report_hash()?;
 
     // Immutabilité des trimestres déjà figés.
+    // On ne relit que la partie figée (`universe.json` et les CSV de trimestres) : le fichier
+    // d'instruments et les `eligible_<date>.csv` ne sont pas figés et sont réécrits juste après ; les
+    // vérifier ici bloquerait pour toujours un dossier dont l'écriture a été interrompue entre ces
+    // fichiers et `universe.json` (publié en dernier).
     if dir.join(UNIVERSE_FILE).is_file() {
-        let old = load(dir)?;
+        let old = load_impl(dir, true)?;
         if old.file.rules != file.rules {
             return Err(StoreError::UniverseRulesChanged);
         }
@@ -1002,6 +1012,13 @@ fn read_verified_text(dir: &Path, name: &str, expected: &str) -> Result<String, 
 /// chaque CSV (trimestres et dates `--at`) et du fichier d'instruments, forme canonique des CSV,
 /// cohérence des entrées (bornes du trimestre, nombre de membres, `quality_hashes`), listes triées.
 pub fn load(dir: &Path) -> Result<LoadedUniverse, StoreError> {
+    load_impl(dir, false)
+}
+
+/// Corps de [`load`]. Avec `frozen_only`, seule la partie figée est relue : `universe.json` et les CSV
+/// de trimestres ; ni le fichier d'instruments ni les `eligible_<date>.csv` (que [`write_universe`]
+/// réécrit) ne sont lus ni vérifiés, et `instruments_text` reste vide. Réservé à `write_universe`.
+fn load_impl(dir: &Path, frozen_only: bool) -> Result<LoadedUniverse, StoreError> {
     let json_path = dir.join(UNIVERSE_FILE);
     let shown = json_path.display().to_string();
     let bytes = fs::read(&json_path).map_err(|source| io_error(&json_path, source))?;
@@ -1123,6 +1140,9 @@ pub fn load(dir: &Path) -> Result<LoadedUniverse, StoreError> {
             ));
         }
         check_hash(&shown, "file_hash", &entry.file_hash)?;
+        if frozen_only {
+            continue;
+        }
         let text = read_verified_text(dir, &entry.file, &entry.file_hash)?;
         let rows = parse_csv(&entry.file, &text)?;
         if u32::try_from(rows.len()).ok() != Some(entry.eligible) {
@@ -1172,8 +1192,11 @@ pub fn load(dir: &Path) -> Result<LoadedUniverse, StoreError> {
         ));
     }
     check_hash(&shown, "instruments.file_hash", &file.instruments.file_hash)?;
-    let instruments_text =
-        read_verified_text(dir, &file.instruments.file, &file.instruments.file_hash)?;
+    let instruments_text = if frozen_only {
+        String::new()
+    } else {
+        read_verified_text(dir, &file.instruments.file, &file.instruments.file_hash)?
+    };
 
     Ok(LoadedUniverse {
         dir: dir.to_path_buf(),

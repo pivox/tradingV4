@@ -111,6 +111,74 @@ final class Tv4ReportResearchCommandTest extends KernelTestCase
         self::assertStringContainsString('<title>Run ', $html);
     }
 
+    /** Texte d'une ligne `<tr>` dont l'en-tête contient `$label`, valeur numérique de la cellule. */
+    private function rowValue(string $html, string $label): int
+    {
+        $row = $this->between($html, '<th scope="row">' . $label . '</th><td class="num">', '</td>');
+
+        return (int) $row;
+    }
+
+    /** Sous-chaîne de `$html` entre la première occurrence de `$start` et la suivante de `$end`. */
+    private function between(string $html, string $start, string $end): string
+    {
+        $from = strpos($html, $start);
+        self::assertIsInt($from, $start);
+        $from += strlen($start);
+        $to = strpos($html, $end, $from);
+        self::assertIsInt($to, $end);
+
+        return substr($html, $from, $to - $from);
+    }
+
+    /** Section `<section id="$id" ...>` jusqu'à sa fermeture. */
+    private function section(string $html, string $id): string
+    {
+        return $this->between($html, '<section id="' . $id . '"', '</section>');
+    }
+
+    public function testTheResearchFunnelClosesInTheWhyNoTradeAndPerPairSections(): void
+    {
+        $html = $this->render(RunFixture::RESEARCH_QUARTERLY_SOURCE);
+
+        $why = $this->section($html, 'pourquoi');
+        $emitted = $this->rowValue($why, 'Signaux d\'entrée émis');
+        $refused = $this->rowValue($why, 'dont refusés par la recherche : <code>outside_decision_window</code>');
+        self::assertSame(5, $refused);
+        self::assertStringNotContainsString('<code>not_in_universe</code>', $why);
+        self::assertStringNotContainsString('<code>excluded_quality</code>', $why);
+        $rejected = 0;
+        foreach (['below_minimum', 'insufficient_quote', 'max_positions'] as $reason) {
+            $rejected += $this->rowValue($why, 'dont rejetés : <code>' . $reason . '</code>');
+        }
+        self::assertSame(20, $emitted);
+        self::assertSame($emitted, $this->rowValue($why, 'Ordres d\'entrée acceptés') + $rejected + $refused);
+
+        $universe = $this->section($html, 'univers');
+        self::assertStringContainsString('refus de recherche</th>', $universe);
+        self::assertSame(1, preg_match('#<code>BTC-USD</code></th>(?:(?!</tr>).)*<td class="num">3</td>\s*</tr>#su', $universe));
+        self::assertSame(1, preg_match('#<code>ETH-USD</code></th>(?:(?!</tr>).)*<td class="num">2</td>\s*</tr>#su', $universe));
+    }
+
+    public function testThePurgedTradeIsFlaggedAndLeftOutOfTheScatter(): void
+    {
+        $html = $this->render(RunFixture::RESEARCH_QUARTERLY_SOURCE);
+
+        self::assertStringContainsString('10 trades, dont 1 purgé (hors métriques de trades)', $html);
+        self::assertStringContainsString('<code>end_of_window</code> (purgé)', $html);
+        self::assertStringNotContainsString('<code>end_of_window</code> (forcée)', $html);
+        $svg = $this->between($html, '<svg class="chart" viewBox="0 0 720 280" role="img" aria-labelledby="scatter-titre">', '</svg>');
+        self::assertSame(9, preg_match_all('#<(?:circle|rect) class="pt #', $svg));
+    }
+
+    public function testAFixedSymbolsResearchRunHasNoEmptyResearchInputsTable(): void
+    {
+        $html = $this->render(RunFixture::RESEARCH_SOURCE);
+
+        self::assertStringNotContainsString('Entrées de la recherche (<code>manifest.research_inputs</code>)', $html);
+        self::assertStringContainsString('id="recherche"', $html);
+    }
+
     public function testTheResearchRunRendersInTheSameWayTwice(): void
     {
         foreach ([RunFixture::RESEARCH_SOURCE, RunFixture::RESEARCH_QUARTERLY_SOURCE] as $directory) {

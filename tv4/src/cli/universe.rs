@@ -320,6 +320,9 @@ fn csv_row(
 pub(super) fn build(args: &UniverseBuildArgs) -> Result<(), CliError> {
     let started = Instant::now();
     let config = UniverseConfig::load(&args.config)?;
+    // Contrôles des dates avant d'ouvrir le zip (SHA-256, passes) : une erreur de saisie ne coûte rien.
+    // Avec la règle du minuit, deux dates du même jour sont deux instants égaux.
+    let mut seen_days = BTreeSet::new();
     for at in &args.at {
         if !is_midnight(at.0) {
             return Err(CliError::Usage {
@@ -330,12 +333,35 @@ pub(super) fn build(args: &UniverseBuildArgs) -> Result<(), CliError> {
                 ),
             });
         }
+        if !seen_days.insert(at.0.div_euclid(MS_PER_DAY)) {
+            return Err(CliError::Usage {
+                option: "--at".to_string(),
+                detail: format!(
+                    "{} : date donnée deux fois (un fichier eligible_<jour>.csv par jour)",
+                    format_rfc3339_utc(at.0)?
+                ),
+            });
+        }
     }
     let OpenedZip {
         mut zip,
         manifest,
         coverage_end,
     } = open_zip(&args.zip, &args.sha256, args.coverage_end)?;
+    // La sélection à `D` ne lit que `[D − 365 j, D)` : une date postérieure à la fin de couverture
+    // compterait des jours sans données comme des volumes nuls. La borne exclusive elle-même est permise.
+    for at in &args.at {
+        if at.0 > coverage_end {
+            return Err(CliError::Usage {
+                option: "--at".to_string(),
+                detail: format!(
+                    "{} : postérieure à la fin de couverture du dump ({}), éligibilité non mesurable",
+                    format_rfc3339_utc(at.0)?,
+                    format_rfc3339_utc(coverage_end)?
+                ),
+            });
+        }
+    }
 
     // Trimestres entièrement couverts (point n° 17 de §16), dans la plage demandée.
     let first = args
@@ -403,10 +429,15 @@ pub(super) fn build(args: &UniverseBuildArgs) -> Result<(), CliError> {
             },
         }
     }
+    // Mémoire de la passe 1 : les trous de cotation de toutes les candidates restent en mémoire
+    // jusqu'à la sélection (s11 §4.5 point 2) ; ce relevé se compare au pic de `/usr/bin/time -l`.
+    let total_gaps: usize = entries.iter().map(|e| e.stats.gap_count()).sum();
+    let total_gap_bytes: usize = entries.iter().map(|e| e.stats.gap_bytes()).sum();
     println!(
-        "passe 1 : {} paires classées, {} écartées ({:.1} s)",
+        "passe 1 : {} paires classées, {} écartées, {total_gaps} trous de cotation en mémoire ({:.1} Mo) ({:.1} s)",
         entries.len(),
         rejected.len(),
+        total_gap_bytes as f64 / 1_000_000.0,
         started.elapsed().as_secs_f64()
     );
 
@@ -418,6 +449,11 @@ pub(super) fn build(args: &UniverseBuildArgs) -> Result<(), CliError> {
     dates.extend(args.at.iter().map(|at| at.0));
     let selections = select(&entries, &dates, &config)?;
     let (quarter_selections, at_selections) = selections.split_at(labels.len());
+    // La sélection est faite : l'assemblage ne relit plus que `excluded_tfs`. On rend les tableaux de
+    // jours et de trous avant la passe 2, dont le pic redevient celui de la plus longue série.
+    for entry in &mut entries {
+        entry.stats.release_selection_data();
+    }
 
     // Besoins de la passe 2, par paire Kraken.
     let mut needs: BTreeMap<String, Need> = BTreeMap::new();

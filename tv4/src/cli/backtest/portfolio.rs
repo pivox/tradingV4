@@ -564,9 +564,14 @@ pub(super) fn run(args: &BacktestArgs) -> Result<(), CliError> {
 
     // Même discipline que S8 : le manifeste, qui marque un run complet, et le rapport HTML d'un rendu
     // précédent sont retirés avant de réécrire les autres fichiers, et le manifeste est écrit en dernier.
-    // Le `profiles.json` d'un run `--costs` précédent l'est aussi : verify et le control plane classent un
-    // dossier sur sa seule présence.
-    for stale in [MANIFEST_FILE, REPORT_FILE, report::profiles::PROFILES_FILE] {
+    // Le `profiles.json` d'un run `--costs` précédent et le `lines.json` d'un run de recherche à deux
+    // lignes le sont aussi : verify et le control plane classent un dossier sur sa seule présence.
+    for stale in [
+        MANIFEST_FILE,
+        REPORT_FILE,
+        report::profiles::PROFILES_FILE,
+        report::research::LINES_FILE,
+    ] {
         remove_stale(&out, stale)?;
     }
     report::write_bytes_atomic(&out, "metrics.json", &metrics_bytes)?;

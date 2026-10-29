@@ -11,7 +11,10 @@ mod common;
 use std::fs;
 use std::path::Path;
 
-use cli_research_common::{World, ecrire_zip_variante, json, ok, repo, run, strings};
+use cli_research_common::{
+    World, corrompre_en_tete_local, csv_synthetique, ecrire_zip_entrees, ecrire_zip_variante, json,
+    ok, repo, run, strings,
+};
 
 fn shown(path: &Path) -> String {
     path.display().to_string()
@@ -162,6 +165,40 @@ fn build_refuse_les_options_invalides_en_code_2() {
     assert_eq!(code, Some(2), "{texte}");
     assert!(texte.contains("minuit UTC"), "{texte}");
     assert!(!w.universe.join("universe.json").exists());
+
+    // Deux fois la même date : refusé avant d'ouvrir le zip (aucune passe, rien d'écrit).
+    let mut args = w.build_args();
+    args.extend(strings(&[
+        "--at",
+        "2026-08-15T00:00:00Z",
+        "--at",
+        "2026-08-15T00:00:00Z",
+    ]));
+    let (code, texte) = run(&args);
+    assert_eq!(code, Some(2), "{texte}");
+    assert!(texte.contains("deux fois"), "{texte}");
+    assert!(!texte.contains("passe 1"), "{texte}");
+    assert!(!w.universe.exists(), "aucun dossier ne doit être créé");
+}
+
+#[test]
+fn build_refuse_une_date_at_posterieure_a_la_fin_de_couverture() {
+    // La couverture du zip synthétique s'arrête au 2026-10-01 (borne exclusive).
+    let w = World::bare();
+    let mut args = w.build_args();
+    args.extend(strings(&["--at", "2026-10-05T00:00:00Z"]));
+    let (code, texte) = run(&args);
+    assert_eq!(code, Some(2), "{texte}");
+    assert!(texte.contains("fin de couverture"), "{texte}");
+    assert!(!texte.contains("passe 1"), "{texte}");
+    assert!(!w.universe.exists(), "aucun dossier ne doit être créé");
+
+    // La borne exclusive elle-même reste acceptée : la sélection ne lit que [D − 365 j, D).
+    let mut args = w.build_args();
+    args.extend(strings(&["--at", "2026-10-01T00:00:00Z"]));
+    let (stdout, _) = ok(&args);
+    assert!(stdout.contains("--at 2026-10-01T00:00:00Z : "), "{stdout}");
+    assert!(w.universe.join("eligible_2026-10-01.csv").exists());
 }
 
 #[test]
@@ -188,6 +225,153 @@ fn build_ecrit_les_dates_at_et_fige_les_trimestres_existants() {
     assert_eq!(code, Some(1), "{texte}");
     assert!(texte.contains("déjà figé"), "{texte}");
     assert_eq!(contenu(&w.universe), before);
+}
+
+/// Ligne du CSV de trimestre d'un symbole (colonne 3 = `symbol`).
+fn ligne_csv(csv: &str, symbol: &str) -> String {
+    csv.lines()
+        .find(|line| line.split(',').nth(2) == Some(symbol))
+        .unwrap_or_else(|| panic!("{symbol} absent de {csv}"))
+        .to_string()
+}
+
+#[test]
+fn build_ecarte_pieges_noms_herites_et_series_rejetees() {
+    // Univers de référence : le zip ordinaire (XBTUSD, ETHUSD, SOLUSD, ADAUSD).
+    let reference = World::bare();
+    ok(&reference.build_args());
+    let csv_ref = fs::read_to_string(reference.universe.join("universe_2026-Q3.csv")).expect("csv");
+    let json_ref = json(&reference.universe.join("universe.json"));
+
+    // Le même marché, plus six entrées : le piège AIXBTUSD (une vraie base, de volume faible, dont le
+    // nom finit par XBTUSD), le nom hérité XXBTZUSD, une série OHLC incohérente, une série sans aucune
+    // bougie clôturée (que `check_m1` classe `empty`, bloquante), un fichier vide et une entrée dont
+    // l'en-tête local est corrompu (illisible). Le motif `empty_series` de la CLI, qui suppose une
+    // série non bloquante sans bougie, n'est pas atteignable : `check_m1` la rend toujours bloquante.
+    let mut w = World::bare();
+    // Une série valide à laquelle s'ajoute une ligne dont high < low : seul `ohlc_error` est signalé.
+    let mut incoherente = csv_synthetique(13, (2025, 6, 1), 20.0, 10.0);
+    incoherente.extend_from_slice(b"1780000001,10,5,6,7,1,1\n");
+    let apres_couverture = b"1796083200,10,10,10,10,1,1\n".to_vec();
+    let extras: [(&str, Vec<u8>); 6] = [
+        (
+            "AIXBTUSD_1.csv",
+            csv_synthetique(9, (2025, 6, 1), 5.0, 10.0),
+        ),
+        (
+            "XXBTZUSD_1.csv",
+            csv_synthetique(10, (2025, 6, 1), 70_000.0, 40.0),
+        ),
+        ("BADUSD_1.csv", incoherente),
+        ("FUTUSD_1.csv", apres_couverture),
+        ("NADAUSD_1.csv", Vec::new()),
+        ("ZZZUSD_1.csv", csv_synthetique(11, (2025, 6, 1), 2.0, 5.0)),
+    ];
+    ecrire_zip_entrees(&w.zip, true, &extras);
+    corrompre_en_tete_local(&w.zip, "ZZZUSD_1.csv");
+    w.sha = common::sha256_fichier(&w.zip);
+    let (stdout, _) = ok(&w.build_args());
+    assert!(
+        stdout.contains("BADUSD : série bloquante (ohlc_error)"),
+        "{stdout}"
+    );
+    assert!(
+        stdout.contains("FUTUSD : série bloquante (empty), paire écartée"),
+        "{stdout}"
+    );
+    assert!(stdout.contains("ZZZUSD : entrée illisible"), "{stdout}");
+
+    let universe = json(&w.universe.join("universe.json"));
+    // Le nom hérité n'est ni deviné ni candidat ; les séries inutilisables sont listées en ordre d'octets
+    // avec leur motif (`unreadable_entry` est propre à la CLI).
+    assert_eq!(
+        universe["unrecognized_pairs"],
+        serde_json::json!(["XXBTZUSD"])
+    );
+    let rejetees: Vec<(String, Vec<String>)> = universe["rejected_pairs"]
+        .as_array()
+        .expect("rejected_pairs")
+        .iter()
+        .map(|r| {
+            (
+                r["kraken_pair"].as_str().expect("paire").to_string(),
+                r["reasons"]
+                    .as_array()
+                    .expect("motifs")
+                    .iter()
+                    .map(|m| m.as_str().expect("motif").to_string())
+                    .collect(),
+            )
+        })
+        .collect();
+    assert_eq!(
+        rejetees,
+        [
+            ("BADUSD".to_string(), vec!["ohlc_error".to_string()]),
+            ("FUTUSD".to_string(), vec!["empty".to_string()]),
+            ("NADAUSD".to_string(), vec!["empty".to_string()]),
+            ("ZZZUSD".to_string(), vec!["unreadable_entry".to_string()]),
+        ]
+    );
+    // Le rejet bloquant se juge sur la série complète : drapeau déclaré dans les règles (§4.2, §17).
+    assert_eq!(universe["rules"]["rejection_uses_full_series"], true);
+    assert_eq!(universe["rules"]["quality_uses_quarter_data"], true);
+
+    // AIXBTUSD est une base à part entière (AIXBT-USD, 4e) : elle ne prend ni la place ni les valeurs
+    // de BTC-USD, dont la ligne de CSV, la qualité et l'`input_hash` sont ceux de l'univers de référence.
+    let csv = fs::read_to_string(w.universe.join("universe_2026-Q3.csv")).expect("csv");
+    let symbols: Vec<&str> = csv
+        .lines()
+        .skip(1)
+        .filter_map(|line| line.split(',').nth(2))
+        .collect();
+    assert_eq!(
+        symbols,
+        ["BTC-USD", "ETH-USD", "SOL-USD", "AIXBT-USD"],
+        "{csv}"
+    );
+    assert_eq!(ligne_csv(&csv, "BTC-USD"), ligne_csv(&csv_ref, "BTC-USD"));
+    assert_eq!(
+        universe["quarters"][0]["quality_hashes"]["BTC-USD"],
+        json_ref["quarters"][0]["quality_hashes"]["BTC-USD"]
+    );
+    assert_eq!(ligne_csv(&csv, "BTC-USD").split(',').nth(3), Some("XBTUSD"));
+}
+
+#[test]
+fn build_refuse_une_collision_de_symbole_sans_rien_ecrire() {
+    let mut w = World::bare();
+    // XBTUSD et BTCUSD donnent le même symbole BTC-USD.
+    let extras = [(
+        "BTCUSD_1.csv",
+        csv_synthetique(12, (2025, 6, 1), 60_000.0, 40.0),
+    )];
+    w.sha = ecrire_zip_entrees(&w.zip, true, &extras);
+    let (code, texte) = run(&w.build_args());
+    assert_eq!(code, Some(1), "{texte}");
+    assert!(
+        texte.contains("produit par plusieurs entrées du zip"),
+        "{texte}"
+    );
+    assert!(texte.contains("BTCUSD, XBTUSD"), "{texte}");
+    assert!(!w.universe.exists(), "aucun fichier ne doit être écrit");
+    assert!(!texte.contains("passe 1"), "{texte}");
+}
+
+#[test]
+fn build_accepte_un_zip_sans_manifeste_avec_coverage_end() {
+    let mut w = World::bare();
+    w.sha = ecrire_zip_entrees(&w.zip, false, &[]);
+    let mut args = w.build_args();
+    args.extend(strings(&["--coverage-end", "2026-10-01T00:00:00Z"]));
+    let (stdout, _) = ok(&args);
+    assert!(
+        stdout.contains("2026-Q3 : 3 membres sur 3 éligibles"),
+        "{stdout}"
+    );
+    let universe = json(&w.universe.join("universe.json"));
+    assert_eq!(universe["source"]["release"], "unknown");
+    assert_eq!(universe["source"]["coverage_end"], "2026-10-01T00:00:00Z");
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -389,6 +573,37 @@ fn okx_subset_derive_la_liste_depuis_la_fixture_et_ne_l_ecrase_pas() {
     assert_eq!(code, Some(1), "{texte}");
     assert!(texte.contains("ne s'écrase jamais"), "{texte}");
     assert_eq!(fs::read(&out).expect("liste"), first);
+}
+
+#[test]
+fn okx_subset_accepte_un_nom_de_fichier_nu_dans_le_dossier_courant() {
+    let w = World::bare();
+    let dossier = w._dir.path().join("courant");
+    fs::create_dir_all(&dossier).expect("dossier courant");
+    let args = strings(&[
+        "universe",
+        "okx-subset",
+        "--instruments",
+        &okx_fixture(),
+        "--out",
+        "okx.json",
+        "--config",
+        &config(),
+    ]);
+    let sortie = std::process::Command::new(env!("CARGO_BIN_EXE_tv4"))
+        .args(&args)
+        .current_dir(&dossier)
+        .output()
+        .expect("le binaire tv4 doit pouvoir être lancé");
+    let (code, stdout, stderr) = cli_research_common::texte(&sortie);
+    assert_eq!(code, Some(0), "{stdout}\n{stderr}");
+    assert_eq!(
+        json(&dossier.join("okx.json"))["schema"],
+        "tv4-pair-subset-v1"
+    );
+    // Le fichier temporaire n'a pas survécu à la publication.
+    assert!(!dossier.join("okx.json.tmp").exists());
+    assert_eq!(contenu(&dossier).len(), 1);
 }
 
 #[test]

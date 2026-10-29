@@ -276,7 +276,7 @@ Volumes : 1 paire × 2 ans × 1m = 1 051 200 lignes ≈ 50 Mo en RAM (SoA), **23
   "block": "VALIDATION",
   "decision_window": ["2023-03-01T00:00:00Z", "2025-01-01T00:00:00Z"], // seule zone où le moteur accepte une entrée
   "universe": { "rules_hash": "blake3:…", "window_hash": "blake3:…" }, // absent sans `--universe`
-  "quality_exclusions": { "ETH-USD": [ { "quarter": "2023-Q1", "tfs": ["5m", "1h"] } ], … },   // `{}` s'il n'y en a aucune
+  "quality_exclusions": { "ETH-USD": [ { "quarter": "2023-Q1", "tfs": ["5m", "15m", "30m", "1h"] } ], … },   // `{}` s'il n'y en a aucune
   "files": [ … ], "row_count": 0,
   "dataset_hash": "blake3:…", "hash_format": "dsh-v1", "built_at": "…", "tv4_version": "0.1.0" }
 

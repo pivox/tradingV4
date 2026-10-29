@@ -33,7 +33,10 @@
 //!
 //! Les règles 1 à 4 ne lisent que des minutes d'`open_time < D` : modifier une minute postérieure ne
 //! change ni les membres ni leur rang (la colonne `excluded_tfs`, jugée sur les minutes du trimestre
-//! lui-même, est la seule à pouvoir changer, §4.3).
+//! lui-même, est la seule à pouvoir changer, §4.3). **Exception déclarée** (`rejection_uses_full_series`
+//! dans les règles, écart n° 25 de §17) : le rejet d'une série bloquante est jugé sur la série complète,
+//! donc un défaut postérieur à `D` retire la paire de tous les trimestres et la suivante du classement
+//! la remplace.
 //!
 //! Pour une base donnée, la paire USD est retenue si elle est éligible, sinon la paire USDT si elle
 //! l'est, jamais les deux et sans cumul de volume (ordre de préférence = `quotes` de
@@ -45,6 +48,12 @@
 //!
 //! [`PairStats`] ne garde ni les bougies ni les minutes actives : un statut par jour UTC, les trous de
 //! cotation entre minutes actives (8 octets chacun, en minutes entières) et le résultat de la qualité.
+//! Kraken n'écrit que les minutes avec transaction : pour une paire peu liquide, il y a presque un
+//! trou par ligne. Toutes les paires candidates restent en mémoire jusqu'à la sélection, donc le pic
+//! de la passe 1 est celui de la plus longue série **plus** 8 octets par trou de toutes les candidates
+//! (de l'ordre de 0,3 à 1,2 Go sur le dump réel, à mesurer : la CLI imprime le total en fin de
+//! passe 1). Les vecteurs sont compactés (`shrink_to_fit`) et [`PairStats::release_selection_data`]
+//! libère jours, trous et maxima par bloc avant la passe 2.
 
 use std::collections::BTreeMap;
 use std::path::Path;
@@ -444,10 +453,14 @@ impl PairStats {
                 previous_active = Some(candle.open_time_ms);
             }
         }
-        let block_max = gaps
+        let block_max: Vec<u32> = gaps
             .chunks(GAP_BLOCK)
             .map(|block| block.iter().map(|gap| gap.len_min).max().unwrap_or(0))
             .collect();
+        // Les `push` laissent jusqu'à deux fois la longueur en capacité : toutes les paires candidates
+        // restent en mémoire jusqu'à la sélection, la capacité non rendue compterait double.
+        days.shrink_to_fit();
+        gaps.shrink_to_fit();
         Ok(PairStats {
             first_active_ms: first_active,
             last_active_ms: previous_active,
@@ -472,6 +485,21 @@ impl PairStats {
     /// Nombre de trous de cotation (d'au moins une minute) entre minutes actives.
     pub fn gap_count(&self) -> usize {
         self.gaps.len()
+    }
+
+    /// Octets occupés par les trous de cotation (8 par trou).
+    pub fn gap_bytes(&self) -> usize {
+        self.gaps.len() * std::mem::size_of::<Gap>()
+    }
+
+    /// Libère les tableaux que seule la sélection lit (jours, trous, maxima par bloc). À appeler une
+    /// fois [`select`] terminé, avant la passe 2, qui ne relit plus que [`PairStats::excluded_tfs`] :
+    /// le pic de la passe 2 redevient celui de la plus longue série. Après cet appel,
+    /// [`PairStats::eligibility`] ne rend plus rien de juste.
+    pub fn release_selection_data(&mut self) {
+        self.days = Vec::new();
+        self.gaps = Vec::new();
+        self.block_max = Vec::new();
     }
 
     /// TF de 5m à 1d exclus par la qualité pendant le trimestre `quarter` (`2018-Q1`), par durée
@@ -802,6 +830,7 @@ pub fn universe_rules(config: &UniverseConfig) -> UniverseRules {
         quality_threshold: QUALITY_MISSING_THRESHOLD,
         quality_tfs: QUALITY_TFS.to_vec(),
         quality_uses_quarter_data: true,
+        rejection_uses_full_series: true,
         config_file_hash: format!("blake3:{}", config.file_hash()),
         rules_version: UNIVERSE_RULES_VERSION.to_string(),
     }
@@ -998,4 +1027,95 @@ pub fn write_okx_usdc_subset(
     let subset = okx_usdc_subset(&instruments, name, config)?;
     write_pair_subset(out, &subset)?;
     Ok(subset)
+}
+
+// Séries synthétiques (instants, prix et volumes inventés) : aucune valeur de marché.
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// 2020-01-01T00:00:00Z.
+    const DEBUT: Ts = 1_577_836_800_000;
+
+    /// 1 000 minutes actives, chacune suivie d'une minute vide : un trou par intervalle.
+    fn serie_a_trous() -> Vec<Candle> {
+        (0..1000)
+            .map(|i| Candle {
+                open_time_ms: DEBUT + 2 * i * MINUTE_MS,
+                open: 10.0,
+                high: 10.0,
+                low: 10.0,
+                close: 10.0,
+                volume: 1.0,
+                trades: Some(1),
+            })
+            .collect()
+    }
+
+    #[test]
+    fn les_tableaux_de_la_passe_1_sont_compactes() {
+        let stats = PairStats::from_m1(&serie_a_trous()).unwrap();
+        assert_eq!(stats.gap_count(), 999);
+        assert_eq!(stats.gaps.capacity(), stats.gaps.len());
+        assert_eq!(stats.days.capacity(), stats.days.len());
+        assert_eq!(stats.gap_bytes(), 999 * 8);
+    }
+
+    #[test]
+    fn le_compactage_ne_change_pas_la_selection() {
+        let compacte = PairStats::from_m1(&serie_a_trous()).unwrap();
+        let mut large = compacte.clone();
+        large.gaps.reserve(10_000);
+        large.days.reserve(10_000);
+        assert!(large.gaps.capacity() > large.gaps.len());
+        assert_eq!(compacte, large);
+
+        let config = UniverseConfig::load(Path::new(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../config/universe.toml"
+        )))
+        .unwrap();
+        let candidate = candidates_from_entries(&["AAAUSD_1.csv".to_string()], &config)
+            .unwrap()
+            .candidates
+            .remove(0);
+        let entrees = |stats: PairStats| {
+            vec![PairEntry {
+                candidate: candidate.clone(),
+                stats,
+            }]
+        };
+        // La série tient en 2 jours : l'historique de 365 jours manque, donc aucune paire éligible, mais
+        // les deux sélections doivent être identiques à toute date.
+        let dates = [DEBUT + 400 * DAY_MS, DEBUT + 800 * DAY_MS];
+        assert_eq!(
+            select(&entrees(compacte), &dates, &config).unwrap(),
+            select(&entrees(large), &dates, &config).unwrap()
+        );
+    }
+
+    #[test]
+    fn la_liberation_apres_selection_garde_la_qualite() {
+        // Même série avec un grand trou (400 minutes absentes de plus) : la qualité exclut des TF courts.
+        let troue: Vec<Candle> = serie_a_trous()
+            .into_iter()
+            .enumerate()
+            .filter(|(i, _)| !(300..500).contains(i))
+            .map(|(_, candle)| candle)
+            .collect();
+        let mut stats = PairStats::from_m1(&troue).unwrap();
+        let qualite: Vec<(String, Vec<Timeframe>)> = stats
+            .excluded_quarters()
+            .map(|(quarter, tfs)| (quarter.to_string(), tfs.to_vec()))
+            .collect();
+        assert!(!qualite.is_empty());
+        stats.release_selection_data();
+        assert_eq!(stats.gap_count(), 0);
+        assert!(stats.days.is_empty() && stats.block_max.is_empty());
+        let apres: Vec<(String, Vec<Timeframe>)> = stats
+            .excluded_quarters()
+            .map(|(quarter, tfs)| (quarter.to_string(), tfs.to_vec()))
+            .collect();
+        assert_eq!(apres, qualite);
+    }
 }

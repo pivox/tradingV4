@@ -1588,9 +1588,10 @@ fn force_quote_gaps(
 }
 
 /// Étape 1 du mode recherche (docs S11 §8.3), après les trous de cotation et avant tout `on_bar` : toute
-/// jambe à plat qui vient de sortir de l'univers (ou dont le TF de décision vient d'être exclu par la
-/// qualité) voit ses entrées en attente annulées, pour toutes les jambes dans l'ordre du rang, qu'elles
-/// aient ou non une bougie à la minute `t`. Une jambe en position va à son terme.
+/// jambe qui vient de sortir de l'univers (ou dont le TF de décision vient d'être exclu par la qualité)
+/// voit ses entrées en attente (`Enter` et limits d'achat) annulées, en position comme à plat, pour
+/// toutes les jambes dans l'ordre du rang, qu'elles aient ou non une bougie à la minute `t`. Les ventes,
+/// les sorties et le stop ne sont pas touchés : une jambe en position va à son terme.
 fn cancel_left_universe(
     book: &mut Book,
     runs: &mut [LegRun<'_>],
@@ -1601,7 +1602,6 @@ fn cancel_left_universe(
     for &k in order {
         let k = usize::from(k);
         if state.leaves_at(k, t)
-            && book.position(k).is_none()
             && let Some(run) = runs.get_mut(k)
         {
             run.research.entries_cancelled_universe += book.cancel_entries_quote_gap(k)?;
@@ -1850,7 +1850,14 @@ fn play(
     if let Some(last) = buffers.last_open_ms {
         let end_ms = last.saturating_add(MINUTE_MS);
         let order = ranks.order_at(end_ms);
-        force_quote_gaps(book, runs, order, end_ms)?;
+        // En recherche, une échéance qui tombe à `decision_end` ou au-delà n'est pas soldée en trou de
+        // cotation : la position passe à la clôture forcée (`end_of_window`) et elle est purgée
+        // (docs S11 §3.4), sinon `exit_ms >= decision_end` sans être `end_of_window` ferait échouer le run.
+        let at_ms = match research.as_deref() {
+            Some(state) => end_ms.min(state.decision_end_ms().saturating_sub(1)),
+            None => end_ms,
+        };
+        force_quote_gaps(book, runs, order, at_ms)?;
     }
     Ok(())
 }

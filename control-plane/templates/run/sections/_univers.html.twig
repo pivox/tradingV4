@@ -13,7 +13,8 @@
         <th scope="col" class="num">Ordres d'entrée</th><th scope="col" class="num">Lots ouverts</th><th scope="col" class="num">Trades</th>
         <th scope="col" class="num"><code>min_notional</code></th><th scope="col" class="num"><code>lot_step</code></th>
         <th scope="col" class="num"><code>cash</code></th><th scope="col" class="num"><code>max_positions</code></th>
-        <th scope="col" class="num"><code>volume</code></th><th scope="col" class="num"><code>other</code></th>
+        <th scope="col" class="num"><code>volume</code></th><th scope="col" class="num"><code>other</code></th>{% if metrics.isResearch %}<th scope="col" class="num">refus de recherche</th>{% endif %}
+
       </tr>
     </thead>
     <tbody>
@@ -24,13 +25,15 @@
         <td class="num">{{ row.entryOrders|int }}</td><td class="num">{{ row.entryFills|int }}</td><td class="num">{{ row.trades|int }}</td>
         {% for reason in ['min_notional', 'lot_step', 'cash', 'max_positions', 'volume', 'other'] %}
           <td class="num">{{ (row.rejected[reason] ?? 0)|int }}</td>
-        {% endfor %}
+        {% endfor %}{% if metrics.isResearch %}
+          <td class="num">{{ metrics.research is null ? 0 : (metrics.research.legs|filter(leg => leg.symbol == row.symbol)|reduce((sum, leg) => sum + leg.funnel.total, 0))|int }}</td>
+        {% endif %}
       </tr>
     {% endfor %}
     </tbody>
   </table>
   </div>
-  <p class="note">Colonnes de rejets : entrées refusées, par motif. <code>min_notional</code> : quantité sous le minimum d'ordre (<code>minSz</code>). <code>lot_step</code> : moins d'un pas de quantité. <code>volume</code> : règle de 0,5 % du volume de la minute.</p>
+  <p class="note">Colonnes de rejets : entrées refusées, par motif. <code>min_notional</code> : quantité sous le minimum d'ordre (<code>minSz</code>). <code>lot_step</code> : moins d'un pas de quantité. <code>volume</code> : règle de 0,5 % du volume de la minute.{% if metrics.isResearch %} <em>Refus de recherche</em> : signaux d'entrée refusés hors fenêtre de décision, hors univers ou pour qualité des données, qui ne figurent pas dans les colonnes de rejets ; détail par motif dans la section Recherche.{% endif %}</p>
   {% endif %}
   <div class="cols">
     {% if pf is not null %}

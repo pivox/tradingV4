@@ -146,7 +146,7 @@ final class RunDirectoryReaderS11Test extends TestCase
         self::assertSame('full', $research->identity->line);
         self::assertSame(['ETH-USD'], array_keys($research->qualityExclusions));
         self::assertSame('2026-Q3', $research->qualityExclusions['ETH-USD'][0]->quarter);
-        self::assertSame(['1h', '4h', '1d'], $research->qualityExclusions['ETH-USD'][0]->tfs);
+        self::assertSame(['5m'], $research->qualityExclusions['ETH-USD'][0]->tfs);
 
         self::assertSame('end_of_window_v1', $research->purge->rule);
         self::assertSame(9, $research->purge->tradesKept);

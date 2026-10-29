@@ -143,6 +143,57 @@ fn le_run_est_rejoue_dans_le_meme_dossier_et_retire_les_fichiers_d_une_autre_for
     assert_eq!(code, Some(0), "{texte}");
 }
 
+/// Arguments d'un run S8 (fixture du dépôt) écrivant dans `out`.
+fn s8_args(out: &Path) -> Vec<String> {
+    strings(&[
+        "backtest",
+        "--fixture",
+        &shown(&repo("fixtures/kraken_xbtusd_1m.csv")),
+        "--strategy",
+        "sma_cross",
+        "--params",
+        &shown(&repo("config/strategies/sma_cross_1m.toml")),
+        "--fees-file",
+        &shown(&repo("config/fees.toml")),
+        "--instruments-file",
+        &shown(&repo("config/instruments.toml")),
+        "--out",
+        &shown(out),
+    ])
+}
+
+#[test]
+fn un_run_s8_s9_ou_s10_retire_le_lines_json_d_un_dossier_de_lignes() {
+    let w = World::with_dataset();
+    build_plain(&w);
+    let sub = w.write_subset("sub.json", &["BTC", "SOL"]);
+    let sub_text = shown(&sub);
+    let costs = costs_file();
+    for forme in ["s8", "s9", "s10"] {
+        let args_pour = |dir: &Path| -> Vec<String> {
+            match forme {
+                "s8" => s8_args(dir),
+                "s9" => plain_args(&w, dir, &[]),
+                _ => plain_args(&w, dir, &["--costs", costs.as_str()]),
+            }
+        };
+        // Un dossier de lignes (`full/`, `okx_usdc/`, `lines.json`), puis un run d'une autre forme dans le
+        // même dossier : `lines.json` d'avant disparaît, sans quoi verify et le control plane classeraient
+        // encore le dossier comme un dossier de lignes.
+        let out = w.root.join(format!("melange_{forme}"));
+        ok(&w.backtest_args(&out, &["--okx-subset", sub_text.as_str()]));
+        assert!(out.join("lines.json").exists(), "{forme}");
+        ok(&args_pour(&out));
+        assert!(!out.join("lines.json").exists(), "{forme}");
+
+        // Le même run dans un dossier neuf : verify les juge identiques.
+        let neuf = w.root.join(format!("neuf_{forme}"));
+        ok(&args_pour(&neuf));
+        let (code, texte) = verify(&out, &neuf);
+        assert_eq!(code, Some(0), "{forme} : {texte}");
+    }
+}
+
 // ---------------------------------------------------------------------------------------------
 // Deux lignes
 // ---------------------------------------------------------------------------------------------
@@ -220,18 +271,59 @@ fn deux_lignes_ecrivent_full_okx_usdc_et_lines_json() {
         full["research"]["universe"]["window_hash"]
     );
 
-    // Survivance résiduelle : full moins okx_usdc, recalculée ici depuis les deux runs.
-    let residual = &lines["residual_survivorship"]["single"];
+    // Chaque entrée `by_profile` de `lines.json` est recoupée avec le `metrics.json` de sa ligne : un
+    // `by_profile` faux mais cohérent avec le résidu ne passerait pas.
     let metric = |m: &Value, key: &str| m[key].as_f64().expect(key);
+    let optional = |m: &Value, key: &str| m[key].as_f64();
+    for (index, run) in [(0usize, &full), (1usize, &okx)] {
+        let stats = &entries[index]["by_profile"]["single"];
+        let line = entries[index]["line"].clone();
+        assert_eq!(stats["n_trades"], run["n_trades"], "{line}");
+        assert_eq!(
+            stats["trades_purged"], run["research"]["purge"]["trades_purged"],
+            "{line}"
+        );
+        assert_eq!(
+            stats["identity_hash"], run["research"]["identity_hash"],
+            "{line}"
+        );
+        assert_eq!(stats["verdict"], run["verdict"], "{line}");
+        for key in ["expectancy_net", "expectancy_r", "profit_factor"] {
+            match (optional(stats, key), optional(run, key)) {
+                (Some(lu), Some(attendu)) => assert!(
+                    (lu - attendu).abs() < 1e-15,
+                    "{line} {key} : {lu} contre {attendu}"
+                ),
+                (lu, attendu) => assert_eq!(lu, attendu, "{line} {key}"),
+            }
+        }
+        for (key, attendu) in [
+            ("return_total", metric(run, "return_total")),
+            (
+                "max_drawdown_1h",
+                run["max_drawdown"]["h1"]["pct"].as_f64().expect("h1.pct"),
+            ),
+        ] {
+            let lu = metric(stats, key);
+            assert!(
+                (lu - attendu).abs() < 1e-15,
+                "{line} {key} : {lu} contre {attendu}"
+            );
+        }
+    }
+
+    // Survivance résiduelle : full moins okx_usdc, recalculée ici depuis les entrées `by_profile`
+    // (elles-mêmes recoupées avec les deux `metrics.json` ci-dessus).
+    let residual = &lines["residual_survivorship"]["single"];
     assert_eq!(
         residual["n_trades"].as_i64(),
         Some(full["n_trades"].as_i64().unwrap() - okx["n_trades"].as_i64().unwrap())
     );
-    for (residual_key, metrics_key) in [
-        ("expectancy_net", "expectancy_net"),
-        ("expectancy_r", "expectancy_r"),
-        ("return_total", "return_total"),
-        ("max_drawdown_1h", "max_drawdown_1h"),
+    for residual_key in [
+        "expectancy_net",
+        "expectancy_r",
+        "return_total",
+        "max_drawdown_1h",
     ] {
         let from_lines = |line: usize| {
             entries[line]["by_profile"]["single"][residual_key]
@@ -242,15 +334,9 @@ fn deux_lignes_ecrivent_full_okx_usdc_et_lines_json() {
         let got = metric(residual, residual_key);
         assert!(
             (got - expected).abs() < 1e-12,
-            "{residual_key} : {got} contre {expected} ({metrics_key})"
+            "{residual_key} : {got} contre {expected}"
         );
     }
-    assert!(
-        (metric(&lines["lines"][0]["by_profile"]["single"], "return_total")
-            - metric(&full, "return_total"))
-        .abs()
-            < 1e-15
-    );
 
     // Deux runs identiques : `tv4 verify` sur les dossiers de lignes, puis sur une ligne seule.
     let again = w.root.join("again");

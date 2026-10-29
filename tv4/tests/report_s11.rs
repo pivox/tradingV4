@@ -15,11 +15,12 @@ use std::collections::BTreeSet;
 use portfolio_common::{
     MINUTE, Scripted, T0, buy_quote, config, flat_series, instrument, names, run,
 };
-use profiles_common::costs_file;
+use profiles_common::{costs_file, markets};
 use research_common::{Fixture, fixture, fixture_with_warmup, line_input, profiles_line_input};
 use serde_json::Value;
 use tv4::engine::Line;
 use tv4::model::{ExchangeId, Timeframe, hash};
+use tv4::report::executability::OkxPair;
 use tv4::report::manifest::{run_id_s9, run_id_s11};
 use tv4::report::metrics_s9::{
     DatasetInfo, InstrumentsInfo, MetricsS9, MetricsS9Inputs, SCHEMA, SCHEMA_S11, SeriesInfo,
@@ -121,6 +122,57 @@ fn trades_csv_garde_tous_les_trades_et_la_purge_se_lit_sur_end_of_window() {
         by_pair, kept,
         "funnel_by_pair porte sur les trades conservés"
     );
+}
+
+#[test]
+fn g1_compte_les_entrees_remplies_du_run_complet_purgees_comprises() {
+    // Marché synthétique, avec un fichier d'instruments OKX factice (minimum nul, instruments `live`) :
+    // G1 s'évalue. Les entrées remplies puis purgées en fin de fenêtre comptent au numérateur, comme
+    // pour G0 ; l'entonnoir par paire reste sur les trades conservés.
+    let fx = fixture();
+    let result = fx.play(Line::Full, 300.0);
+    let series = fx.line_series(Line::Full);
+    let played = fx.played(Line::Full);
+    let excluded = fx.excluded(Line::Full);
+    let okx: Vec<OkxPair> = played
+        .iter()
+        .map(|symbol| OkxPair {
+            inst_id: symbol.replace("-USD", "-USDC"),
+            min_sz: 0.0,
+            state: "live".to_string(),
+        })
+        .collect();
+    let rendered = tv4::report::research::render_research_run(
+        &result,
+        MetricsS9Inputs {
+            dataset: fx.dataset_info(Line::Full),
+            instruments: InstrumentsInfo::toml(),
+            okx_pairs: Some(okx),
+            markets: markets(&series, &played),
+        },
+        &fx.inputs(&excluded, Line::Full),
+        Timeframe::H1,
+    )
+    .expect("rendu du run de recherche");
+    let metrics = json(&rendered);
+    let kept = u(&metrics, "/research/purge/trades_kept");
+    let purged = u(&metrics, "/research/purge/trades_purged");
+    assert!(
+        kept > 0 && purged > 0,
+        "le scénario doit purger et conserver"
+    );
+    assert_eq!(u(&metrics, "/g1_executable/fills"), kept + purged);
+    let by_pair: u64 = metrics["funnel_by_pair"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|pair| pair["entry_fills"].as_u64().unwrap())
+        .sum();
+    assert_eq!(
+        by_pair, kept,
+        "l'entonnoir par paire reste sur les conservés"
+    );
+    assert_eq!(u(&metrics, "/funnel/entry_fills"), kept);
 }
 
 #[test]

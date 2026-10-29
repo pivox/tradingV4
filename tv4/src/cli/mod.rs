@@ -210,8 +210,9 @@ pub enum CliError {
     #[error("option {option} : {detail}")]
     PortfolioOption { option: String, detail: String },
 
-    /// `--costs` (profils de coûts de S10) sans `--symbols` : les profils jouent un portefeuille.
-    #[error("--costs n'a de sens qu'avec --symbols (mode portefeuille)")]
+    /// `--costs` (profils de coûts de S10) sans `--symbols` ni `--universe` : les profils jouent un
+    /// portefeuille.
+    #[error("--costs n'a de sens qu'avec --symbols ou --universe (mode portefeuille)")]
     CostsWithoutSymbols,
 
     /// `--costs` avec `--slippage-bps` : le slippage vient du profil de coûts, il ne se double pas d'un

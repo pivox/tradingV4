@@ -900,9 +900,16 @@ impl MetricsS9 {
             })
             .collect();
 
-        let mut g1_counts = G1Counts::default();
+        // G1 compte les entrées remplies du run complet, purgées comprises (même base que G0, docs S11
+        // §9.2) : une entrée remplie puis purgée est exécutable. Hors recherche, c'est la somme de
+        // `funnel_by_pair[].entry_fills`.
+        let mut g1_counts = G1Counts {
+            fills: entry_fills_by_leg(legs, &result.trades, &result.trade_legs)
+                .iter()
+                .sum(),
+            ..G1Counts::default()
+        };
         for pair in &funnel_by_pair {
-            g1_counts.fills += pair.entry_fills;
             g1_counts.rejected_volume += pair.rejected.volume;
             g1_counts.rejected_min_notional += pair.rejected.min_notional;
             g1_counts.rejected_lot_step += pair.rejected.lot_step;

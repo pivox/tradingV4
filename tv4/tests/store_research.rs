@@ -17,15 +17,17 @@ use tv4::model::{
     Block, Candle, ExchangeId, InstrumentRules, ModelError, QuarterExclusion, Timeframe, Ts,
     UniverseRef,
 };
+use tv4::research::universe::QUALITY_TFS;
 use tv4::store::time::{MS_PER_DAY, days_from_civil, parse_coverage_end, parse_rfc3339_utc};
 use tv4::store::universe::{
     self, AtBuild, CsvRow, InstrumentRule, QualityExpectation, QuarterBuild, RejectedPair,
     UnionEntry, UniverseBuild, UniverseRules, UniverseSource, parse_csv, render_csv,
 };
 use tv4::store::{
-    BuildStatus, Columns, GapsPolicy, MultiBuildRequest, Partition, ResearchMeta, StoreError,
-    Symbol, Window, build_dataset_multi, build_dataset_research, load_dataset, load_dataset_multi,
-    read_dataset_manifest, read_series_window, research_meta, write_partition,
+    BuildRequest, BuildStatus, Columns, GapsPolicy, MultiBuildRequest, Partition, ResearchMeta,
+    StoreError, Symbol, Window, build_dataset, build_dataset_multi, build_dataset_research,
+    load_dataset, load_dataset_multi, quality_report, read_dataset_manifest, read_series_window,
+    research_meta, write_partition,
 };
 
 const MINUTE: i64 = 60_000;
@@ -274,6 +276,21 @@ fn immutabilite_etendue_aux_metadonnees_de_recherche() {
         ),
         "{erreur}"
     );
+    // Le constructeur mono-série (S4) est refusé aussi : troisième constructeur de s11 §6.2.
+    let mono = BuildRequest {
+        name: "fige",
+        partition: partition("SYN-USD"),
+        window: fenetre_courte(),
+        gaps_policy: GapsPolicy::ZeroVolumeMarked,
+    };
+    let erreur = build_dataset(racine.path(), &mono, FUTUR).unwrap_err();
+    assert!(
+        matches!(
+            &erreur,
+            StoreError::DatasetMetaMismatch { field: "block", .. }
+        ),
+        "{erreur}"
+    );
     assert_eq!(fs::read(&chemin).unwrap(), avant);
 
     // Et dans l'autre sens : un manifeste ordinaire n'est pas promu en dataset de bloc.
@@ -291,6 +308,95 @@ fn immutabilite_etendue_aux_metadonnees_de_recherche() {
             StoreError::DatasetMetaMismatch { field: "block", .. }
         ),
         "{erreur}"
+    );
+    // Idem pour un manifeste mono-série ordinaire (même octets que le multi à un symbole).
+    let mono = BuildRequest {
+        name: "mono",
+        partition: partition("SYN-USD"),
+        window: fenetre_courte(),
+        gaps_policy: GapsPolicy::ZeroVolumeMarked,
+    };
+    build_dataset(racine.path(), &mono, FUTUR).unwrap();
+    let demande_mono = requete(
+        "mono",
+        &symboles,
+        fenetre_courte(),
+        GapsPolicy::ZeroVolumeMarked,
+    );
+    let erreur =
+        build_dataset_research(racine.path(), &demande_mono, &meta_dev(), FUTUR).unwrap_err();
+    assert!(
+        matches!(
+            &erreur,
+            StoreError::DatasetMetaMismatch { field: "block", .. }
+        ),
+        "{erreur}"
+    );
+}
+
+/// Cas attendu de s11 §6.2 : même `--to`, série prolongée après la fenêtre. Le contenu de la fenêtre,
+/// donc le `dataset_hash`, ne change pas, mais les exclusions qualité (calculées sur la série complète
+/// du store) changent : le build est refusé au lieu de rendre « inchangé » un manifeste périmé.
+#[test]
+fn immutabilite_quality_exclusions_forward_prolonge() {
+    let racine = tempfile::tempdir().unwrap();
+    // Série dense jusqu'au jour 80 du trimestre : aucune exclusion pour 2019-Q1. Le mois de mars est
+    // encore ouvert à l'écriture (22 mars) : il pourra être complété par une ingestion plus récente.
+    write_partition(
+        racine.path(),
+        &partition("SYN-USD"),
+        &serie(ms(2019, 1, 1), 80 * 1440, &[]),
+        "synthetic",
+        ms(2019, 3, 23),
+    )
+    .unwrap();
+    let symboles = [sym("SYN-USD")];
+    let demande = requete(
+        "prolonge",
+        &symboles,
+        fenetre_courte(),
+        GapsPolicy::ZeroVolumeMarked,
+    );
+    let premier = build_dataset_research(racine.path(), &demande, &meta_dev(), FUTUR).unwrap();
+    assert_eq!(premier.manifest.quality_exclusions, Some(BTreeMap::new()));
+    let chemin = manifeste_path(racine.path(), "prolonge");
+    let avant = fs::read(&chemin).unwrap();
+
+    // Ingestion après la fin de la fenêtre, dans le même trimestre, avec les trous de qualité.
+    ecrire_t1_2019(racine.path(), "SYN-USD");
+    let erreur =
+        build_dataset_research(racine.path(), &demande, &meta_dev(), FUTUR + 5).unwrap_err();
+    assert!(
+        matches!(
+            &erreur,
+            StoreError::DatasetMetaMismatch {
+                field: "quality_exclusions",
+                ..
+            }
+        ),
+        "{erreur}"
+    );
+    // Le manifeste reste identique à l'octet.
+    assert_eq!(fs::read(&chemin).unwrap(), avant);
+
+    // Contrôle : le `dataset_hash` n'a pas changé (c'est bien la qualité qui diffère), et un build neuf
+    // de la même fenêtre porte les nouvelles exclusions.
+    let neuf = build_dataset_research(
+        racine.path(),
+        &requete(
+            "prolonge_neuf",
+            &symboles,
+            fenetre_courte(),
+            GapsPolicy::ZeroVolumeMarked,
+        ),
+        &meta_dev(),
+        FUTUR + 5,
+    )
+    .unwrap();
+    assert_eq!(neuf.manifest.dataset_hash, premier.manifest.dataset_hash);
+    assert_eq!(
+        neuf.manifest.quality_exclusions,
+        Some(exclusions_attendues())
     );
 }
 
@@ -518,6 +624,74 @@ fn un_symbole_sans_exclusion_n_a_pas_d_entree_et_le_dernier_trimestre_complet_n_
     assert_eq!(sortie.manifest.quality_exclusions, Some(BTreeMap::new()));
     let texte = fs::read_to_string(manifeste_path(racine.path(), "propre")).unwrap();
     assert!(texte.contains("\"quality_exclusions\": {}"), "{texte}");
+}
+
+/// Propriété d'emboîtement des TF de qualité : sur un trimestre intérieur (bornes alignées sur le jour),
+/// un seau d'un TF supérieur absent entraîne l'absence de tous les seaux des TF inférieurs qu'il
+/// contient, et chaque seau a le même nombre d'enfants. La fraction absente d'un TF est donc au moins
+/// celle du TF supérieur : l'ensemble des TF exclus est toujours un préfixe de `QUALITY_TFS` (les plus
+/// courts d'abord), jamais un 1d exclu et un 5m gardé. Séries synthétiques à pannes aléatoires.
+#[test]
+fn les_tf_exclus_forment_toujours_un_prefixe_de_quality_tfs() {
+    // 2019-01-01 → 2019-10-01 : le trimestre 2019-Q2 est intérieur, de part et d'autre.
+    let debut = ms(2019, 1, 1);
+    let minutes = ((ms(2019, 10, 1) - debut) / MINUTE) as usize;
+    let mut longueurs_vues = std::collections::BTreeSet::new();
+    for seed in 0..60_u64 {
+        let mut rng = common::SplitMix64(seed + 1);
+        let mut presente = vec![true; minutes];
+        // Pannes aléatoires dont la longueur maximale (30 minutes, 6 heures ou 2 jours) et le nombre
+        // varient d'une graine à l'autre ; les graines paires ajoutent des minutes isolées absentes à une
+        // densité de 30 à 99 % (un seau de 5m n'est absent que si ses cinq minutes le sont).
+        let pannes = rng.next_u64() % 80;
+        let maximum = [30_usize, 360, 2 * 1440][(rng.next_u64() % 3) as usize];
+        for _ in 0..pannes {
+            let longueur = 1 + (rng.next_u64() % maximum as u64) as usize;
+            let depart = (rng.next_u64() % minutes as u64) as usize;
+            for etat in presente.iter_mut().skip(depart).take(longueur) {
+                *etat = false;
+            }
+        }
+        if seed % 2 == 0 {
+            let densite = 0.3 + rng.next_f64() * 0.69;
+            for etat in presente.iter_mut() {
+                if rng.next_f64() < densite {
+                    *etat = false;
+                }
+            }
+        }
+        // La première et la dernière minute restent présentes : la plage observée est toute la série.
+        presente[0] = true;
+        presente[minutes - 1] = true;
+        let temps: Vec<Ts> = presente
+            .iter()
+            .enumerate()
+            .filter(|(_, etat)| **etat)
+            .map(|(i, _)| debut + i as i64 * MINUTE)
+            .collect();
+        let rapport = quality_report(&temps, &QUALITY_TFS).unwrap();
+        let exclus: Vec<_> = QUALITY_TFS
+            .iter()
+            .copied()
+            .filter(|tf| {
+                rapport
+                    .rows
+                    .iter()
+                    .any(|row| row.tf == *tf && row.quarter == "2019-Q2" && row.excluded)
+            })
+            .collect();
+        assert_eq!(
+            exclus,
+            QUALITY_TFS[..exclus.len()],
+            "graine {seed} : TF exclus {exclus:?}, non préfixe de QUALITY_TFS"
+        );
+        longueurs_vues.insert(exclus.len());
+    }
+    // La propriété n'est pas vide : les tirages exercent plusieurs longueurs de préfixe.
+    assert!(
+        longueurs_vues.len() >= 3,
+        "longueurs de préfixe vues : {longueurs_vues:?}"
+    );
 }
 
 #[test]
@@ -766,6 +940,7 @@ fn regles() -> UniverseRules {
             Timeframe::D1,
         ],
         quality_uses_quarter_data: true,
+        rejection_uses_full_series: true,
         config_file_hash: hash("cd"),
         rules_version: "u1".to_string(),
     }
@@ -1166,6 +1341,93 @@ fn trimestres_figes_et_regles_immuables() {
     let json_apres = fs::read(&json).unwrap();
     universe::write_universe(dossier.path(), &univers(2019, 2)).unwrap();
     assert_eq!(fs::read(&json).unwrap(), json_apres);
+}
+
+/// Un univers plus long, avec une règle d'instrument et une date `--at` qui changent : les fichiers non
+/// figés (`instruments_kraken.toml`, `eligible_<date>.csv`) diffèrent de ceux de `univers(2019, 1)`.
+fn univers_prolonge_aux_fichiers_non_figes_differents() -> UniverseBuild {
+    let mut build = univers(2019, 2);
+    build.instruments[2].tick_size = 0.001;
+    build.at[0].rows = vec![ligne(1, "SYN", Vec::new())];
+    build
+}
+
+#[test]
+fn une_ecriture_interrompue_avant_universe_json_se_rejoue() {
+    let nouveau = univers_prolonge_aux_fichiers_non_figes_differents();
+    // Dossier de référence : le résultat d'une écriture complète.
+    let reference = tempfile::tempdir().unwrap();
+    universe::write_universe(reference.path(), &univers(2019, 1)).unwrap();
+    universe::write_universe(reference.path(), &nouveau).unwrap();
+
+    // Un process interrompu après l'écriture d'une partie des fichiers, avant `universe.json` ; chaque
+    // cas copie, de la reprise complète, le sous-ensemble de fichiers écrits avant l'arrêt.
+    let cas: [(&str, &[&str]); 3] = [
+        ("instruments seul", &["instruments_kraken.toml"]),
+        ("date --at seule", &["eligible_2018-12-31.csv"]),
+        (
+            "instruments, date --at et nouveau trimestre",
+            &[
+                "instruments_kraken.toml",
+                "eligible_2018-12-31.csv",
+                "universe_2019-Q2.csv",
+            ],
+        ),
+    ];
+    for (nom, fichiers) in cas {
+        let dossier = tempfile::tempdir().unwrap();
+        universe::write_universe(dossier.path(), &univers(2019, 1)).unwrap();
+        for fichier in fichiers {
+            fs::copy(reference.path().join(fichier), dossier.path().join(fichier)).unwrap();
+        }
+        // L'état interrompu est incohérent : la relecture complète le refuse (verify, dataset build).
+        assert!(
+            matches!(
+                universe::load(dossier.path()),
+                Err(StoreError::UniverseHashMismatch { .. })
+            ),
+            "{nom}"
+        );
+        // Rejouer la commande répare : seule la partie figée est relue avant l'écriture.
+        universe::write_universe(dossier.path(), &nouveau).unwrap();
+        universe::load(dossier.path()).unwrap();
+        for fichier in [
+            "universe.json",
+            "instruments_kraken.toml",
+            "eligible_2018-12-31.csv",
+            "universe_2019-Q2.csv",
+        ] {
+            assert_eq!(
+                fs::read(dossier.path().join(fichier)).unwrap(),
+                fs::read(reference.path().join(fichier)).unwrap(),
+                "{nom} : {fichier}"
+            );
+        }
+    }
+}
+
+#[test]
+fn un_csv_de_trimestre_fige_altere_reste_refuse_a_la_reecriture() {
+    let dossier = tempfile::tempdir().unwrap();
+    universe::write_universe(dossier.path(), &univers(2019, 1)).unwrap();
+    let csv = dossier.path().join("universe_2018-Q3.csv");
+    let mut octets = fs::read(&csv).unwrap();
+    octets.insert(octets.len() - 1, b'0');
+    fs::write(&csv, &octets).unwrap();
+    let json_avant = fs::read(dossier.path().join("universe.json")).unwrap();
+
+    let erreur = universe::write_universe(dossier.path(), &univers(2019, 2)).unwrap_err();
+    assert!(
+        matches!(erreur, StoreError::UniverseHashMismatch { .. }),
+        "{erreur}"
+    );
+    // Rien n'est écrit : ni le CSV altéré, ni `universe.json`, ni le trimestre ajouté.
+    assert_eq!(fs::read(&csv).unwrap(), octets);
+    assert_eq!(
+        fs::read(dossier.path().join("universe.json")).unwrap(),
+        json_avant
+    );
+    assert!(!dossier.path().join("universe_2019-Q2.csv").exists());
 }
 
 #[test]

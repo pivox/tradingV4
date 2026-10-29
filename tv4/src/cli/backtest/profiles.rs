@@ -18,7 +18,7 @@
 //!
 //! Règles d'usage ([`CostArgs::check`], toutes refusées avant la lecture du moindre fichier) :
 //!
-//! * `--costs` exige `--symbols` ([`CliError::CostsWithoutSymbols`]) ;
+//! * `--costs` exige `--symbols` ou `--universe` ([`CliError::CostsWithoutSymbols`]) ;
 //! * `--slippage-bps` est refusé avec `--costs` ([`CliError::CostsWithScalarSlippage`]) : le slippage vient
 //!   du profil ;
 //! * `--cost-measures` et `--cost-seed` exigent `--costs` (clap) ; la graine est dans `[0, 2^53[` (clap).
@@ -55,7 +55,7 @@ const DEFAULT_COST_SEED: u64 = 1;
 #[derive(Debug, Default, Args)]
 pub struct CostArgs {
     /// Fichier des profils de coûts (`config/costs.toml`). Active le mode s10 : trois runs (baseline,
-    /// adverse, maker) et `profiles.json`. Exige --symbols ; refuse --slippage-bps.
+    /// adverse, maker) et `profiles.json`. Exige --symbols ou --universe ; refuse --slippage-bps.
     #[arg(long, value_name = "TOML")]
     pub costs: Option<PathBuf>,
     /// Fichier de mesures de carnet (`tv4-cost-measures-v1`) : remplace les défauts paire par paire.
@@ -284,8 +284,13 @@ pub(super) fn run(args: &BacktestArgs) -> Result<(), CliError> {
 
     // `profiles.json` d'une exécution précédente est retiré avant le premier profil : si l'écriture d'un
     // profil échoue, le dossier n'a pas de `profiles.json`, et `tv4 verify` le refuse. Le rapport HTML
-    // d'un rendu précédent est périmé lui aussi.
-    for stale in [report::profiles::PROFILES_FILE, REPORT_FILE] {
+    // d'un rendu précédent est périmé lui aussi, ainsi que le `lines.json` d'un run de recherche à deux
+    // lignes (le dossier serait classé « lignes » sur sa seule présence).
+    for stale in [
+        report::profiles::PROFILES_FILE,
+        REPORT_FILE,
+        report::research::LINES_FILE,
+    ] {
         remove_stale(&out, stale)?;
     }
     let context = ManifestContext {
