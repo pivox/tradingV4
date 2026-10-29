@@ -1,0 +1,161 @@
+{% set rs = metrics.research %}
+{% set ide = rs.identity %}
+{% set un = rs.universe %}
+<section id="recherche" class="section" aria-labelledby="recherche-titre">
+  <h2 id="recherche-titre">Recherche</h2>
+  {% if rs.isUnguarded %}
+  <p class="callout-garde"><strong>Lecture protégée sans garde-fou.</strong> Ce run a été joué avec l'option cachée <code>--unguarded-protected-read</code> (<code>research.guard</code> = <code>unguarded</code>) : les garde-fous de S12 (fiche gelée, claim, registre des lectures) ne sont pas livrés, aucune lecture n'est inscrite (docs/specs/s11.md §9.5). Ce run n'est pas une lecture de VALIDATION ou de HOLDOUT au sens du protocole.</p>
+  {% endif %}
+  <p class="note">Run joué sur un dataset de recherche par bloc (docs/specs/s11.md). {% if rs.metricsBasis == 'kept_trades' %}<strong>Les métriques de trades portent sur les trades conservés</strong> (<code>metrics_basis</code> = <code>kept_trades</code>) : les trades encore ouverts à la fin de la fenêtre de décision sont purgés.{% else %}Base des métriques de trades : <code>{{ rs.metricsBasis }}</code>.{% endif %} Les métriques d'equity (PnL net, drawdowns, rendement), l'exposition et les jours de régime portent sur la fenêtre de décision, PnL des trades purgés compris.</p>
+
+  <div class="cols">
+    <table class="kv">
+      <caption>Bloc et fenêtre de décision</caption>
+      <tbody>
+        <tr><th scope="row">Bloc</th><td><code>{{ rs.block }}</code> (version des blocs <code>{{ rs.blocksVersion }}</code>)</td></tr>
+        <tr><th scope="row">Fenêtre de décision</th><td>{{ rs.decisionWindow.startMs|datetime }} → {{ rs.decisionWindow.endMs|datetime }} (fin exclue)</td></tr>
+        <tr><th scope="row">Début de la chauffe</th><td>{{ rs.warmupStart }}</td></tr>
+        <tr><th scope="row">Ligne</th><td><code>{{ rs.line }}</code> : {% if rs.line == 'full' %}univers complet{% else %}jambes tradables sur OKX en USDC{% endif %}</td></tr>
+        {% if rs.subset is not null %}
+        <tr class="sub"><th scope="row">sous-ensemble</th><td><code>{{ rs.subset.kind }}</code></td></tr>
+        <tr class="sub"><th scope="row"><code>subset_hash</code></th><td><code class="hash">{{ rs.subset.subsetHash }}</code></td></tr>
+        <tr class="sub"><th scope="row">jambes retirées</th><td>{% for symbol in rs.subset.legsExcluded %}<code>{{ symbol }}</code>{% if not loop.last %}, {% endif %}{% else %}aucune{% endfor %}</td></tr>
+        {% endif %}
+        <tr><th scope="row">Régime lu par la stratégie</th><td>{{ rs.regimeUsed|yesno }}</td></tr>
+        <tr><th scope="row">Garde</th><td><code>{{ rs.guard }}</code></td></tr>
+      </tbody>
+    </table>
+    <table class="kv">
+      <caption>Univers</caption>
+      <tbody>
+        <tr><th scope="row">Mode</th><td><code>{{ un.mode }}</code>{% if un.isQuarterly %} (trimestriel){% else %} (jambes données){% endif %}</td></tr>
+        {% if un.decisionTf is not null %}<tr><th scope="row">TF de l'exclusion qualité</th><td><code>{{ un.decisionTf }}</code></td></tr>{% endif %}
+        {% if un.rulesHash is not null %}<tr><th scope="row"><code>rules_hash</code></th><td><code class="hash">{{ un.rulesHash }}</code></td></tr>{% endif %}
+        {% if un.windowHash is not null %}<tr><th scope="row"><code>window_hash</code></th><td><code class="hash">{{ un.windowHash }}</code></td></tr>{% endif %}
+        <tr><th scope="row">Jambes jouées</th><td>{% for leg in rs.legs %}<code>{{ leg.symbol }}</code>{% if not loop.last %}, {% endif %}{% else %}aucune{% endfor %}</td></tr>
+      </tbody>
+    </table>
+    <table class="kv">
+      <caption>Purge des trades (<code>{{ rs.purge.rule }}</code>)</caption>
+      <tbody>
+        <tr><th scope="row">Trades conservés</th><td class="num">{{ rs.purge.tradesKept|int }}</td></tr>
+        <tr><th scope="row">Trades purgés</th><td class="num">{{ rs.purge.tradesPurged|int }}</td></tr>
+        <tr><th scope="row">PnL net des trades purgés</th><td class="num {{ rs.purge.pnlNetPurged < 0 ? 'neg' : 'pos' }}">{{ rs.purge.pnlNetPurged|money }}</td></tr>
+      </tbody>
+    </table>
+  </div>
+  <p class="note">Un trade purgé est soldé par la fin de la fenêtre de décision (<code>exit_type</code> = <code>end_of_window</code>) : il reste dans <code>trades.csv</code> et dans l'equity, mais il n'entre ni dans l'effectif, ni dans l'espérance, ni dans le verdict.</p>
+
+  <table class="kv wide">
+    <caption>Identité de recherche (<code>research.identity_hash</code>)</caption>
+    <tbody>
+      <tr><th scope="row"><code>identity_hash</code></th><td><code class="hash">{{ rs.identityHash }}</code></td></tr>
+      <tr class="sub"><th scope="row"><code>universe_window_hash</code></th><td>{% if ide.universeWindowHash is null %}aucun (univers fixe){% else %}<code class="hash">{{ ide.universeWindowHash }}</code>{% endif %}</td></tr>
+      <tr class="sub"><th scope="row"><code>quality_hash</code></th><td><code class="hash">{{ ide.qualityHash }}</code></td></tr>
+      <tr class="sub"><th scope="row"><code>subset_hash</code></th><td>{% if ide.subsetHash is null %}aucun{% else %}<code class="hash">{{ ide.subsetHash }}</code>{% endif %}</td></tr>
+      <tr class="sub"><th scope="row"><code>legs_hash</code></th><td><code class="hash">{{ ide.legsHash }}</code></td></tr>
+    </tbody>
+  </table>
+  <p class="note">Le <code>config_hash</code> reste celui de la configuration gelée : il est le même sur les quatre blocs et sur les deux lignes. Ce qui distingue ce run (bloc, fenêtre, jambes jouées, règles d'instrument et coûts par jambe, ligne, sous-ensemble) est porté par l'identité de recherche (docs/specs/s11.md §8.6).</p>
+
+  <h3>Refus d'entrée de la recherche</h3>
+  <div class="scroll">
+  <table class="data">
+    <thead>
+      <tr>
+        <th scope="col">Paire</th><th scope="col">Active depuis</th><th scope="col" class="num">Hors fenêtre de décision</th>
+        <th scope="col" class="num">Hors univers</th><th scope="col" class="num">Exclues par la qualité</th><th scope="col" class="num">Annulées (sortie d'univers)</th>
+      </tr>
+    </thead>
+    <tbody>
+    {% for leg in rs.legs %}
+      <tr>
+        <th scope="row"><code>{{ leg.symbol }}</code></th>
+        <td>{% if leg.liveFrom is null %}jamais{% else %}{{ leg.liveFrom }}{% endif %}</td>
+        <td class="num">{{ leg.funnel.entriesOutsideDecisionWindow|int }}</td>
+        <td class="num">{{ leg.funnel.entriesNotInUniverse|int }}</td>
+        <td class="num">{{ leg.funnel.entriesExcludedQuality|int }}</td>
+        <td class="num">{{ leg.funnel.entriesCancelledUniverse|int }}</td>
+      </tr>
+    {% endfor %}
+    </tbody>
+    <tfoot>
+      <tr>
+        <th scope="row">Total</th><td></td>
+        <td class="num">{{ rs.funnel.entriesOutsideDecisionWindow|int }}</td>
+        <td class="num">{{ rs.funnel.entriesNotInUniverse|int }}</td>
+        <td class="num">{{ rs.funnel.entriesExcludedQuality|int }}</td>
+        <td class="num">{{ rs.funnel.entriesCancelledUniverse|int }}</td>
+      </tr>
+    </tfoot>
+  </table>
+  </div>
+  <p class="note">Les trois premiers motifs sont des signaux d'entrée refusés avant soumission ; ils s'ajoutent aux signaux d'entrée de l'entonnoir. « Annulées » compte les ordres d'entrée en attente d'une jambe à plat, annulés quand elle sort de l'univers. Les signaux de sortie ne sont jamais filtrés.</p>
+
+  {% if un.quarters is not empty %}
+  <h3>Trimestres de l'univers</h3>
+  <div class="scroll">
+  <table class="data">
+    <thead>
+      <tr><th scope="col">Trimestre</th><th scope="col" class="num">Membres</th><th scope="col" class="num">Jambes éligibles</th><th scope="col">Exclues par la qualité</th></tr>
+    </thead>
+    <tbody>
+    {% for q in un.quarters %}
+      <tr>
+        <th scope="row"><code>{{ q.quarter }}</code></th>
+        <td class="num">{{ q.members|int }}</td>
+        <td class="num">{{ q.eligibleLegs|int }}</td>
+        <td>{% for symbol in q.excludedQuality %}<code>{{ symbol }}</code>{% if not loop.last %}, {% endif %}{% else %}aucune{% endfor %}</td>
+      </tr>
+    {% endfor %}
+    </tbody>
+  </table>
+  </div>
+  {% endif %}
+
+  <h3>Exclusions qualité par paire</h3>
+  {% if rs.qualityExclusions is empty %}
+  <p>Aucune paire n'a de trimestre exclu.</p>
+  {% else %}
+  <div class="scroll">
+  <table class="data">
+    <thead>
+      <tr><th scope="col">Paire</th><th scope="col">Trimestre</th><th scope="col">TF exclus</th></tr>
+    </thead>
+    <tbody>
+    {% for symbol, exclusions in rs.qualityExclusions %}
+      {% for e in exclusions %}
+      <tr>
+        <th scope="row"><code>{{ symbol }}</code></th>
+        <td><code>{{ e.quarter }}</code></td>
+        <td>{% for tf in e.tfs %}<code>{{ tf }}</code>{% if not loop.last %}, {% endif %}{% else %}aucun{% endfor %}</td>
+      </tr>
+      {% endfor %}
+    {% endfor %}
+    </tbody>
+  </table>
+  </div>
+  {% endif %}
+  <p class="note">Au-delà de 1 % de bougies absentes, un trimestre est exclu pour la paire et le TF concernés : la paire n'ouvre aucune position pendant ce trimestre quand le TF exclu est celui de décision de la stratégie. Le 1m n'exclut jamais rien (décision du 15/10).</p>
+
+  {% if manifest.researchInputs is not null %}
+  <table class="kv">
+    <caption>Entrées de la recherche (<code>manifest.research_inputs</code>)</caption>
+    <tbody>
+    {% for name, value in manifest.researchInputs %}
+      <tr><th scope="row"><code>{{ name }}</code></th><td>{{ value|scalar }}</td></tr>
+    {% endfor %}
+    </tbody>
+  </table>
+  {% endif %}
+  {% if manifest.config.research is not null %}
+  <table class="kv">
+    <caption>Configuration hachée de recherche (<code>config.research</code>)</caption>
+    <tbody>
+    {% for name, value in manifest.config.research %}
+      <tr><th scope="row"><code>{{ name }}</code></th><td>{{ value|scalar }}</td></tr>
+    {% endfor %}
+    </tbody>
+  </table>
+  {% endif %}
+</section>

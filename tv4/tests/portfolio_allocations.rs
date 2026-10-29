@@ -13,7 +13,12 @@ use std::alloc::{GlobalAlloc, Layout, System};
 use std::cell::Cell;
 
 use portfolio_common::{config, instrument, names};
-use tv4::engine::{LoopObserver, PortfolioConfig, PortfolioInputs, run_portfolio_observed};
+use tv4::engine::{
+    Line, LoopObserver, PortfolioConfig, PortfolioInputs, ResearchIdentity, ResearchSpec,
+    UniverseSpec, run_portfolio_observed, run_portfolio_research_counted,
+};
+use tv4::model::universe::{Member, UniverseQuarter};
+use tv4::model::{Block, QualitySchedule, UniverseSchedule};
 use tv4::sim::SizingMode;
 use tv4::store::Columns;
 use tv4::strategy::{Strategy, registry};
@@ -169,5 +174,94 @@ fn la_boucle_multi_timeframe_a_deux_jambes_alloue_au_plus_une_fois() {
     );
     assert!(grid > 5_000, "grille de {grid} minutes");
     println!("allocations dans la boucle (2 jambes, 15m + 1h) : {allocations}");
+    assert!(allocations <= 1, "{allocations} allocations dans la boucle");
+}
+
+/// Mode recherche (docs S11 §12.2) : deux jambes de 10 240 minutes posées en FORWARD, univers
+/// trimestriel dont BBB sort au 2026-10-01 (l'annulation des entrées en attente est sur le chemin),
+/// fenêtre de décision qui commence après la chauffe (le filtre refuse des entrées dans le préfixe).
+/// Rend (allocations dans la boucle, minutes enregistrées, trades, refus hors fenêtre, refus univers).
+fn measure_research() -> (u64, usize, usize, u64, u64) {
+    // 2026-09-28T00:00:00Z : la fenêtre de 7 jours traverse le 2026-10-01.
+    let from: i64 = tv4::store::time::days_from_civil(2026, 9, 28) * 86_400_000;
+    let rows = 10_000usize;
+    let warmup = 240usize;
+    let universe = names(&["AAA-USD", "BBB-USD"]);
+    let instruments = vec![instrument(0.0); 2];
+    let series = vec![
+        (
+            "AAA-USD".to_string(),
+            Columns::from_candles(&common::synthetic_candles(rows + warmup, 7, from, 0.0)),
+        ),
+        (
+            "BBB-USD".to_string(),
+            Columns::from_candles(&common::synthetic_candles(rows + warmup, 8, from, 0.0)),
+        ),
+    ];
+    let member = |symbol: &str, rank: u8| Member {
+        symbol: symbol.to_string(),
+        rank,
+    };
+    let schedule = UniverseSchedule::new(vec![
+        UniverseQuarter::new("2026-Q3", vec![member("AAA-USD", 1), member("BBB-USD", 2)]).unwrap(),
+        UniverseQuarter::new("2026-Q4", vec![member("AAA-USD", 1)]).unwrap(),
+    ])
+    .unwrap();
+    let quality = QualitySchedule::default();
+    let start = from + 2_000 * 60_000;
+    let end = from + (rows + warmup) as i64 * 60_000;
+    let universe_spec = UniverseSpec::Quarterly {
+        rules_hash: "blake3:rules".to_string(),
+    };
+    let identity = ResearchIdentity {
+        block: Block::Forward,
+        decision_start_ms: start,
+        decision_end_ms: end,
+        universe_window_hash: Some("blake3:window".to_string()),
+        quality_hash: "blake3:quality".to_string(),
+        line: Line::Full,
+        subset_hash: None,
+        legs_hash: String::new(),
+    };
+    let spec = ResearchSpec {
+        block: Block::Forward,
+        decision_start_ms: start,
+        decision_end_ms: end,
+        universe: Some(&schedule),
+        universe_spec: &universe_spec,
+        quality: &quality,
+        identity: &identity,
+    };
+    let params = "tf = \"1m\"\nfast = 60\nslow = 240\nstop_atr_mult = 2.0";
+    let mut probe = Probe::default();
+    let (result, _) = run_portfolio_research_counted(
+        PortfolioInputs {
+            series: &series,
+            strategies: vec![strategy(params), strategy(params)],
+            config: config(&universe, &instruments, 300.0),
+        },
+        &spec,
+        &mut probe,
+    )
+    .expect("run valide");
+    let research = result.research.as_ref().expect("résultat de recherche");
+    (
+        probe.during_loop,
+        result.grid_minutes,
+        result.trades.len(),
+        research.totals.entries_outside_decision_window,
+        research.totals.entries_not_in_universe,
+    )
+}
+
+#[test]
+fn la_boucle_de_recherche_a_deux_jambes_alloue_au_plus_une_fois() {
+    let (allocations, grid, trades, outside, not_member) = measure_research();
+    assert!(grid > 7_000, "grille enregistrée de {grid} minutes");
+    assert!(trades > 0, "le chemin des fills doit être exercé");
+    assert!(outside > 0, "le filtre de fenêtre doit être exercé");
+    println!(
+        "allocations dans la boucle (2 jambes, recherche S11) : {allocations} (refus hors fenêtre {outside}, hors univers {not_member})"
+    );
     assert!(allocations <= 1, "{allocations} allocations dans la boucle");
 }

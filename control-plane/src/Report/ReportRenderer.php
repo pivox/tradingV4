@@ -8,6 +8,7 @@ use App\Report\Chart\DrawdownChart;
 use App\Report\Chart\HistogramChart;
 use App\Report\Chart\LineChart;
 use App\Report\Chart\ScatterChart;
+use App\Run\Dto\LinesReport;
 use App\Run\Dto\ProfilesReport;
 use App\Run\Dto\RunReport;
 use Twig\Environment;
@@ -43,6 +44,23 @@ final class ReportRenderer
     public function renderProfiles(ProfilesReport $profiles): string
     {
         return $this->twig->render('report/standalone.html.twig', $this->context($profiles->baseline()) + ['profiles' => $profiles]);
+    }
+
+    /**
+     * Rapport d'un dossier de lignes (docs/specs/s11.md §9.3) : la section « Deux lignes », puis la fiche complète de la
+     * ligne `full` (celle de son profil baseline quand les lignes sont des dossiers de profils, précédée de la section
+     * « Profils de coûts »). La fiche de la ligne `okx_usdc` se rend depuis son sous-dossier.
+     */
+    public function renderLines(LinesReport $lines): string
+    {
+        $full = $lines->full();
+        $profiles = $full->profiles;
+        $context = $this->context($full->referenceRun()) + ['lines' => $lines];
+        if (null !== $profiles) {
+            $context += ['profiles' => $profiles];
+        }
+
+        return $this->twig->render('report/standalone.html.twig', $context);
     }
 
     /**

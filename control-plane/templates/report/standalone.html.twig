@@ -4,7 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <meta name="color-scheme" content="light dark">
-<title>{% if profiles is defined %}Profils de coûts · {% endif %}Run {{ manifest.runId|slice(0, 12) }} · {{ manifest.config.strategyId }} · rapport tradingV4</title>
+<title>{% if lines is defined %}Deux lignes · {% endif %}{% if profiles is defined %}Profils de coûts · {% endif %}Run {{ manifest.runId|slice(0, 12) }} · {{ manifest.config.strategyId }} · rapport tradingV4</title>
 <style>
 :root {
   --bg: #ffffff;
@@ -86,9 +86,14 @@ svg .pt.loss { fill: var(--loss); fill-opacity: .8; }
 .callout { border-left: 4px solid var(--loss); background: var(--bg); padding: 8px 12px; margin: 12px 0; }
 .callout.fill-dependent { border-left-width: 8px; }
 tr.gate-off td, tr.gate-off th { color: var(--muted); }
+{% endif %}{% if metrics.isResearch %}/* Section « Recherche » et page « Deux lignes » (s11) : absentes du rendu s8, s9 et s10. */
+.lignes-page { max-width: 1100px; margin: 0 auto; padding: 24px 16px 0; }
+.callout-garde { border-left: 8px solid var(--loss); background: var(--bg); padding: 8px 12px; margin: 12px 0; }
+tr.ligne-residuelle th, tr.ligne-residuelle td { font-style: italic; border-top: 2px solid var(--border); }
+tfoot th, tfoot td { border-top: 2px solid var(--border); font-weight: 600; }
 {% endif %}</style>
 </head>
 <body>
-{% if profiles is defined %}<div class="profils-page">{% include 'run/sections/_profils.html.twig' %}</div>{% endif %}{% include 'run/fiche.html.twig' %}
+{% if lines is defined %}<div class="lignes-page">{% include 'run/sections/_lignes.html.twig' %}</div>{% endif %}{% if profiles is defined %}<div class="profils-page">{% include 'run/sections/_profils.html.twig' %}</div>{% endif %}{% include 'run/fiche.html.twig' %}
 </body>
 </html>

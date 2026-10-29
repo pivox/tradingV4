@@ -45,6 +45,13 @@
 //! [`PartitionLock::acquire_wait`]) pour l'ingestion OKX par lots et sa reprise. S9 ajoute les datasets
 //! multi-séries ([`build_dataset_multi`], [`load_dataset_multi`]) : une série par symbole, hash `dsh-v1`
 //! §5.2 sur tous les segments ; [`load_dataset`] garde son refus du multi-séries.
+//!
+//! S11 (docs/specs/s11.md, lot B) ajoute les datasets de recherche par bloc ([`build_dataset_research`],
+//! [`research_meta`]) : quatre champs facultatifs du manifeste (`block`, `decision_window`, `universe`,
+//! `quality_exclusions`) **hors de `dsh-v1`**, des exclusions qualité calculées sur la série complète du
+//! store, une immutabilité étendue à ces métadonnées, la lecture vérifiée d'une série
+//! ([`read_series_window`]) et le module [`universe`] (lecture et écriture vérifiées de `universe.json`,
+//! des CSV d'univers, de `instruments_kraken.toml` et de la liste figée `tv4-pair-subset-v1`).
 
 #![forbid(unsafe_code)]
 
@@ -60,18 +67,20 @@ mod parquet;
 mod partition;
 mod quality;
 pub mod time;
+pub mod universe;
 
 use std::io;
 
 use thiserror::Error;
 
-use crate::model::{ModelError, Timeframe, Ts};
+use crate::model::{Block, ModelError, Timeframe, Ts};
 
 pub use self::columns::{Columns, ColumnsParts};
 pub use self::dataset::{
     BuildOutcome, BuildRequest, BuildStatus, LoadedDataset, MultiBuildRequest, MultiDataset,
-    build_dataset, build_dataset_multi, fill_gaps, load_dataset, load_dataset_multi,
-    read_verified_with_hash,
+    ResearchInfo, ResearchMeta, build_dataset, build_dataset_multi, build_dataset_research,
+    fill_gaps, load_dataset, load_dataset_multi, read_series_window, read_verified_with_hash,
+    research_meta,
 };
 pub use self::layout::{GapsPolicy, Partition, Period, Symbol, Window, resolve_rel};
 pub use self::lock::{DatasetLock, PartitionLock};
@@ -305,4 +314,78 @@ pub enum StoreError {
         start_ms: Ts,
         end_ms: Ts,
     },
+
+    #[error(
+        "dataset de recherche : gaps_policy `{found}` refusée, `zero_volume_marked` est imposée (docs/specs/s11.md §6.2)"
+    )]
+    ResearchGapsPolicy { found: GapsPolicy },
+
+    #[error(
+        "dataset de recherche : timeframe {tf} refusé, la recherche se construit en 1m (les TF supérieurs sont dérivés)"
+    )]
+    ResearchTimeframe { tf: Timeframe },
+
+    #[error("dataset de recherche du bloc {block} : fenêtre refusée, {reason}")]
+    ResearchWindow { block: Block, reason: String },
+
+    #[error("métadonnées de recherche du manifeste : `{field}` incohérent, {reason}")]
+    ResearchMetaInvalid { field: &'static str, reason: String },
+
+    #[error(
+        "dataset `{path}` : manifeste de recherche, qui se joue en portefeuille ; un dataset de recherche ne se charge pas en mono-série"
+    )]
+    ResearchNeedsPortfolio { path: String },
+
+    #[error(
+        "`{path}` existe avec le même dataset_hash mais un autre `{field}` : un dataset figé ne change pas de métadonnées de recherche, choisir un autre nom"
+    )]
+    DatasetMetaMismatch { path: String, field: &'static str },
+
+    #[error(
+        "exclusion qualité de {symbol} au trimestre {quarter} : TF exclus `{universe}` dans le CSV de l'univers, `{store}` calculés sur la série du store"
+    )]
+    UniverseQualityMismatch {
+        quarter: String,
+        symbol: String,
+        universe: String,
+        store: String,
+    },
+
+    #[error(
+        "membre {symbol} du trimestre {quarter} de l'univers absent des symboles du dataset : l'union des membres de la fenêtre est exigée"
+    )]
+    UniverseMemberMissing { quarter: String, symbol: String },
+
+    #[error("fichier d'univers `{path}` invalide : {reason}")]
+    UniverseFileInvalid { path: String, reason: String },
+
+    #[error("fichier d'univers `{path}` : {field} recalculé {actual}, {expected} écrit")]
+    UniverseHashMismatch {
+        path: String,
+        field: &'static str,
+        expected: String,
+        actual: String,
+    },
+
+    #[error(
+        "l'univers ne couvre pas la fenêtre [{start_ms}, {end_ms}) : aucun trimestre à partir de {missing_ms}"
+    )]
+    UniverseWindowNotCovered {
+        start_ms: Ts,
+        end_ms: Ts,
+        missing_ms: Ts,
+    },
+
+    #[error(
+        "le trimestre {quarter} est déjà figé dans universe.json et se reconstruirait différemment : rien n'est écrit"
+    )]
+    FrozenQuarterChanged { quarter: String },
+
+    #[error(
+        "les règles de l'univers ont changé depuis l'écriture de universe.json : rien n'est écrit"
+    )]
+    UniverseRulesChanged,
+
+    #[error("la liste de paires `{path}` existe déjà : un sous-ensemble figé ne s'écrase jamais")]
+    SubsetExists { path: String },
 }

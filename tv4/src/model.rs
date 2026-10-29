@@ -5,12 +5,19 @@
 //! temps est un `i64` en millisecondes UTC, docs/03 §5) et les prix, quantités et volumes sont des
 //! `f64` (docs/03 §5.1).
 
+pub mod blocks;
 pub mod costs;
 pub mod hash;
 pub mod instrument;
 pub mod rng;
+pub mod universe;
 
+pub use blocks::Block;
 pub use instrument::InstrumentRules;
+pub use universe::{
+    Member, PairSubset, QualitySchedule, QuarterExclusion, UniverseConfig, UniverseRef,
+    UniverseSchedule,
+};
 
 use std::collections::BTreeMap;
 use std::fmt;
@@ -102,6 +109,27 @@ pub enum ModelError {
     /// Le fichier de mesures `tv4-cost-measures-v1` est invalide.
     #[error("mesures de coûts : `{field}` invalide, {reason}")]
     MeasuresInvalid { field: String, reason: String },
+
+    /// Chaîne qui ne désigne aucun bloc de recherche.
+    #[error("bloc inconnu : `{0}` (attendus : DEV, VALIDATION, HOLDOUT, FORWARD)")]
+    UnknownBlock(String),
+
+    /// Fin de fenêtre incompatible avec le bloc (s11 §3.1, `decision_window`).
+    #[error("bloc {block} : fin de fenêtre {window_end_ms} refusée, {reason}")]
+    DecisionWindow {
+        block: Block,
+        window_end_ms: Ts,
+        reason: &'static str,
+    },
+
+    /// Chauffe hors de 0 à 400 jours.
+    #[error("chauffe de {days} jours hors des bornes autorisées (0 à 400)")]
+    WarmupOutOfRange { days: i64 },
+
+    /// `config/universe.toml`, un calendrier d'univers, des exclusions qualité ou une liste figée de
+    /// paires est invalide. `field` nomme le champ.
+    #[error("univers : `{field}` invalide, {reason}")]
+    UniverseInvalid { field: String, reason: String },
 
     /// Symbole dont on ne peut pas tirer l'actif de base (pas de `-`, ou base vide).
     #[error("symbole `{symbol}` : l'actif de base est introuvable (forme attendue : BASE-QUOTE)")]

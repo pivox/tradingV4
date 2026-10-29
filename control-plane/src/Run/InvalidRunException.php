@@ -17,6 +17,12 @@ final class InvalidRunException extends RuntimeException
         return new self(sprintf('dossier de run introuvable : %s', $directory));
     }
 
+    /** Même erreur, précédée du sous-dossier du dossier de lignes ou de profils où elle s'est produite. */
+    public static function inDirectory(string $directory, self $error): self
+    {
+        return new self(sprintf('%s/ : %s', $directory, $error->getMessage()), 0, $error);
+    }
+
     public static function missingFile(string $file): self
     {
         return new self(sprintf('%s : fichier absent', $file));

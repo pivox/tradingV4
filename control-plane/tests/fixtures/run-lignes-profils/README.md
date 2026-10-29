@@ -1,0 +1,9 @@
+# Dossier de lignes de profils d'exemple (données fabriquées, schémas s11)
+
+Ce dossier est un **dossier de lignes dont chaque ligne est un dossier de profils de coûts, écrit à la main pour les tests** du control plane (`docs/specs/s11.md` §9.1, §9.3 et §9.6 avec `--costs`). Ce n'est **ni une sortie de `tv4`, ni un résultat de backtest, ni des données de marché**.
+
+- Forme : `lines.json` (`tv4-lines-v1`, clés `baseline`, `adverse` et `maker` dans `config_hash`, `by_profile` et `residual_survivorship`), `full/` et `okx_usdc/`, chacun un dossier de profils (`profiles.json` et `baseline/`, `adverse/`, `maker/`, trois runs s11 avec les blocs de coûts de s10).
+- Il dérive du dossier de profils s10 (`../run-profils/`) par la même construction que `../run-recherche/` : trades décalés au bloc **HOLDOUT** (2025-03-01), trade `end_of_window` purgé, métriques de trades recalculées sur les trades conservés, métriques d'equity sur tous les trades, `equity.csv` reconstruit. Les runs sont joués avec l'option cachée `--unguarded-protected-read` (`research.guard = "unguarded"`).
+- `okx_usdc/` ne joue que `BTC-USD` : trades filtrés, jambes de coûts et compteurs par paire filtrés. Les autres agrégats de coûts (`cost_arithmetic`, `profiles.json` hors effectif, espérances, PnL et positivité) restent ceux du dossier de base ou ont été recopiés des métriques recalculées ; le control plane ne les recalcule pas et ne les contrôle pas.
+- Les deux lignes partagent le `config_hash` de chaque profil (§9.1), ont des `profiles_id` et des `run_id` distincts, et la même identité de dataset, d'univers et de qualité. Les hashes sont **factices** (motifs hexadécimaux répétés).
+- Taille : environ 280 Ko, parce que six runs complets y figurent. Elle ne sert qu'aux tests de lecture et de rendu des lignes de profils ; le golden Rust de S11 n'en remplace pas la forme.

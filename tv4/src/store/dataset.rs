@@ -12,11 +12,25 @@
 //!
 //! `ffill` et `zero_volume_marked` synthétisent les bougies manquantes intérieures au chargement
 //! seulement ([`fill_gaps`]) : le stockage et le hash ne les voient jamais.
+//!
+//! # Datasets de recherche (S11)
+//!
+//! [`build_dataset_research`] construit un dataset d'un bloc de recherche (docs/specs/s11.md §6) : mêmes
+//! contrôles et même écriture que [`build_dataset_multi`], plus quatre champs facultatifs du manifeste
+//! (`block`, `decision_window`, `universe`, `quality_exclusions`) **hors de `dsh-v1`**. Les exclusions
+//! qualité sont calculées sur la série 1m **complète** du store, pas sur la fenêtre du dataset. Un
+//! manifeste existant au même `dataset_hash` doit avoir les mêmes champs de recherche
+//! ([`StoreError::DatasetMetaMismatch`]), pour les trois constructeurs. [`research_meta`] relit et
+//! recoupe ces champs ; [`read_series_window`] lit une série du store avec vérification des hashes.
 
+use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::path::Path;
 
-use crate::model::{Candle, ExchangeId, Timeframe, Ts};
+use crate::model::blocks::decision_window;
+use crate::model::{
+    Block, Candle, ExchangeId, QualitySchedule, QuarterExclusion, Timeframe, Ts, UniverseRef,
+};
 
 use super::StoreError;
 use super::columns::Columns;
@@ -30,7 +44,9 @@ use super::manifest::{
 };
 use super::parquet::{ReadOptions, read_parquet};
 use super::partition::check_identity;
+use super::quality::quality_report;
 use super::time::{MAX_TS_MS, format_rfc3339_utc, parse_rfc3339_utc};
+use super::universe::QualityExpectation;
 
 /// Longueur maximale du nom d'un dataset.
 const MAX_NAME_LEN: usize = 64;
@@ -63,6 +79,32 @@ pub struct MultiBuildRequest<'a> {
     /// Fenêtre `[début, fin)`, bornes alignées sur le timeframe.
     pub window: Window,
     pub gaps_policy: GapsPolicy,
+}
+
+/// Ce qu'un build de recherche ajoute au manifeste (s11 §6.2).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ResearchMeta {
+    /// Bloc du dataset : la fenêtre de décision s'en déduit.
+    pub block: Block,
+    /// Référence d'univers (`rules_hash`, `window_hash`) quand les symboles viennent d'un univers
+    /// trimestriel ; `None` en univers fixe.
+    pub universe: Option<UniverseRef>,
+    /// Exclusions qualité écrites dans les CSV de l'univers, comparées à celles que le store calcule
+    /// ([`StoreError::UniverseQualityMismatch`]). `None` en univers fixe.
+    pub universe_quality: Option<QualityExpectation>,
+}
+
+/// Métadonnées de recherche d'un manifeste, relues et recoupées par [`research_meta`].
+#[derive(Clone, Debug, PartialEq)]
+pub struct ResearchInfo {
+    pub block: Block,
+    /// Début de la fenêtre de décision (début du bloc).
+    pub decision_start_ms: Ts,
+    /// Fin exclusive de la fenêtre de décision.
+    pub decision_end_ms: Ts,
+    pub universe: Option<UniverseRef>,
+    /// Exclusions qualité par symbole, résolues en intervalles (le 1m n'exclut jamais rien).
+    pub quality: QualitySchedule,
 }
 
 /// Ce qu'un build a fait du manifeste.
@@ -274,6 +316,7 @@ pub fn build_dataset(
         std::slice::from_ref(&request.partition),
         request.window,
         request.gaps_policy,
+        None,
         now_ms,
     )
 }
@@ -296,6 +339,55 @@ pub fn build_dataset_multi(
     request: &MultiBuildRequest<'_>,
     now_ms: Ts,
 ) -> Result<BuildOutcome, StoreError> {
+    let partitions = multi_partitions(request)?;
+    build_partitions(
+        root,
+        request.name,
+        &partitions,
+        request.window,
+        request.gaps_policy,
+        None,
+        now_ms,
+    )
+}
+
+/// Construit un dataset figé multi-séries d'un bloc de recherche (s11 §6.2) : les contrôles de
+/// [`build_dataset_multi`], plus :
+///
+/// - `gaps_policy` doit valoir `zero_volume_marked` ([`StoreError::ResearchGapsPolicy`]) et le
+///   timeframe `1m` ([`StoreError::ResearchTimeframe`]) ;
+/// - la fenêtre doit commencer au plus tard au début du bloc et finir après ce début, sans dépasser la
+///   fin d'un bloc fermé ([`StoreError::ResearchWindow`]) ; la fenêtre de décision est
+///   `decision_window(bloc, fin de fenêtre)` ;
+/// - les exclusions qualité de chaque symbole sont calculées par [`quality_report`] sur sa série 1m
+///   complète du store (seaux attendus depuis la première bougie de la série, pas du dataset), pour les
+///   TF de 5m à 1d, et écrites pour les trimestres qui recoupent la fenêtre de décision et ont au moins
+///   un TF exclu. Avec `universe_quality`, elles sont comparées à celles des CSV de l'univers
+///   ([`StoreError::UniverseQualityMismatch`], [`StoreError::UniverseMemberMissing`]) ;
+/// - un manifeste existant au même `dataset_hash` mais de métadonnées de recherche différentes est
+///   refusé ([`StoreError::DatasetMetaMismatch`]), rien n'est écrit.
+///
+/// Le `dataset_hash` ne dépend d'aucune métadonnée de recherche : `block` est hors de `dsh-v1`.
+pub fn build_dataset_research(
+    root: &Path,
+    request: &MultiBuildRequest<'_>,
+    research: &ResearchMeta,
+    now_ms: Ts,
+) -> Result<BuildOutcome, StoreError> {
+    let partitions = multi_partitions(request)?;
+    build_partitions(
+        root,
+        request.name,
+        &partitions,
+        request.window,
+        request.gaps_policy,
+        Some(research),
+        now_ms,
+    )
+}
+
+/// Partitions d'une demande multi-séries : symboles triés en ordre d'octets, sans doublon.
+fn multi_partitions(request: &MultiBuildRequest<'_>) -> Result<Vec<Partition>, StoreError> {
     if request.symbols.is_empty() {
         return Err(StoreError::NoSymbols);
     }
@@ -306,28 +398,169 @@ pub fn build_dataset_multi(
             symbol: pair[0].as_str().to_string(),
         });
     }
-    let partitions: Vec<Partition> = symbols
+    Ok(symbols
         .into_iter()
         .map(|symbol| Partition::new(request.exchange, symbol.clone(), request.tf))
-        .collect();
-    build_partitions(
-        root,
-        request.name,
-        &partitions,
-        request.window,
-        request.gaps_policy,
-        now_ms,
-    )
+        .collect())
 }
 
-/// Cœur commun des builds mono et multi-séries. `partitions` est non vide, trié par symbole, sans
-/// doublon, et partage exchange et timeframe (garanti par les deux appelants).
+/// Métadonnées de recherche d'un manifeste de dataset, comparées d'un build à l'autre.
+#[derive(Clone, Debug, Default, PartialEq)]
+struct ManifestMeta {
+    block: Option<Block>,
+    decision_window: Option<[String; 2]>,
+    universe: Option<UniverseRef>,
+    quality_exclusions: Option<BTreeMap<String, Vec<QuarterExclusion>>>,
+}
+
+impl ManifestMeta {
+    fn of(manifest: &DatasetManifest) -> ManifestMeta {
+        ManifestMeta {
+            block: manifest.block,
+            decision_window: manifest.decision_window.clone(),
+            universe: manifest.universe.clone(),
+            quality_exclusions: manifest.quality_exclusions.clone(),
+        }
+    }
+
+    /// Premier champ qui diffère de `other`, dans l'ordre du manifeste.
+    fn first_difference(&self, other: &ManifestMeta) -> Option<&'static str> {
+        if self.block != other.block {
+            Some("block")
+        } else if self.decision_window != other.decision_window {
+            Some("decision_window")
+        } else if self.universe != other.universe {
+            Some("universe")
+        } else if self.quality_exclusions != other.quality_exclusions {
+            Some("quality_exclusions")
+        } else {
+            None
+        }
+    }
+}
+
+/// TF dont la qualité est jugée : de 5m à 1d. Le 1m, qui sert aux fills, n'exclut jamais rien
+/// (docs/04 §2.5 et §10, décision 8).
+const QUALITY_TFS: [Timeframe; 7] = [
+    Timeframe::M5,
+    Timeframe::M15,
+    Timeframe::M30,
+    Timeframe::H1,
+    Timeframe::H4,
+    Timeframe::H12,
+    Timeframe::D1,
+];
+
+/// Contrôles d'une demande de recherche avant tout accès au store ; rend la fenêtre de décision.
+fn check_research_request(
+    block: Block,
+    tf: Timeframe,
+    gaps_policy: GapsPolicy,
+    window: Window,
+) -> Result<(Ts, Ts), StoreError> {
+    if gaps_policy != GapsPolicy::ZeroVolumeMarked {
+        return Err(StoreError::ResearchGapsPolicy { found: gaps_policy });
+    }
+    if tf != Timeframe::M1 {
+        return Err(StoreError::ResearchTimeframe { tf });
+    }
+    if window.start_ms() > block.span().start_ms {
+        return Err(StoreError::ResearchWindow {
+            block,
+            reason: "la fenêtre commence après le début du bloc".to_string(),
+        });
+    }
+    decision_window(block, window.end_ms()).map_err(|e| StoreError::ResearchWindow {
+        block,
+        reason: e.to_string(),
+    })
+}
+
+/// Trimestres de `partition` qui recoupent `[decision_start, decision_end)` et ont au moins un TF de 5m
+/// à 1d exclu par la qualité, calculés sur la série 1m complète du store.
+fn quality_exclusions_of(
+    root: &Path,
+    partition: &Partition,
+    decision_start_ms: Ts,
+    decision_end_ms: Ts,
+) -> Result<Vec<QuarterExclusion>, StoreError> {
+    let columns = read_series_window(root, partition, None)?;
+    let report = quality_report(columns.open_time_ms(), &QUALITY_TFS)?;
+    // Lignes triées par (tf croissant, trimestre) : les TF d'un trimestre s'ajoutent par durée
+    // croissante.
+    let mut by_quarter: BTreeMap<String, Vec<Timeframe>> = BTreeMap::new();
+    for row in report.rows.iter().filter(|row| row.excluded) {
+        let (start_ms, end_ms) = crate::model::universe::quarter_bounds(&row.quarter)?;
+        if start_ms < decision_end_ms && end_ms > decision_start_ms {
+            by_quarter
+                .entry(row.quarter.clone())
+                .or_default()
+                .push(row.tf);
+        }
+    }
+    Ok(by_quarter
+        .into_iter()
+        .map(|(quarter, tfs)| QuarterExclusion { quarter, tfs })
+        .collect())
+}
+
+/// Texte des TF exclus d'un trimestre pour un message (`1h;4h`, « aucun » si vide).
+fn tfs_text(tfs: &[Timeframe]) -> String {
+    if tfs.is_empty() {
+        "aucun".to_string()
+    } else {
+        tfs.iter()
+            .map(|tf| tf.as_str())
+            .collect::<Vec<_>>()
+            .join(";")
+    }
+}
+
+/// Compare les exclusions attendues par les CSV de l'univers à celles du store, pour les trimestres qui
+/// recoupent la fenêtre de décision (s11 §4.3).
+fn check_universe_quality(
+    expected: &QualityExpectation,
+    computed: &BTreeMap<String, Vec<QuarterExclusion>>,
+    partitions: &[Partition],
+    decision_start_ms: Ts,
+    decision_end_ms: Ts,
+) -> Result<(), StoreError> {
+    for ((quarter, symbol), tfs) in expected.entries() {
+        let (start_ms, end_ms) = crate::model::universe::quarter_bounds(quarter)?;
+        if start_ms >= decision_end_ms || end_ms <= decision_start_ms {
+            continue;
+        }
+        if !partitions.iter().any(|p| p.symbol.as_str() == symbol) {
+            return Err(StoreError::UniverseMemberMissing {
+                quarter: quarter.clone(),
+                symbol: symbol.clone(),
+            });
+        }
+        let store_tfs: &[Timeframe] = computed
+            .get(symbol)
+            .and_then(|list| list.iter().find(|e| e.quarter == *quarter))
+            .map_or(&[], |e| e.tfs.as_slice());
+        if store_tfs != tfs.as_slice() {
+            return Err(StoreError::UniverseQualityMismatch {
+                quarter: quarter.clone(),
+                symbol: symbol.clone(),
+                universe: tfs_text(tfs),
+                store: tfs_text(store_tfs),
+            });
+        }
+    }
+    Ok(())
+}
+
+/// Cœur commun des builds mono et multi-séries et de recherche. `partitions` est non vide, trié par
+/// symbole, sans doublon, et partage exchange et timeframe (garanti par les appelants).
 fn build_partitions(
     root: &Path,
     name: &str,
     partitions: &[Partition],
     window: Window,
     gaps_policy: GapsPolicy,
+    research: Option<&ResearchMeta>,
     now_ms: Ts,
 ) -> Result<BuildOutcome, StoreError> {
     check_name(name)?;
@@ -336,6 +569,9 @@ fn build_partitions(
     };
     let (exchange, tf) = (first.exchange, first.tf);
     window.check_aligned(tf)?;
+    let decision = research
+        .map(|meta| check_research_request(meta.block, tf, gaps_policy, window))
+        .transpose()?;
     let window_text = [
         format_rfc3339_utc(window.start_ms())?,
         format_rfc3339_utc(window.end_ms())?,
@@ -377,12 +613,51 @@ fn build_partitions(
     }
     let dataset_hash = dsh::prefixed(&hex);
 
+    // Étape 5 bis : métadonnées de recherche, exclusions qualité sur la série complète du store.
+    let new_meta = match (research, decision) {
+        (Some(meta), Some((decision_start_ms, decision_end_ms))) => {
+            let mut computed: BTreeMap<String, Vec<QuarterExclusion>> = BTreeMap::new();
+            for partition in partitions {
+                let list =
+                    quality_exclusions_of(root, partition, decision_start_ms, decision_end_ms)?;
+                if !list.is_empty() {
+                    computed.insert(partition.symbol.as_str().to_string(), list);
+                }
+            }
+            if let Some(expected) = &meta.universe_quality {
+                check_universe_quality(
+                    expected,
+                    &computed,
+                    partitions,
+                    decision_start_ms,
+                    decision_end_ms,
+                )?;
+            }
+            ManifestMeta {
+                block: Some(meta.block),
+                decision_window: Some([
+                    format_rfc3339_utc(decision_start_ms)?,
+                    format_rfc3339_utc(decision_end_ms)?,
+                ]),
+                universe: meta.universe.clone(),
+                quality_exclusions: Some(computed),
+            }
+        }
+        _ => ManifestMeta::default(),
+    };
+
     // Étape 6 : immutabilité du manifeste de dataset.
     let manifest_rel = format!("datasets/{name}.json");
     let manifest_path = root.join("datasets").join(format!("{name}.json"));
     if manifest_path.is_file() {
         let existing = read_dataset_manifest(&manifest_path)?;
         if existing.dataset_hash == dataset_hash && existing.hash_format == HASH_FORMAT {
+            if let Some(field) = ManifestMeta::of(&existing).first_difference(&new_meta) {
+                return Err(StoreError::DatasetMetaMismatch {
+                    path: manifest_rel,
+                    field,
+                });
+            }
             let snapshots = existing.files.iter().filter(|f| f.snapshot).count();
             return Ok(BuildOutcome {
                 manifest_rel,
@@ -436,6 +711,10 @@ fn build_partitions(
         hash_format: HASH_FORMAT.to_string(),
         built_at,
         tv4_version: env!("CARGO_PKG_VERSION").to_string(),
+        block: new_meta.block,
+        decision_window: new_meta.decision_window,
+        universe: new_meta.universe,
+        quality_exclusions: new_meta.quality_exclusions,
     };
     write_dataset_manifest(&manifest_path, &manifest)?;
     Ok(BuildOutcome {
@@ -487,11 +766,22 @@ fn snapshot_file(
 /// fichier listé est soit clos (jamais modifié), soit un snapshot (jamais réécrit), et le remplacement
 /// par `rename` est atomique pour un lecteur.
 ///
+/// Un manifeste de recherche (champ `block` ou autre champ de S11) n'est pas mono-série : il se joue en
+/// portefeuille, par [`load_dataset_multi`] ([`StoreError::ResearchNeedsPortfolio`]).
+///
 /// `load_dataset` n'applique aucun refus de politique : il sait charger `zero_volume_marked`. Le refus
 /// de cette politique est dans `tv4 backtest`.
 pub fn load_dataset(root: &Path, manifest_path: &Path) -> Result<LoadedDataset, StoreError> {
     let shown = manifest_path.display().to_string();
     let manifest = read_dataset_manifest(manifest_path)?;
+    if manifest.block.is_some()
+        || manifest.decision_window.is_some()
+        || manifest.universe.is_some()
+        || manifest.quality_exclusions.is_some()
+    {
+        // Un dataset de recherche ne se joue qu'en portefeuille (s11 §6.2 et §8.1).
+        return Err(StoreError::ResearchNeedsPortfolio { path: shown });
+    }
     if manifest.hash_format != HASH_FORMAT {
         return Err(StoreError::UnsupportedHashFormat {
             path: shown,
@@ -677,6 +967,128 @@ pub fn load_dataset_multi(root: &Path, manifest_path: &Path) -> Result<MultiData
         series.push((symbol.as_str().to_string(), filled));
     }
     Ok(MultiDataset { manifest, series })
+}
+
+/// Lit et recoupe les métadonnées de recherche d'un manifeste (s11 §6.2).
+///
+/// - Aucun des quatre champs : `Ok(None)`, c'est un manifeste ordinaire (S4 à S10).
+/// - `decision_window`, `universe` ou `quality_exclusions` sans `block`, ou `block` sans
+///   `decision_window` ni `quality_exclusions` : [`StoreError::ResearchMetaInvalid`].
+/// - `decision_window` recalculée à partir de `block` et de la fin de `window` : tout écart est
+///   [`StoreError::ResearchMetaInvalid`] ; une fenêtre incompatible avec le bloc est
+///   [`StoreError::ResearchWindow`] ; une `gaps_policy` autre que `zero_volume_marked`,
+///   [`StoreError::ResearchGapsPolicy`].
+/// - `quality_exclusions` est résolu en [`QualitySchedule`] (trimestres ordonnés, jamais le 1m).
+pub fn research_meta(manifest: &DatasetManifest) -> Result<Option<ResearchInfo>, StoreError> {
+    let invalid =
+        |field: &'static str, reason: String| StoreError::ResearchMetaInvalid { field, reason };
+    let Some(block) = manifest.block else {
+        for (field, present) in [
+            ("decision_window", manifest.decision_window.is_some()),
+            ("universe", manifest.universe.is_some()),
+            ("quality_exclusions", manifest.quality_exclusions.is_some()),
+        ] {
+            if present {
+                return Err(invalid(field, "présent sans `block`".to_string()));
+            }
+        }
+        return Ok(None);
+    };
+    let Some(stored) = &manifest.decision_window else {
+        return Err(invalid(
+            "decision_window",
+            "absent alors que `block` est présent".to_string(),
+        ));
+    };
+    let Some(exclusions) = &manifest.quality_exclusions else {
+        return Err(invalid(
+            "quality_exclusions",
+            "absent alors que `block` est présent".to_string(),
+        ));
+    };
+    if manifest.gaps_policy != GapsPolicy::ZeroVolumeMarked {
+        return Err(StoreError::ResearchGapsPolicy {
+            found: manifest.gaps_policy,
+        });
+    }
+    let window = Window::new(
+        parse_rfc3339_utc(&manifest.window[0])?,
+        parse_rfc3339_utc(&manifest.window[1])?,
+    )?;
+    let (decision_start_ms, decision_end_ms) =
+        check_research_request(block, Timeframe::M1, manifest.gaps_policy, window)?;
+    let expected = [
+        format_rfc3339_utc(decision_start_ms)?,
+        format_rfc3339_utc(decision_end_ms)?,
+    ];
+    if *stored != expected {
+        return Err(invalid(
+            "decision_window",
+            format!(
+                "[{}, {}) écrite, [{}, {}) recalculée à partir du bloc {block} et de la fenêtre",
+                stored[0], stored[1], expected[0], expected[1]
+            ),
+        ));
+    }
+    let quality = QualitySchedule::from_exclusions(exclusions.clone())?;
+    Ok(Some(ResearchInfo {
+        block,
+        decision_start_ms,
+        decision_end_ms,
+        universe: manifest.universe.clone(),
+        quality,
+    }))
+}
+
+/// Périodes dont un fichier ou un manifeste existe dans la partition, dans l'ordre. Un dossier absent
+/// donne une liste vide.
+fn discover_periods(root: &Path, partition: &Partition) -> Result<Vec<Period>, StoreError> {
+    let dir = resolve_rel(root, &partition.dir_rel())?;
+    let entries = match fs::read_dir(&dir) {
+        Ok(entries) => entries,
+        Err(source) if source.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
+        Err(source) => return Err(io_error(&dir, source)),
+    };
+    let mut periods = BTreeSet::new();
+    for entry in entries {
+        let entry = entry.map_err(|source| io_error(&dir, source))?;
+        let name = entry.file_name().to_string_lossy().into_owned();
+        let label = name
+            .strip_suffix("._manifest.json")
+            .or_else(|| name.strip_suffix(".parquet"));
+        if let Some(label) = label {
+            periods.insert(Period::parse(partition.tf, label)?);
+        }
+    }
+    Ok(periods.into_iter().collect())
+}
+
+/// Lit une série du store avec vérification : pour chaque fichier retenu, `content_hash` recalculé sur
+/// les 7 colonnes, `row_count`, `ts_min` et `ts_max` recoupés avec le manifeste du fichier. Rend les
+/// lignes **réelles** (aucune bougie synthétique) strictement croissantes.
+///
+/// - `window = Some(w)` : les lignes de `[début, fin)`, lues dans les seuls fichiers qui touchent `w` ;
+/// - `window = None` : toute la série, tous les fichiers de la partition (c'est la lecture des
+///   exclusions qualité, s11 §4.3, et de `tv4 universe verify`, §4.5).
+///
+/// Une partition absente rend une série vide. La lecture ne prend pas de verrou : un fichier clos n'est
+/// jamais modifié et le remplacement d'un fichier non clos est atomique (comme [`load_dataset`]).
+pub fn read_series_window(
+    root: &Path,
+    partition: &Partition,
+    window: Option<Window>,
+) -> Result<Columns, StoreError> {
+    let (periods, wide) = match window {
+        Some(window) => (Period::covering(partition.tf, window)?, window),
+        None => (
+            discover_periods(root, partition)?,
+            Window::new(0, MAX_TS_MS)?,
+        ),
+    };
+    let mut columns = read_series(root, partition, &periods, wide)?.columns;
+    columns.check_strictly_increasing()?;
+    columns.retain_window(wide);
+    Ok(columns)
 }
 
 /// Applique la politique de trous aux lignes réelles d'une fenêtre (strictement croissantes,

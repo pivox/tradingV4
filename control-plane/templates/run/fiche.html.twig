@@ -9,7 +9,10 @@
       ({{ manifest.data.exchange }}, {{ manifest.data.symbolsLabel }}, {{ manifest.data.tf }})
     </p>
     <p>Fenêtre jouée : {{ windowStart }} → {{ windowEnd }} (fin exclue, après warmup)</p>
-  </header>
+  </header>{% if metrics.isResearch %}
+
+  {% include 'run/sections/_recherche.html.twig' %}{% endif %}
+
 
   {% include 'run/sections/_verdict.html.twig' %}
   {% include 'run/sections/_resume.html.twig' %}

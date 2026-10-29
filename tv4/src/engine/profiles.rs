@@ -40,10 +40,11 @@ use crate::strategy::Strategy;
 
 use super::config::StrategyRecord;
 use super::portfolio::{
-    Checked, Loaded, PortfolioResult, PrepStats, Shared, book_config, check_config, load,
-    play_profile, share,
+    Checked, Loaded, PortfolioResult, PrepStats, ResearchRun, SeriesSource, Shared, book_config,
+    check_config, load, load_from, play_profile, share, share_research,
 };
-use super::portfolio_config::{PortfolioConfig, PortfolioRunConfig};
+use super::portfolio_config::{PortfolioConfig, PortfolioRunConfig, ResearchHashed};
+use super::research::{ResearchSpec, check_research, decision_tf_of};
 use super::{EngineError, LoopObserver};
 
 /// Entrées de [`run_portfolio_profiles`].
@@ -117,26 +118,6 @@ fn check_cost_config(config: &PortfolioConfig<'_>) -> Result<(), EngineError> {
     Ok(())
 }
 
-/// TF de décision d'un jeu de stratégies : celui de la première, déclaré dans ses timeframes, et le même
-/// pour toutes les jambes.
-fn decision_tf_of(strategies: &[Box<dyn Strategy>]) -> Result<Timeframe, EngineError> {
-    let first = strategies.first().ok_or(EngineError::EmptyUniverse)?;
-    let tf = first.decision_tf();
-    for strategy in strategies {
-        let own = strategy.decision_tf();
-        if !strategy.timeframes().contains(&own) {
-            return Err(EngineError::DecisionTfNotDeclared {
-                id: strategy.id(),
-                tf: own,
-            });
-        }
-        if own != tf {
-            return Err(EngineError::StrategiesDiffer);
-        }
-    }
-    Ok(tf)
-}
-
 /// Vrai si deux jeux déclarent la même chose : identité de la stratégie, indicateurs, timeframes,
 /// régime, warmup et TF de décision. Les colonnes d'indicateurs du premier servent au second.
 fn same_declaration(a: &[Box<dyn Strategy>], b: &[Box<dyn Strategy>]) -> bool {
@@ -183,6 +164,8 @@ struct Prepared<'p, 'a> {
     checked: &'p Checked,
     config: &'p PortfolioConfig<'p>,
     costs: &'p CostSetup<'p>,
+    /// Mode recherche (docs S11 §8.5) : la même activation et le même filtre pour les trois profils.
+    research: Option<&'p ResearchSpec<'p>>,
 }
 
 /// Résout les coûts d'un profil, construit son objet haché, son `Book`, puis le joue sur la préparation
@@ -196,7 +179,7 @@ fn play_cost_profile(
 ) -> Result<ProfileRun, EngineError> {
     let config = prepared.config;
     let (leg_costs, legs) = resolve_legs(config, prepared.costs, profile, decision_tf)?;
-    let run_config = PortfolioRunConfig::with_costs(
+    let mut run_config = PortfolioRunConfig::with_costs(
         strategies
             .first()
             .map(|s| s.as_ref())
@@ -208,6 +191,20 @@ fn play_cost_profile(
         profile,
         &legs,
     )?;
+    // Recherche : le `config_hash` reste celui de la configuration gelée (tables par jambe vidées), les
+    // valeurs de coûts résolues par jambe passent dans l'identité de recherche (docs S11 §8.6).
+    let research_run = prepared.research.map(|spec| ResearchRun {
+        spec,
+        decision_tf,
+        costs_legs: legs
+            .iter()
+            .map(|leg| (leg.symbol.clone(), leg.hashed()))
+            .collect(),
+    });
+    if let Some(spec) = prepared.research {
+        run_config =
+            run_config.into_research(ResearchHashed::new(spec.universe_spec.clone(), decision_tf));
+    }
     let config_hash = run_config.hash()?;
     let book = Book::with_costs(
         book_config(config, prepared.loaded.window_max()),
@@ -221,6 +218,7 @@ fn play_cost_profile(
         config,
         run_config,
         config_hash,
+        research_run.as_ref(),
         observer,
     )?;
     Ok(ProfileRun {
@@ -248,12 +246,100 @@ pub fn run_portfolio_profiles(
 ) -> Result<ProfilesResult, EngineError> {
     let ProfilesInputs {
         series,
-        strategies: [baseline, adverse, maker],
+        strategies,
         config,
         costs,
     } = inputs;
+    run_profiles(
+        SeriesSource::Borrowed(series),
+        strategies,
+        config,
+        costs,
+        None,
+        observer,
+    )
+}
+
+/// Joue baseline, adverse et maker en **mode recherche** (docs S11 §8.5) : la préparation reste partagée,
+/// les trois profils reçoivent la même activation par jambe et le même filtre, et leurs compteurs de
+/// recherche sont propres (les fills diffèrent). Chaque profil a son identité de recherche : son
+/// `legs_hash` porte les valeurs de coûts résolues de ses jambes.
+///
+/// # Erreurs
+///
+/// Celles de [`run_portfolio_profiles`] et de
+/// [`run_portfolio_research`](super::run_portfolio_research).
+pub fn run_portfolio_profiles_research(
+    inputs: ProfilesInputs<'_>,
+    research: &ResearchSpec<'_>,
+    observer: &mut dyn LoopObserver,
+) -> Result<ProfilesResult, EngineError> {
+    let ProfilesInputs {
+        series,
+        strategies,
+        config,
+        costs,
+    } = inputs;
+    run_profiles(
+        SeriesSource::Borrowed(series),
+        strategies,
+        config,
+        costs,
+        Some(research),
+        observer,
+    )
+}
+
+/// Entrées de [`run_portfolio_profiles_research_owned`] : comme [`ProfilesInputs`], mais les séries sont
+/// **possédées**.
+pub struct OwnedProfilesInputs<'a> {
+    pub series: Vec<(String, Columns)>,
+    pub strategies: [Vec<Box<dyn Strategy>>; 3],
+    pub config: PortfolioConfig<'a>,
+    pub costs: CostSetup<'a>,
+}
+
+/// Comme [`run_portfolio_profiles_research`], en consommant les colonnes (docs S11 §12.2, parade 1). Le
+/// résultat est identique au bit.
+///
+/// # Erreurs
+///
+/// Celles de [`run_portfolio_profiles_research`].
+pub fn run_portfolio_profiles_research_owned(
+    inputs: OwnedProfilesInputs<'_>,
+    research: &ResearchSpec<'_>,
+    observer: &mut dyn LoopObserver,
+) -> Result<ProfilesResult, EngineError> {
+    let OwnedProfilesInputs {
+        series,
+        strategies,
+        config,
+        costs,
+    } = inputs;
+    run_profiles(
+        SeriesSource::Owned(series),
+        strategies,
+        config,
+        costs,
+        Some(research),
+        observer,
+    )
+}
+
+fn run_profiles(
+    source: SeriesSource<'_>,
+    strategies: [Vec<Box<dyn Strategy>>; 3],
+    config: PortfolioConfig<'_>,
+    costs: CostSetup<'_>,
+    research: Option<&ResearchSpec<'_>>,
+    observer: &mut dyn LoopObserver,
+) -> Result<ProfilesResult, EngineError> {
+    let [baseline, adverse, maker] = strategies;
     check_cost_config(&config)?;
     let checked = check_config(&baseline, &config)?;
+    if let Some(spec) = research {
+        check_research(spec, &config)?;
+    }
     for other in [&adverse, &maker] {
         check_config(other, &config)?;
         if !same_declaration(&baseline, other) {
@@ -267,8 +353,12 @@ pub fn run_portfolio_profiles(
     ];
 
     // Préparation : une seule fois, comptée ici et nulle part ailleurs.
-    let loaded = load(series, &config, checked.uses_regime)?;
-    let shared = share(&loaded, &baseline, &config, &checked)?;
+    let loaded = load_from(source, &config, checked.uses_regime)?;
+    let shared = if research.is_some() {
+        share_research(&loaded, &baseline, &config, &checked)?
+    } else {
+        share(&loaded, &baseline, &config, &checked)?
+    };
     let mut prep = PrepStats::default();
     prep.record(&loaded, &shared);
 
@@ -278,6 +368,7 @@ pub fn run_portfolio_profiles(
         checked: &checked,
         config: &config,
         costs: &costs,
+        research,
     };
     let [tf_baseline, tf_adverse, tf_maker] = decision_tfs;
     let run_baseline = play_cost_profile(
@@ -333,6 +424,7 @@ pub fn run_portfolio_profile(
         checked: &checked,
         config: &config,
         costs: &costs,
+        research: None,
     };
     let run = play_cost_profile(&prepared, profile, strategies, decision_tf, observer)?;
     Ok((run, prep))

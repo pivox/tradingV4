@@ -5,10 +5,11 @@ declare(strict_types=1);
 namespace App\Run\Dto;
 
 /**
- * Contenu de `metrics.json` (schémas `tv4-metrics-s8`, `tv4-metrics-s9` et `tv4-metrics-s10`), sans le bloc `config`
+ * Contenu de `metrics.json` (schémas `tv4-metrics-s8`, `tv4-metrics-s9`, `tv4-metrics-s10` et `tv4-metrics-s11`), sans le bloc `config`
  * repris par le manifeste. Les blocs propres au portefeuille (s9) valent null pour un run s8 ou s'ils sont absents.
  * Un run s10 est un run portefeuille qui porte en plus les blocs `costs`, `cost_arithmetic` et `cost_counters`
- * (obligatoires en s10, null avant).
+ * (obligatoires en s10, null avant). Un run s11 (dataset de recherche par bloc) est un run portefeuille qui porte en plus
+ * le bloc obligatoire `research` ; il porte les blocs de coûts si et seulement s'il a été joué avec un profil (`--costs`).
  * `signalsRejectedMaxPositions` (s9) compte les refus du plafond de positions, inclus dans `signalsRejected`
  * mais hors de `rejectedByReason` ; null pour un run s8.
  */
@@ -77,18 +78,25 @@ final readonly class Metrics
         public ?CostsBlock $costs = null,
         public ?CostArithmetic $costArithmetic = null,
         public ?CostCounters $costCounters = null,
+        public ?ResearchInfo $research = null,
     ) {
     }
 
-    /** Vrai pour un run du mode portefeuille (schémas s9 et s10). */
+    /** Vrai pour un run du mode portefeuille (schémas s9, s10 et s11). */
     public function isPortfolio(): bool
     {
-        return 'tv4-metrics-s9' === $this->schema || $this->isCosts();
+        return 'tv4-metrics-s9' === $this->schema || $this->isCosts() || $this->isResearch();
     }
 
-    /** Vrai pour un run joué avec un profil de coûts (schéma s10). */
+    /** Vrai pour un run joué avec un profil de coûts (schéma s10, ou s11 avec les blocs de coûts). */
     public function isCosts(): bool
     {
-        return 'tv4-metrics-s10' === $this->schema;
+        return null !== $this->costs;
+    }
+
+    /** Vrai pour un run de recherche sur un dataset de bloc (schéma s11). */
+    public function isResearch(): bool
+    {
+        return 'tv4-metrics-s11' === $this->schema;
     }
 }

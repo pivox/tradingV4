@@ -1,0 +1,93 @@
+<section id="lignes" class="section" aria-labelledby="lignes-titre">
+  <h2 id="lignes-titre">Deux lignes</h2>
+  {% set full = lines.line('full') %}
+  {% set okx = lines.line('okx_usdc') %}
+  {% if full.research.isUnguarded or okx.research.isUnguarded %}
+  <p class="callout-garde"><strong>Lecture protégée sans garde-fou.</strong> Ces runs ont été joués avec l'option cachée <code>--unguarded-protected-read</code> : les garde-fous de S12 ne sont pas livrés, aucune lecture n'est inscrite (docs/specs/s11.md §9.5).</p>
+  {% endif %}
+  <p class="note">Deux runs du même dataset de bloc <strong>{{ lines.block }}</strong> et de la même configuration : l'univers complet (<code>full</code>) et le sous-ensemble tradable sur OKX en USDC (<code>okx_usdc</code>), joués chacun à part (le cash partagé, <code>max_positions</code> et les trous de cotation dépendent des jambes présentes). La survivance résiduelle est l'écart <code>full</code> moins <code>okx_usdc</code> que <code>tv4</code> a écrit dans <code>lines.json</code> ; le control plane ne recalcule rien. Les métriques de trades portent sur les trades conservés.</p>
+
+  {% for profile in lines.profileNames %}
+  {% set fs = full.stats(profile) %}
+  {% set os = okx.stats(profile) %}
+  {% set rd = lines.residualOf(profile) %}
+  <div class="scroll">
+  <table class="data">
+    <caption>{% if lines.isProfiles %}Profil <code>{{ profile }}</code>{% else %}Résultat des deux lignes{% endif %}</caption>
+    <thead>
+      <tr>
+        <th scope="col">Ligne</th><th scope="col" class="num">Trades conservés</th><th scope="col" class="num">Purgés</th>
+        <th scope="col" class="num">Espérance (R)</th><th scope="col" class="num">Espérance nette</th><th scope="col" class="num">Profit factor</th>
+        <th scope="col" class="num">Rendement total</th><th scope="col" class="num">Drawdown max (1h)</th><th scope="col">Verdict du run</th>
+      </tr>
+    </thead>
+    <tbody>
+      <tr>
+        <th scope="row">Univers complet (<code>full</code>)</th>
+        <td class="num">{{ fs.nTrades|int }}</td><td class="num">{{ fs.tradesPurged|int }}</td>
+        <td class="num">{{ fs.expectancyR|num(2) }}</td>
+        <td class="num {{ fs.expectancyNet is not null and fs.expectancyNet < 0 ? 'neg' : 'pos' }}">{{ fs.expectancyNet|money }}</td>
+        <td class="num">{{ fs.profitFactor|num(2) }}</td>
+        <td class="num {{ fs.returnTotal < 0 ? 'neg' : 'pos' }}">{{ fs.returnTotal|pct }}</td>
+        <td class="num">{{ fs.maxDrawdown1h|pct }}</td>
+        <td><code>{{ fs.verdict }}</code></td>
+      </tr>
+      <tr>
+        <th scope="row">Sous-ensemble OKX USDC (<code>okx_usdc</code>)</th>
+        <td class="num">{{ os.nTrades|int }}</td><td class="num">{{ os.tradesPurged|int }}</td>
+        <td class="num">{{ os.expectancyR|num(2) }}</td>
+        <td class="num {{ os.expectancyNet is not null and os.expectancyNet < 0 ? 'neg' : 'pos' }}">{{ os.expectancyNet|money }}</td>
+        <td class="num">{{ os.profitFactor|num(2) }}</td>
+        <td class="num {{ os.returnTotal < 0 ? 'neg' : 'pos' }}">{{ os.returnTotal|pct }}</td>
+        <td class="num">{{ os.maxDrawdown1h|pct }}</td>
+        <td><code>{{ os.verdict }}</code></td>
+      </tr>
+      <tr class="ligne-residuelle">
+        <th scope="row">Survivance résiduelle (<code>full</code> − <code>okx_usdc</code>)</th>
+        <td class="num">{{ rd.nTrades|int }}</td><td class="num">—</td>
+        <td class="num">{{ rd.expectancyR|num(2) }}</td>
+        <td class="num">{{ rd.expectancyNet|money }}</td>
+        <td class="num">—</td>
+        <td class="num">{{ rd.returnTotal|pct }}</td>
+        <td class="num">{{ rd.maxDrawdown1h|pct }}</td>
+        <td>—</td>
+      </tr>
+    </tbody>
+  </table>
+  </div>
+  {% endfor %}
+
+  <div class="cols">
+    <table class="kv">
+      <caption>Identité du dossier</caption>
+      <tbody>
+        <tr><th scope="row">Bloc</th><td><code>{{ lines.block }}</code></td></tr>
+        <tr><th scope="row"><code>dataset_hash</code></th><td><code class="hash">{{ lines.datasetHash }}</code></td></tr>
+        <tr><th scope="row"><code>universe_window_hash</code></th><td>{% if lines.universeWindowHash is null %}aucun (univers fixe){% else %}<code class="hash">{{ lines.universeWindowHash }}</code>{% endif %}</td></tr>
+        {% for profile, hash in lines.configHash %}
+        <tr><th scope="row"><code>config_hash</code>{% if lines.isProfiles %} {{ profile }}{% endif %}</th><td><code class="hash">{{ hash }}</code></td></tr>
+        {% endfor %}
+        <tr><th scope="row">Capital initial</th><td class="num">{{ lines.initialCash|money }}</td></tr>
+        <tr><th scope="row"><code>lines_id</code></th><td><code class="hash">{{ lines.linesId }}</code></td></tr>
+      </tbody>
+    </table>
+    <table class="kv">
+      <caption>Sous-ensemble OKX USDC</caption>
+      <tbody>
+        <tr><th scope="row">Nature</th><td><code>{{ lines.subsetKind }}</code></td></tr>
+        <tr><th scope="row"><code>subset_hash</code></th><td><code class="hash">{{ lines.subsetHash }}</code></td></tr>
+        <tr><th scope="row">Bases</th><td>{% for base in lines.subsetBases %}<code>{{ base }}</code>{% if not loop.last %}, {% endif %}{% else %}aucune{% endfor %}</td></tr>
+      </tbody>
+    </table>
+    <table class="kv">
+      <caption>Runs des lignes</caption>
+      <tbody>
+        {% for entry in lines.lines %}
+        <tr><th scope="row"><code>{{ entry.line }}</code></th><td><code class="hash">{{ entry.id }}</code> (<code>{{ entry.dir }}/</code>{% if entry.isProfiles %}, dossier de profils{% endif %})</td></tr>
+        <tr class="sub"><th scope="row">jambes</th><td>{% for leg in entry.legs %}<code>{{ leg }}</code>{% if not loop.last %}, {% endif %}{% else %}aucune{% endfor %}</td></tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  <p class="note">La fiche complète qui suit est celle de la ligne <strong>full</strong>{% if lines.isProfiles %}, profil <strong>baseline</strong>{% endif %}. La fiche de la ligne <code>okx_usdc</code> se rend depuis son sous-dossier (<code>tv4:report &lt;dossier&gt;/okx_usdc</code>). Les deux lignes ont le même <code>config_hash</code> : seule l'identité de recherche et le <code>run_id</code> diffèrent.</p>
+</section>

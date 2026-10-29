@@ -1,0 +1,132 @@
+{
+ "block": "HOLDOUT",
+ "config_hash": {
+  "adverse": "c0de1302c0de1302c0de1302c0de1302c0de1302c0de1302c0de1302c0de1302",
+  "baseline": "c0de1301c0de1301c0de1301c0de1301c0de1301c0de1301c0de1301c0de1301",
+  "maker": "c0de1303c0de1303c0de1303c0de1303c0de1303c0de1303c0de1303c0de1303"
+ },
+ "dataset_hash": "blake3:da7a1301da7a1301da7a1301da7a1301da7a1301da7a1301da7a1301da7a1301",
+ "initial_cash": 300.0,
+ "lines": [
+  {
+   "by_profile": {
+    "adverse": {
+     "expectancy_net": -2.9290453622,
+     "expectancy_r": -0.7277811525,
+     "identity_hash": "blake3:1de713021de713021de713021de713021de713021de713021de713021de71302",
+     "max_drawdown_1h": 0.0913309601,
+     "n_trades": 9,
+     "profit_factor": 0.2712117291,
+     "return_total": -0.0449440275,
+     "trades_purged": 1,
+     "verdict": "rejected_negative_expectancy"
+    },
+    "baseline": {
+     "expectancy_net": -1.7529634178,
+     "expectancy_r": -0.7277811525,
+     "identity_hash": "blake3:1de713011de713011de713011de713011de713011de713011de713011de71301",
+     "max_drawdown_1h": 0.0566705721,
+     "n_trades": 9,
+     "profit_factor": 0.4164648387,
+     "return_total": -0.0091591262,
+     "trades_purged": 1,
+     "verdict": "rejected_negative_expectancy"
+    },
+    "maker": {
+     "expectancy_net": -1.46037855,
+     "expectancy_r": -0.7277811525,
+     "identity_hash": "blake3:1de713031de713031de713031de713031de713031de713031de713031de71303",
+     "max_drawdown_1h": 0.0493554678,
+     "n_trades": 9,
+     "profit_factor": 0.4974165765,
+     "return_total": 0.0010461944,
+     "trades_purged": 1,
+     "verdict": "rejected_negative_expectancy"
+    }
+   },
+   "dir": "full",
+   "legs": [
+    "BTC-USD",
+    "ETH-USD"
+   ],
+   "line": "full",
+   "profiles_id": "9f0f13019f0f13019f0f13019f0f13019f0f13019f0f13019f0f13019f0f1301"
+  },
+  {
+   "by_profile": {
+    "adverse": {
+     "expectancy_net": -2.377062846,
+     "expectancy_r": -0.628916805,
+     "identity_hash": "blake3:1de723021de723021de723021de723021de723021de723021de723021de72302",
+     "max_drawdown_1h": 0.0589746944,
+     "n_trades": 5,
+     "profit_factor": 0.4456792144,
+     "return_total": 0.0033096192,
+     "trades_purged": 1,
+     "verdict": "rejected_negative_expectancy"
+    },
+    "baseline": {
+     "expectancy_net": -0.78922132,
+     "expectancy_r": -0.628916805,
+     "identity_hash": "blake3:1de723011de723011de723011de723011de723011de723011de723011de72301",
+     "max_drawdown_1h": 0.0336083996,
+     "n_trades": 5,
+     "profit_factor": 0.7172870274,
+     "return_total": 0.0302760877,
+     "trades_purged": 1,
+     "verdict": "rejected_negative_expectancy"
+    },
+    "maker": {
+     "expectancy_net": -0.349022242,
+     "expectancy_r": -0.628916805,
+     "identity_hash": "blake3:1de723031de723031de723031de723031de723031de723031de723031de72303",
+     "max_drawdown_1h": 0.0291880679,
+     "n_trades": 5,
+     "profit_factor": 0.8665135536,
+     "return_total": 0.0390405136,
+     "trades_purged": 1,
+     "verdict": "rejected_negative_expectancy"
+    }
+   },
+   "dir": "okx_usdc",
+   "legs": [
+    "BTC-USD"
+   ],
+   "line": "okx_usdc",
+   "profiles_id": "9f0f23019f0f23019f0f23019f0f23019f0f23019f0f23019f0f23019f0f2301"
+  }
+ ],
+ "lines_id": "11ae480111ae480111ae480111ae480111ae480111ae480111ae480111ae4801",
+ "residual_survivorship": {
+  "adverse": {
+   "expectancy_net": -0.5519825162,
+   "expectancy_r": -0.0988643475,
+   "max_drawdown_1h": 0.0323562657,
+   "n_trades": 4,
+   "return_total": -0.0482536467
+  },
+  "baseline": {
+   "expectancy_net": -0.9637420978,
+   "expectancy_r": -0.0988643475,
+   "max_drawdown_1h": 0.0230621725,
+   "n_trades": 4,
+   "return_total": -0.0394352139
+  },
+  "maker": {
+   "expectancy_net": -1.111356308,
+   "expectancy_r": -0.0988643475,
+   "max_drawdown_1h": 0.0201673999,
+   "n_trades": 4,
+   "return_total": -0.0379943192
+  }
+ },
+ "schema": "tv4-lines-v1",
+ "subset": {
+  "bases": [
+   "BTC"
+  ],
+  "kind": "okx_usdc_tradable",
+  "subset_hash": "blake3:5ab513015ab513015ab513015ab513015ab513015ab513015ab513015ab51301"
+ },
+ "universe_window_hash": "blake3:b10c1301b10c1301b10c1301b10c1301b10c1301b10c1301b10c1301b10c1301"
+}

@@ -53,6 +53,20 @@
 //! 3. `Strategy::decision_tf()` (défaut : le plus grand TF déclaré) fixe le TTL maker et entre dans le hash
 //!    v2 seulement.
 //!
+//! Ajouts de S11 (mode recherche, docs S11 §8) :
+//!
+//! 1. [`run_portfolio_research`] et [`run_portfolio_profiles_research`] jouent un portefeuille sur un
+//!    dataset de bloc : activation par jambe, enregistrement de la grille à partir de `decision_start`,
+//!    filtre des entrées (fenêtre de décision, trimestre de l'univers, exclusion qualité du TF de
+//!    décision) avec refus comptés, annulation des entrées en attente d'une jambe qui sort de l'univers.
+//!    Les points d'entrée existants gardent leur comportement au bit (goldens `portfolio_2legs` et
+//!    `portfolio_profiles`).
+//! 2. [`ResearchSpec`] est séparé de [`PortfolioConfig`] et de [`PortfolioInputs`], qui ne changent pas ;
+//!    `PortfolioResult::research` porte le [`ResearchResult`].
+//! 3. Le `config_hash` d'un run de recherche reste celui de la configuration gelée : bloc `research`
+//!    facultatif de [`PortfolioRunConfig`] et trois tables par jambe vidées. Ce qui distingue deux runs
+//!    est la [`ResearchIdentity`], hachée à part. `REFERENCE_JSON` des générations v1 et v2 est inchangé.
+//!
 //! Écarts d'implémentation (S6) à S3 :
 //!
 //! 1. Le `CellConfig` porte l'`InstrumentRules` (tick, lot, minimums), qui entre dans le `config_hash`
@@ -88,23 +102,31 @@ pub mod portfolio_config;
 pub mod priority;
 pub mod profiles;
 mod regime;
+pub mod research;
 mod run;
 pub mod signals;
 
 pub use config::{CellConfig, DEFAULT_MIN_TRADES, RunConfig, StrategyRecord};
 pub use portfolio::{
-    LegResult, PortfolioInputs, PortfolioResult, PrepStats, PriorityStats, RegimeStats,
-    run_portfolio, run_portfolio_counted, run_portfolio_observed,
+    LegResult, OwnedPortfolioInputs, PortfolioInputs, PortfolioResult, PrepStats, PriorityStats,
+    RegimeStats, run_portfolio, run_portfolio_counted, run_portfolio_observed,
+    run_portfolio_research, run_portfolio_research_counted, run_portfolio_research_owned,
 };
 pub use portfolio_config::{
     CostsHashed, DEFAULT_MAX_POSITIONS, DEFAULT_QUOTE_GAP_MS, FeeGridHashed, LIQUIDITY_WINDOW_DAYS,
     MAX_POSITIONS_LIMIT, MinOrderBump, PORTFOLIO_SCHEMA, PORTFOLIO_SCHEMA_V2, PRIORITY_RULE,
-    PortfolioBlock, PortfolioConfig, PortfolioRunConfig, RegimeRecord,
+    PURGE_RULE, PortfolioBlock, PortfolioConfig, PortfolioRunConfig, RegimeRecord, ResearchHashed,
+    UniverseSpec,
 };
 pub use priority::RankTable;
 pub use profiles::{
-    CostSetup, ProfileInputs, ProfileRun, ProfilesInputs, ProfilesResult, run_portfolio_profile,
-    run_portfolio_profiles,
+    CostSetup, OwnedProfilesInputs, ProfileInputs, ProfileRun, ProfilesInputs, ProfilesResult,
+    run_portfolio_profile, run_portfolio_profiles, run_portfolio_profiles_research,
+    run_portfolio_profiles_research_owned,
+};
+pub use research::{
+    Line, ResearchIdentity, ResearchLegCounters, ResearchLegResult, ResearchResult, ResearchSpec,
+    legs_hash,
 };
 pub use run::{CellResult, run_cell, run_cell_mtf, run_cell_observed};
 pub use signals::{EngineFunnel, SignalClass, SignalRejections, StrategyFunnelCounts};
@@ -112,6 +134,7 @@ pub use signals::{EngineFunnel, SignalClass, SignalRejections, StrategyFunnelCou
 use thiserror::Error;
 
 use crate::indicators::IndicatorError;
+use crate::model::blocks::Block;
 use crate::model::{ModelError, Timeframe, Ts};
 use crate::mtf::MtfError;
 use crate::sim::SimError;
@@ -251,6 +274,25 @@ pub enum EngineError {
         "les trois jeux de stratégies des profils diffèrent (identifiant, version, paramètres, indicateurs, timeframes, timeframe de décision, régime ou warmup) : les colonnes d'indicateurs sont calculées une fois, sur le jeu du profil baseline"
     )]
     ProfileStrategiesDiffer,
+
+    // --- Mode recherche (S11) ---
+    #[error(
+        "le mode recherche exige `zero_volume_no_fill = true` : une bougie à volume nul (synthétique ou réelle) ne doit jamais remplir"
+    )]
+    ResearchNeedsZeroVolumeRule,
+
+    #[error(
+        "le trimestre {quarter} recoupe la fenêtre de décision mais n'est pas dans l'univers fourni"
+    )]
+    UniverseQuarterMissing { quarter: String },
+
+    #[error("fenêtre de décision invalide pour le bloc {block} : {reason}")]
+    ResearchWindow { block: Block, reason: &'static str },
+
+    #[error(
+        "aucune jambe ne devient vivante : le warmup de chaque jambe (et la SMA200 du régime) dépasse les données du dataset"
+    )]
+    ResearchNoLiveLeg,
 }
 
 /// Crochet appelé exactement deux fois par run, juste avant et juste après la boucle 1m. Il permet

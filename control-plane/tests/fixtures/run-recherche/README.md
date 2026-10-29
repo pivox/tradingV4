@@ -1,0 +1,13 @@
+# Run de recherche d'exemple (données fabriquées, schémas s11)
+
+Ce dossier est un **run écrit à la main pour les tests** du control plane, selon `docs/specs/s11.md` §9.2. Ce n'est **ni une sortie de `tv4`, ni un résultat de backtest, ni des données de marché** : aucune valeur ne doit être lue comme un résultat de stratégie. Il sera remplacé par la sortie réelle du golden Rust `tv4/tests/golden_runs/research_lines/` (lot E) avant la PR de S11.
+
+- Il suit les schémas `tv4-manifest-s11` et `tv4-metrics-s11` : la forme d'un run s9 plus le bloc `research` obligatoire (bloc, fenêtre de décision, univers trimestriel, ligne, identité, purge, refus d'entrée de la recherche, exclusions qualité), `data.block` et `data.decision_window` dans le manifeste, et `research_inputs` (chemins d'entrée, jamais dans `metrics.json`).
+- Il dérive du run portefeuille s9 (`../run-portefeuille/`) : mêmes dix trades, décalés au 2026-07-01 (bloc FORWARD, dataset de chauffe de 210 jours avant le bloc). Le lot 10 est un trade `end_of_window` : il est **purgé**. `trades.csv` garde donc les dix lignes, et les métriques de trades (effectif, espérance, profit factor, distribution, répartitions par paire, année et type de sortie, `funnel_by_pair`, exécutabilité et G1) sont recalculées sur les neuf trades conservés, alors que les métriques d'equity (PnL net, réalisé, marked, rendement, frais, slippage, exposition) portent sur les dix, `research.purge.pnl_net_purged` étant le PnL du trade purgé. Un script jetable (non versionné) a fait ces calculs et reconstruit `equity.csv` (marche à chaque sortie, depuis `decision_start`) et les drawdowns.
+- Config en mode recherche (docs/specs/s11.md §8.6) : `portfolio.universe = []` et `instruments = {}` (les tables par jambe passent dans l'identité de recherche), plus `config.research` (version des blocs, TF de décision, règle de purge, spécification de l'univers).
+- Les refus d'entrée de la recherche sont inventés : cinq signaux refusés avant `decision_start` (trois pour BTC-USD, deux pour ETH-USD), ajoutés aux signaux d'entrée de chaque paire. Les exclusions qualité d'ETH-USD portent sur 1h, 4h et 1d, pas sur le TF de décision (15m) : aucun refus pour qualité.
+- Les **hashes sont factices** (motifs hexadécimaux répétés, de forme valide) : le control plane ne recalcule aucun hash (rôle de `tv4 verify`).
+
+## Conformité aux clés réelles
+
+`tests/Run/GoldenResearchLinesTest.php` lit le golden `tv4/tests/golden_runs/research_lines/` et reste marqué « skipped » (avec le chemin attendu) tant que ce dossier n'existe pas. Après un changement de schéma côté `tv4`, comparer les chemins de clés de cette fixture à ceux du golden et compléter la fixture.

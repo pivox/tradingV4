@@ -14,6 +14,8 @@ use App\Run\Json\JsonObject;
 /**
  * Lit un dossier de profils de coûts (docs/specs/s10.md §12.4) : `profiles.json` (schéma `tv4-profiles-v1`) et les
  * trois sous-dossiers `baseline/`, `adverse/` et `maker/`, chacun lu comme un run s10 par {@see RunDirectoryReader}.
+ * Un dossier de profils d'un run de recherche (docs/specs/s11.md §9.6) a la même forme avec des runs s11 : les trois
+ * runs doivent alors être de la même génération, du même bloc, de la même ligne et de la même fenêtre de décision.
  *
  * Aucun hash ni aucune étiquette n'est recalculé. Le lecteur recoupe seulement ce que `profiles.json` répète du
  * manifeste et des métriques de chaque run (identifiants, hashes, rôle, profil, capital, graine, grille, effectif) : un écart
@@ -126,8 +128,58 @@ final class ProfilesDirectoryReader
             $this->check($j, $summary, $index, $run);
             $runs[$summary->name] = $run;
         }
+        $this->checkSameGeneration($summaries, $runs);
 
         return $runs;
+    }
+
+    /**
+     * Les trois profils sont joués sur le même dataset avec la même configuration : leurs runs sont de la même
+     * génération (s10, ou s11) et, en s11, du même bloc, de la même ligne et de la même fenêtre de décision.
+     *
+     * @param list<ProfileSummary>     $summaries
+     * @param array<string, RunReport> $runs
+     */
+    private function checkSameGeneration(array $summaries, array $runs): void
+    {
+        $first = $summaries[0] ?? null;
+        $reference = null === $first ? null : ($runs[$first->name] ?? null);
+        if (null === $first || null === $reference) {
+            return;
+        }
+        $expected = $reference->metrics->research;
+        foreach ($summaries as $index => $summary) {
+            $metrics = $runs[$summary->name]->metrics;
+            $path = sprintf('profiles[%d].dir', $index);
+            if ($metrics->schema !== $reference->metrics->schema) {
+                throw InvalidRunException::invalidValue(
+                    self::FILE,
+                    $path,
+                    sprintf(
+                        '"%s" n\'est pas un run de la même génération que "%s" (%s contre %s)',
+                        $summary->dir,
+                        $first->dir,
+                        $metrics->schema,
+                        $reference->metrics->schema,
+                    ),
+                );
+            }
+            $research = $metrics->research;
+            if (null === $research || null === $expected) {
+                continue;
+            }
+            $same = $research->block === $expected->block
+                && $research->line === $expected->line
+                && $research->decisionWindow->startMs === $expected->decisionWindow->startMs
+                && $research->decisionWindow->endMs === $expected->decisionWindow->endMs;
+            if (!$same) {
+                throw InvalidRunException::invalidValue(
+                    self::FILE,
+                    $path,
+                    sprintf('"%s" n\'a pas le bloc, la ligne et la fenêtre de décision de "%s"', $summary->dir, $first->dir),
+                );
+            }
+        }
     }
 
     private function summary(JsonObject $o, int $index): ProfileSummary
@@ -198,7 +250,13 @@ final class ProfilesDirectoryReader
         $metrics = $run->metrics;
         $costs = $metrics->costs;
         if (null === $costs) {
-            throw InvalidRunException::invalidValue(self::FILE, $at('dir'), sprintf('"%s" n\'est pas un run s10', $summary->dir));
+            throw InvalidRunException::invalidValue(
+                self::FILE,
+                $at('dir'),
+                $metrics->isResearch()
+                    ? sprintf('"%s" est un run s11 sans profil de coûts (bloc costs absent)', $summary->dir)
+                    : sprintf('"%s" n\'est pas un run s10', $summary->dir),
+            );
         }
 
         $checks = [

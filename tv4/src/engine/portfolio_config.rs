@@ -23,11 +23,21 @@
 //! ni `slippage_bps` : les frais et les coûts sont dans le bloc `costs` ([`CostsHashed`]), qui porte le
 //! profil, la grille nommée, la graine, le TF de décision, le mode d'entrée et les valeurs résolues de
 //! chaque jambe. Les champs absents de chaque génération ne sont pas sérialisés (`None`).
+//!
+//! # Mode recherche (docs S11 §8.6)
+//!
+//! Un run de recherche garde le schéma de sa génération (v1 ou v2) et ajoute le bloc facultatif
+//! `research` ([`ResearchHashed`]) ; les trois tables par jambe (`portfolio.universe`, `instruments`,
+//! `costs.legs`) y sont **vidées** ([`PortfolioRunConfig::into_research`]). Le `config_hash` reste ainsi
+//! l'identité de la configuration gelée, la même sur tous les blocs et sur les deux lignes ; ce qui
+//! distingue deux runs est l'identité de recherche, hachée à part (`engine::research`). Hors recherche le
+//! champ vaut `None` et n'est pas sérialisé : `REFERENCE_JSON` des deux générations est inchangé.
 
 use std::collections::BTreeMap;
 
 use serde::Serialize;
 
+use crate::model::blocks::BLOCKS_VERSION;
 use crate::model::costs::{
     COSTS_RULES_VERSION, CostProfileName, EntryHashed, LegCostHashed, LegCostRecord,
 };
@@ -109,6 +119,54 @@ pub struct CostsHashed {
     pub seed: u64,
 }
 
+/// Règle de purge des trades ouverts à la fin de la fenêtre d'un run de recherche (docs S11 §3.4), telle
+/// que le hash la décrit.
+pub const PURGE_RULE: &str = "end_of_window_v1";
+
+/// Forme de l'univers d'un run de recherche telle que le hash la décrit (docs S11 §8.6) : la règle qui
+/// l'engendre, jamais les membres lus.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+#[serde(tag = "mode", rename_all = "snake_case")]
+pub enum UniverseSpec {
+    /// Univers fixe : les symboles demandés (`--symbols`), **avant** le filtre d'une ligne. Le moteur les
+    /// trie avant de les hacher.
+    Fixed { symbols: Vec<String> },
+    /// Univers trimestriel : seul `rules_hash` (les règles de sélection) entre dans le hash, pas les
+    /// trimestres lus, qui sont dans l'identité de recherche (`universe_window_hash`).
+    Quarterly { rules_hash: String },
+}
+
+/// Bloc `research` de l'objet haché d'un run de recherche (docs S11 §8.6). Absent hors recherche, donc
+/// le JSON canonique des générations v1 et v2 est inchangé à l'octet.
+///
+/// Rien ici ne dépend du bloc, de la fenêtre, des trimestres lus, de la ligne ni du sous-ensemble : une
+/// même configuration garde le même `config_hash` sur DEV, VALIDATION et HOLDOUT et sur ses deux lignes
+/// (point n° 2 de la spécification, `docs/specs/s11.md` §16).
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+pub struct ResearchHashed {
+    /// Version des frontières de blocs (`model::blocks::BLOCKS_VERSION`).
+    pub blocks_version: &'static str,
+    pub universe_spec: UniverseSpec,
+    /// TF dont les exclusions qualité sont lues.
+    pub decision_tf: Timeframe,
+    pub purge_rule: &'static str,
+}
+
+impl ResearchHashed {
+    /// Bloc haché d'un run de recherche : version des blocs et règle de purge sont des constantes.
+    pub fn new(mut universe_spec: UniverseSpec, decision_tf: Timeframe) -> ResearchHashed {
+        if let UniverseSpec::Fixed { symbols } = &mut universe_spec {
+            symbols.sort();
+        }
+        ResearchHashed {
+            blocks_version: BLOCKS_VERSION,
+            universe_spec,
+            decision_tf,
+            purge_rule: PURGE_RULE,
+        }
+    }
+}
+
 /// Objet haché du `config_hash` du mode portefeuille. **Sans capital initial.**
 ///
 /// `fees` et `slippage_bps` n'existent que dans le schéma v1 (chemin hérité) ; `costs` n'existe que dans
@@ -133,9 +191,25 @@ pub struct PortfolioRunConfig {
     pub instruments_hash: Option<String>,
     pub min_trades: u32,
     pub portfolio: PortfolioBlock,
+    /// Bloc de recherche (docs S11 §8.6), `None` hors recherche : le champ n'est alors pas sérialisé.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub research: Option<ResearchHashed>,
 }
 
 impl PortfolioRunConfig {
+    /// Passe l'objet haché en mode recherche (docs S11 §8.6) : ajoute le bloc `research` et **vide** les
+    /// trois tables par jambe (`portfolio.universe`, `instruments`, `costs.legs`), qui passent dans
+    /// l'identité de recherche. Le `config_hash` reste ainsi celui de la configuration gelée.
+    pub fn into_research(mut self, research: ResearchHashed) -> PortfolioRunConfig {
+        self.portfolio.universe.clear();
+        self.instruments.clear();
+        if let Some(costs) = self.costs.as_mut() {
+            costs.legs.clear();
+        }
+        self.research = Some(research);
+        self
+    }
+
     /// Hash blake3 hexadécimal du JSON canonique de la configuration.
     pub fn hash(&self) -> Result<String, ModelError> {
         hash::hash_json(self)
@@ -216,6 +290,7 @@ impl PortfolioRunConfig {
                 sizing: config.sizing,
                 universe: config.universe.to_vec(),
             },
+            research: None,
         }
     }
 

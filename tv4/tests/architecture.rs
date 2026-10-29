@@ -864,3 +864,154 @@ fn la_regle_research_est_declaree() {
         _ => panic!("règle `research` absente ou de mauvaise forme"),
     }
 }
+
+/// Les six instants de frontière des blocs (s11 §3.1), en millisecondes : début de DEV, fin de DEV,
+/// fin de l'embargo 1, fin de VALIDATION, fin de l'embargo 2, fin de HOLDOUT. Ils sont écrits en
+/// chiffres ici parce que ce test est le garde-fou de leur écriture unique dans `model/blocks.rs` ;
+/// `tests/blocks.rs` les recalcule par une conversion calendaire indépendante.
+const BLOCK_BOUNDARIES_MS: [&str; 6] = [
+    "1514764800000",
+    "1672531200000",
+    "1677628800000",
+    "1735689600000",
+    "1740787200000",
+    "1782864000000",
+];
+
+/// Code non-test d'un fichier : coupé à sa première ligne `#[cfg(test)]` (convention du dépôt : le
+/// module de tests est en fin de fichier), puis privé de ses commentaires de ligne.
+fn non_test_code(source: &str) -> String {
+    let mut kept = String::new();
+    for line in source.lines() {
+        if line.trim() == "#[cfg(test)]" {
+            break;
+        }
+        kept.push_str(line);
+        kept.push('\n');
+    }
+    strip_line_comments(&kept)
+}
+
+/// Frontières de blocs écrites dans `code` comme littéral entier, avec ou sans `_` et avec ou sans
+/// suffixe de type (`1_514_764_800_000`, `1514764800000i64`). Le mot entier compte : un nombre plus
+/// long ou un identifiant qui contient les chiffres n'est pas une frontière.
+fn block_boundaries_in(code: &str) -> Vec<&'static str> {
+    let mut found = Vec::new();
+    let is_word_char = |c: char| c.is_ascii_alphanumeric() || c == '_';
+    let mut token = String::new();
+    let flush = |token: &mut String, found: &mut Vec<&'static str>| {
+        if token.starts_with(|c: char| c.is_ascii_digit()) {
+            // Retire le suffixe de type (`i64`, `_u64`...) puis les `_` de séparation.
+            let number: String = token
+                .chars()
+                .take_while(|c| c.is_ascii_digit() || *c == '_')
+                .filter(|c| *c != '_')
+                .collect();
+            let suffix_ok = token
+                .chars()
+                .skip_while(|c| c.is_ascii_digit() || *c == '_')
+                .all(|c| c.is_ascii_alphanumeric());
+            if suffix_ok && let Some(boundary) = BLOCK_BOUNDARIES_MS.iter().find(|b| **b == number)
+            {
+                found.push(*boundary);
+            }
+        }
+        token.clear();
+    };
+    for c in code.chars() {
+        if is_word_char(c) {
+            token.push(c);
+        } else {
+            flush(&mut token, &mut found);
+        }
+    }
+    flush(&mut token, &mut found);
+    found
+}
+
+#[test]
+fn les_frontieres_de_blocs_ne_sont_ecrites_qu_une_fois() {
+    // docs/specs/s11.md §3.1 : les six instants n'apparaissent que dans model/blocks.rs, dans le code
+    // hors tests de tv4/src. Les chaînes de dates (« 2023-01-01 ») ne sont pas refusées : ce sont
+    // aussi des dates ordinaires. Les modules de tests (`#[cfg(test)]`, en fin de fichier) sont
+    // exclus : `store/layout.rs` y garde `1_735_689_600_000` (fin de 2024), sans lien avec les blocs.
+    let src = src_dir();
+    let autorise = src.join("model").join("blocks.rs");
+    let mut files = Vec::new();
+    collect_rs_files(&src, &mut files);
+    let mut violations = Vec::new();
+    for path in files.iter().filter(|path| **path != autorise) {
+        for boundary in block_boundaries_in(&non_test_code(&read(path))) {
+            violations.push(format!("{} écrit la frontière {boundary}", path.display()));
+        }
+    }
+    assert!(
+        violations.is_empty(),
+        "les frontières de blocs ne s'écrivent que dans model/blocks.rs :\n{}",
+        violations.join("\n")
+    );
+    // La règle n'est pas vacuement verte : le fichier autorisé porte bien les six instants.
+    let mut present = block_boundaries_in(&non_test_code(&read(&autorise)));
+    present.sort_unstable();
+    present.dedup();
+    assert_eq!(
+        present.len(),
+        BLOCK_BOUNDARIES_MS.len(),
+        "model/blocks.rs doit porter les six instants : {present:?}"
+    );
+}
+
+#[test]
+fn l_analyseur_de_frontieres_voit_toutes_les_ecritures() {
+    for text in [
+        "const A: i64 = 1_514_764_800_000;",
+        "let t = 1514764800000;",
+        "let t = 1_672_531_200_000_i64;",
+        "let t = 1677628800000i64;",
+        "f(1_735_689_600_000, 2)",
+        "[1_740_787_200_000]",
+        "x = 1_782_864_000_000u64 + 1",
+    ] {
+        assert_eq!(block_boundaries_in(text).len(), 1, "{text}");
+    }
+    // Un nombre plus long, un identifiant, un flottant ou un autre nombre ne sont pas des frontières.
+    for text in [
+        "let t = 15147648000000;",
+        "let t = 11514764800000;",
+        "let t = x1514764800000;",
+        "let t = 1_514_764_800_001;",
+        "let t = 0x1514764800000;",
+        "let jour = 86_400_000;",
+        "let t = 1_735_689_600_000_foo_bar-;",
+    ] {
+        assert!(block_boundaries_in(text).is_empty(), "{text}");
+    }
+}
+
+#[test]
+fn le_code_non_test_s_arrete_au_cfg_test_et_sans_commentaires() {
+    let source = "const A: i64 = 1;\n// 1_514_764_800_000 en commentaire\n\
+                  const B: i64 = 2; // 1_672_531_200_000\n\
+                  #[cfg(test)]\nmod tests {\n    const T: i64 = 1_735_689_600_000;\n}\n";
+    let code = non_test_code(source);
+    assert!(block_boundaries_in(&code).is_empty());
+    assert!(code.contains("const B"));
+    assert!(!code.contains("mod tests"));
+    // Sans coupure, la même source déclencherait la règle.
+    assert_eq!(block_boundaries_in(&strip_line_comments(source)).len(), 1);
+}
+
+#[test]
+fn les_types_de_blocs_et_d_univers_sont_dans_model() {
+    // S11, lot A : `model/blocks.rs` et `model/universe.rs` ne dépendent d'aucun autre module du
+    // moteur (règle `model` : rien). Garde-fou : les fichiers existent, donc la règle les lit.
+    for name in ["blocks.rs", "universe.rs"] {
+        let path = src_dir().join("model").join(name);
+        assert!(path.is_file(), "{} absent", path.display());
+        assert!(
+            referenced_modules(&read(&path), 2).is_empty(),
+            "{} référence un autre module du moteur",
+            path.display()
+        );
+    }
+}

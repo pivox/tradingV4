@@ -1,0 +1,29 @@
+# Univers trimestriel, test de survivance et sous-ensemble OKX (docs/specs/s11.md §4.1, §5.1 et §7.1).
+# Schéma tv4-universe-config-v1. Le BLAKE3 des octets de ce fichier est écrit dans universe.json
+# (config_file_hash) : changer une liste ici change l'identité d'un univers déjà construit.
+schema = "tv4-universe-config-v1"
+rules_version = "u1"
+
+# Cotations canoniques admises, par ordre de préférence : pour une même base, la paire USD si elle est
+# éligible, sinon la paire USDT, jamais les deux (s11 §4.2 règle 5, point n° 7 de §16).
+quotes = ["USD", "USDT"]
+
+# Bases qui ne sont pas des paires de trading : monnaies fiat puis stablecoins. Sans cette liste,
+# USDTUSD (base USDT) entrerait en tête de tout classement par volume (s11 §4.1, point n° 8 de §16).
+# Liste livrée, à compléter par le propriétaire.
+excluded_bases = [
+    # Monnaies fiat.
+    "AUD", "CAD", "CHF", "EUR", "GBP", "JPY", "USD",
+    # Stablecoins.
+    "DAI", "EURT", "PYUSD", "RLUSD", "TUSD", "USDC", "USDG", "USDS", "USDT",
+]
+
+[survivorship]
+# Préfixes de noms de paire attendus dans le dump (04 §2.2). Un motif ICN s'écrit ICN* dans le rapport
+# et correspond à toute entrée dont le nom de paire commence par ICN, toutes cotations confondues.
+expected = ["ICN", "BSV", "LUNA", "UST", "FTT", "WAVES"]
+
+# Alias explicites base Kraken canonique -> base OKX (jeton renommé), sur décision du propriétaire.
+# Vide par défaut : aucune correspondance n'est devinée, l'égalité des bases est stricte (s11 §7.1,
+# point n° 14 de §16). Exemple de forme : LUNA = "LUNC".
+[okx_base_aliases]

@@ -8,13 +8,18 @@
 //! mois), `continuity` est écrit par `tv4 ingest kraken` (S5) et absent des fichiers écrits par
 //! `tv4 ingest csv` ou en S4 (la clé n'est alors pas écrite, et un manifeste S4 se relit sans erreur),
 //! et chaque fichier d'un manifeste de dataset porte aussi `symbol`, `tf`, `period` et `snapshot`.
+//!
+//! S11 (docs/specs/s11.md §6.1) ajoute quatre champs facultatifs au manifeste de dataset, **hors de
+//! `dsh-v1`** : `block`, `decision_window`, `universe` et `quality_exclusions`. Absents, leur clé n'est
+//! pas écrite (`skip_serializing_if`) : un manifeste existant se relit et se réécrit à l'octet.
 
+use std::collections::BTreeMap;
 use std::fs;
 use std::path::Path;
 
 use serde::{Deserialize, Serialize};
 
-use crate::model::{ExchangeId, Timeframe, Ts};
+use crate::model::{Block, ExchangeId, QuarterExclusion, Timeframe, Ts, UniverseRef};
 
 use super::StoreError;
 use super::durable::{io_error, write_bytes_durable};
@@ -85,6 +90,23 @@ pub struct DatasetManifest {
     pub hash_format: String,
     pub built_at: String,
     pub tv4_version: String,
+    /// Bloc de recherche (`DEV`, `VALIDATION`, `HOLDOUT`, `FORWARD`) d'un dataset de recherche
+    /// (s11 §6.1). Hors de `dsh-v1` : le `dataset_hash` reste un hash de contenu. Absent d'un
+    /// manifeste ordinaire ; présent, il impose les trois autres champs ci-dessous (sauf `universe`,
+    /// absent en univers fixe).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub block: Option<Block>,
+    /// `[début du bloc, min(fin du bloc, fin de la fenêtre))` en RFC 3339 UTC : la fenêtre où le moteur
+    /// a le droit de décider, le reste du dataset étant la chauffe.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub decision_window: Option<[String; 2]>,
+    /// `rules_hash` et `window_hash` de l'univers trimestriel lu au build (s11 §4.4).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub universe: Option<UniverseRef>,
+    /// Par symbole, les trimestres qui recoupent la fenêtre de décision et ont au moins un TF exclu par
+    /// la qualité (s11 §4.3). Présent, éventuellement vide, sur tout manifeste qui porte `block`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub quality_exclusions: Option<BTreeMap<String, Vec<QuarterExclusion>>>,
 }
 
 /// Un fichier listé par un dataset.
@@ -274,13 +296,80 @@ mod tests {
             hash_format: "dsh-v1".to_string(),
             built_at: "2026-10-14T10:00:00Z".to_string(),
             tv4_version: "0.1.0".to_string(),
+            block: None,
+            decision_window: None,
+            universe: None,
+            quality_exclusions: None,
         };
         write_dataset_manifest(&path, &manifeste).unwrap();
-        assert!(
-            fs::read_to_string(&path)
-                .unwrap()
-                .contains("\"zero_volume_marked\"")
+        let texte = fs::read_to_string(&path).unwrap();
+        assert!(texte.contains("\"zero_volume_marked\""));
+        // Les champs de recherche absents ne laissent aucune clé : le rendu d'un manifeste ordinaire
+        // reste celui d'avant S11.
+        for cle in ["block", "decision_window", "universe", "quality_exclusions"] {
+            assert!(
+                !texte.contains(cle),
+                "clé {cle} écrite sans valeur : {texte}"
+            );
+        }
+        assert_eq!(read_dataset_manifest(&path).unwrap(), manifeste);
+        // Relu puis réécrit : mêmes octets.
+        let relu = read_dataset_manifest(&path).unwrap();
+        let autre = dir.path().join("d2.json");
+        write_dataset_manifest(&autre, &relu).unwrap();
+        assert_eq!(fs::read(&autre).unwrap(), fs::read(&path).unwrap());
+    }
+
+    #[test]
+    fn manifeste_de_recherche_aller_retour_et_cles_triees() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("r.json");
+        let mut valeurs = BTreeMap::new();
+        valeurs.insert(
+            "ETH-USD".to_string(),
+            vec![QuarterExclusion {
+                quarter: "2018-Q1".to_string(),
+                tfs: vec![Timeframe::H1, Timeframe::H4],
+            }],
         );
+        let manifeste = DatasetManifest {
+            name: "recherche".to_string(),
+            exchange: ExchangeId::Kraken,
+            symbols: vec!["ETH-USD".parse().unwrap()],
+            tfs: vec![Timeframe::M1],
+            window: [
+                "2017-06-05T00:00:00Z".to_string(),
+                "2023-01-01T00:00:00Z".to_string(),
+            ],
+            gaps_policy: GapsPolicy::ZeroVolumeMarked,
+            files: Vec::new(),
+            row_count: 1,
+            dataset_hash: format!("blake3:{}", "cd".repeat(32)),
+            hash_format: "dsh-v1".to_string(),
+            built_at: "2026-10-14T10:00:00Z".to_string(),
+            tv4_version: "0.1.0".to_string(),
+            block: Some(Block::Dev),
+            decision_window: Some([
+                "2018-01-01T00:00:00Z".to_string(),
+                "2023-01-01T00:00:00Z".to_string(),
+            ]),
+            universe: None,
+            quality_exclusions: Some(valeurs),
+        };
+        write_dataset_manifest(&path, &manifeste).unwrap();
+        let texte = fs::read_to_string(&path).unwrap();
+        assert!(texte.contains("\"block\": \"DEV\""), "{texte}");
+        assert!(texte.contains("\"quarter\": \"2018-Q1\""), "{texte}");
+        // Pas d'univers en univers fixe : la clé n'est pas écrite.
+        assert!(!texte.contains("\"universe\""), "{texte}");
+        let cles: Vec<&str> = texte
+            .lines()
+            .filter_map(|l| l.strip_prefix("  \""))
+            .filter_map(|l| l.split('"').next())
+            .collect();
+        let mut triees = cles.clone();
+        triees.sort_unstable();
+        assert_eq!(cles, triees);
         assert_eq!(read_dataset_manifest(&path).unwrap(), manifeste);
     }
 }
