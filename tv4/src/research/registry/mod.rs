@@ -8,6 +8,7 @@
 
 mod csv;
 mod policy;
+pub mod roles;
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
@@ -18,6 +19,7 @@ use crate::store::time::{civil_from_days, parse_rfc3339_utc};
 
 pub use csv::{decode_csv, encode_events, header_csv};
 pub use policy::{Admission, AdmissionBatch, ConfigSpec, Quota, TrialResult};
+pub use roles::{RoleCounts, TrialRole, role_from_family};
 
 /// Erreur explicite d'un journal ou d'une proposition ; aucun état n'est publié à l'échec.
 #[derive(Clone, Debug, PartialEq, Eq, thiserror::Error)]
@@ -332,6 +334,7 @@ pub struct Registry {
     claims: BTreeMap<ClaimId, Claim>,
     reads: BTreeMap<ReadId, Read>,
     generation: u32,
+    control_reads: BTreeSet<ReadId>,
     holdout_reads: BTreeMap<u32, usize>,
 }
 impl Registry {
@@ -340,6 +343,17 @@ impl Registry {
     }
     pub fn events(&self) -> &[Event] {
         &self.events
+    }
+    pub fn role_counts(&self) -> RoleCounts {
+        let mut counts = RoleCounts::default();
+        for trial in self.trials.values() {
+            if role_from_family(&trial.family) == Ok(TrialRole::NullControl) {
+                counts.null_controls += 1;
+            } else {
+                counts.candidates += 1;
+            }
+        }
+        counts
     }
     pub fn n(&self) -> usize {
         self.trials.len()
@@ -365,6 +379,15 @@ impl Registry {
     /// Applique un lot à une copie et retourne l'état complet validé, sans mutation à l'échec.
     pub fn with_events(&self, events: &[Event]) -> Result<Self, RegistryError> {
         let mut next = self.clone();
+        for event in events {
+            if event.status == Status::ReadReserved
+                && matches!(event.block, None | Some(Block::Dev))
+                && role_from_family(&event.family)? == TrialRole::NullControl
+                && let Some(id) = event.read_id
+            {
+                next.control_reads.insert(id);
+            }
+        }
         for event in events {
             next.apply(event)?;
         }
@@ -435,6 +458,14 @@ impl Registry {
     }
     fn apply(&mut self, event: &Event) -> Result<(), RegistryError> {
         event.metrics.validate()?;
+        let role = role_from_family(&event.family)?;
+        if role == TrialRole::NullControl
+            && (event.block.is_some_and(|b| b != Block::Dev) || event.status == Status::Claim)
+        {
+            return Err(invalid(
+                "contrôle nul interdit sur un bloc protégé ou dans un claim",
+            ));
+        }
         validate_window(event.decision_start_ms, event.decision_end_ms)?;
         if !matches!(
             event.status,
@@ -491,6 +522,12 @@ impl Registry {
                 .trials
                 .get(&event.config_hash)
                 .ok_or_else(|| invalid("événement sur configuration inconnue"))?;
+            if (role == TrialRole::NullControl
+                || role_from_family(&trial.family)? == TrialRole::NullControl)
+                && trial.family != event.family
+            {
+                return Err(invalid("rôle et famille nulle immuables"));
+            }
             let is_result = matches!(
                 event.status,
                 Status::Completed | Status::Failed | Status::ReadCompleted
@@ -599,7 +636,7 @@ impl Registry {
             }
             if read.dataset_hash != dataset_hash
                 || read.block != event.block
-                || read.hypothesis != event.hypothesis
+                || (read.hypothesis != event.hypothesis && !self.control_reads.contains(&id))
                 || read.date != event.date
                 || read.generation != event.generation
                 || read.decision_start_ms != event.decision_start_ms
@@ -702,7 +739,6 @@ impl Registry {
             || read.generation != event.generation
             || read.decision_start_ms != event.decision_start_ms
             || read.decision_end_ms != event.decision_end_ms
-            || read.hypothesis != event.hypothesis
             || event.date < read.date
             || read.completed_hashes.contains(&event.config_hash)
         {
@@ -717,7 +753,10 @@ impl Registry {
                     && e.config_hash == event.config_hash
             })
             .ok_or_else(|| invalid("réservation absente"))?;
-        if event.claim_holdout != reservation.claim_holdout || event.family != reservation.family {
+        if event.claim_holdout != reservation.claim_holdout
+            || event.family != reservation.family
+            || event.hypothesis != reservation.hypothesis
+        {
             return Err(invalid("claim du résultat incohérent"));
         }
         if event.status == Status::ReadCompleted {

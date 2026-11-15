@@ -2368,6 +2368,7 @@ dependencies = [
  "csv",
  "httpmock",
  "insta",
+ "num-bigint",
  "parquet",
  "proptest",
  "serde",

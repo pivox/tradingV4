@@ -8,6 +8,7 @@
 //! version 1.0.0. Avec `[trend]`, une entrée n'est permise que si la dernière clôture du timeframe de
 //! tendance est au-dessus de sa SMA ; la sortie n'est jamais filtrée.
 
+use super::controls::{ControlGeometry, EntryIntervention, GeometryCapabilities, GeometryState};
 use super::{
     BarContext, IndicatorKind, IndicatorSpec, OrderKind, Signal, Size, Strategy, StrategyError,
     StrategyFunnel,
@@ -119,7 +120,59 @@ impl SmaCross {
     }
 }
 
+/// Une absence de colonne ne change pas la mémoire ; un indicateur non fini la réinitialise.
+#[derive(Clone, Copy)]
+enum Evaluation {
+    Skipped,
+    Invalid,
+    Valid { diff: f64, stop: f64 },
+}
+
 impl SmaCross {
+    fn evaluate(&self, ctx: &BarContext<'_>) -> Evaluation {
+        let tf = self.p.tf;
+        if !ctx.just_closed(tf) {
+            return Evaluation::Skipped;
+        }
+        let (Some(&fast), Some(&slow), Some(&atr), Some(candle)) = (
+            ctx.ind(tf, "fast").last(),
+            ctx.ind(tf, "slow").last(),
+            ctx.ind(tf, "atr").last(),
+            ctx.last(tf),
+        ) else {
+            return Evaluation::Skipped;
+        };
+        if !(fast.is_finite() && slow.is_finite() && atr.is_finite()) {
+            return Evaluation::Invalid;
+        }
+        Evaluation::Valid {
+            diff: fast - slow,
+            stop: candle.close - self.p.stop_atr_mult * atr,
+        }
+    }
+
+    fn entry_signal(stop: f64) -> Signal {
+        Signal::EnterLong {
+            size: Size::RiskPct(RISK_PCT),
+            kind: OrderKind::Market,
+            stop: Some(stop),
+            take_profit: None,
+            tag: "cross_up",
+        }
+    }
+
+    fn inverse_crossing(&self, ctx: &BarContext<'_>, diff: f64) -> Option<Signal> {
+        if ctx.position().is_some() && self.prev_diff.is_some_and(|prev| prev >= 0.0 && diff < 0.0)
+        {
+            Some(Signal::ExitLong {
+                kind: OrderKind::Market,
+                tag: "cross_down",
+            })
+        } else {
+            None
+        }
+    }
+
     /// Sans filtre, toujours vrai. Avec filtre : la dernière clôture du timeframe de tendance est
     /// strictement au-dessus de sa SMA, qui doit être finie.
     fn trend_allows(&self, ctx: &BarContext<'_>) -> bool {
@@ -201,51 +254,44 @@ impl Strategy for SmaCross {
     }
 
     fn on_bar(&mut self, ctx: &BarContext<'_>, out: &mut Vec<Signal>) {
-        let tf = self.p.tf;
-        if !ctx.just_closed(tf) {
-            return;
-        }
-        let (Some(&f), Some(&s), Some(&atr), Some(c)) = (
-            ctx.ind(tf, "fast").last(),
-            ctx.ind(tf, "slow").last(),
-            ctx.ind(tf, "atr").last(),
-            ctx.last(tf),
-        ) else {
-            return;
-        };
-        // Warmup : aucun signal, et le premier bar valide ne peut pas déclencher de croisement.
-        if !(f.is_finite() && s.is_finite() && atr.is_finite()) {
-            self.prev_diff = None;
-            return;
-        }
-        let d = f - s;
-        let stop = c.close - self.p.stop_atr_mult * atr;
-        match (self.prev_diff, ctx.position().is_none()) {
-            (Some(p), true) if p <= 0.0 && d > 0.0 => {
-                // Un stop non positif n'a pas de sens pour un long spot : pas d'entrée. Le filtre de
-                // tendance n'est évalué qu'à ce moment, après le croisement et le stop.
-                self.raw_entry_signals += 1;
-                if stop <= 0.0 || stop.is_nan() {
-                    self.stop_not_positive += 1;
-                } else if !self.trend_allows(ctx) {
-                    self.trend_filter += 1;
-                } else {
-                    out.push(Signal::EnterLong {
-                        size: Size::RiskPct(RISK_PCT),
-                        kind: OrderKind::Market,
-                        stop: Some(stop),
-                        take_profit: None,
-                        tag: "cross_up",
-                    });
-                }
+        let (diff, stop) = match self.evaluate(ctx) {
+            Evaluation::Skipped => return,
+            Evaluation::Invalid => {
+                self.prev_diff = None;
+                return;
             }
-            (Some(p), false) if p >= 0.0 && d < 0.0 => out.push(Signal::ExitLong {
-                kind: OrderKind::Market,
-                tag: "cross_down",
-            }),
-            _ => {}
+            Evaluation::Valid { diff, stop } => (diff, stop),
+        };
+        if ctx.position().is_none() && self.prev_diff.is_some_and(|prev| prev <= 0.0 && diff > 0.0)
+        {
+            // Le filtre de tendance reste évalué après le croisement et le stop : funnel inchangé.
+            self.raw_entry_signals += 1;
+            if stop <= 0.0 || stop.is_nan() {
+                self.stop_not_positive += 1;
+            } else if !self.trend_allows(ctx) {
+                self.trend_filter += 1;
+            } else {
+                out.push(Self::entry_signal(stop));
+            }
+        } else if let Some(exit) = self.inverse_crossing(ctx, diff) {
+            out.push(exit);
         }
-        self.prev_diff = Some(d);
+        self.prev_diff = Some(diff);
+    }
+
+    fn control_geometry(&self) -> Result<Box<dyn ControlGeometry>, StrategyError> {
+        // Une géométrie commence au premier pas évalué, jamais dans le warmup des colonnes.
+        Ok(Box::new(SmaCrossGeometry {
+            strategy: Self {
+                p: self.p.clone(),
+                tfs: self.tfs.clone(),
+                params_json: self.params_json.clone(),
+                prev_diff: None,
+                raw_entry_signals: 0,
+                stop_not_positive: 0,
+                trend_filter: 0,
+            },
+        }))
     }
 
     fn funnel(&self) -> Option<StrategyFunnel> {
@@ -256,6 +302,111 @@ impl Strategy for SmaCross {
                 ("trend_filter", self.trend_filter),
             ],
         })
+    }
+}
+
+/// Géométrie de prix propre : aucun appel à `on_bar`, aucun filtrage a posteriori de ses entrées.
+struct SmaCrossGeometry {
+    strategy: SmaCross,
+}
+
+impl ControlGeometry for SmaCrossGeometry {
+    fn descriptor(&self) -> serde_json::Value {
+        let strategy = &self.strategy;
+        let p = &strategy.p;
+        let mut indicators = vec![
+            serde_json::json!({"name": "fast", "tf": p.tf, "kind": "sma", "period": p.fast}),
+            serde_json::json!({"name": "slow", "tf": p.tf, "kind": "sma", "period": p.slow}),
+            serde_json::json!({"name": "atr", "tf": p.tf, "kind": "atr", "period": ATR_PERIOD}),
+        ];
+        if let Some(trend) = p.trend {
+            indicators.push(serde_json::json!({"name": "trend", "tf": trend.tf, "kind": "sma", "period": trend.sma}));
+        }
+        let caps = self.capabilities();
+        serde_json::json!({
+            "contract_version": "1.0.0",
+            "strategy_id": ID,
+            "strategy_version": VERSION,
+            "params": strategy.params_json,
+            "decision_tf": p.tf,
+            "timeframes": strategy.tfs,
+            "indicators": indicators,
+            "warmup_bars": strategy.warmup_bars(),
+            "capabilities": {
+                "single_lot": caps.single_lot,
+                "partial_exits": caps.partial_exits,
+                "quantity_dependent": caps.quantity_dependent,
+                "reconstructible": caps.reconstructible,
+                "has_btc_filter": caps.has_btc_filter,
+            },
+            "clocks": {
+                "decision": "decision_tf_close",
+                "state": "evaluated_decision_tf_close",
+                "seed": "before_evaluation",
+                "entry": "decision_tf_close",
+                "exit": "inverse_cross_on_decision_tf_close",
+            },
+        })
+    }
+
+    fn capabilities(&self) -> GeometryCapabilities {
+        GeometryCapabilities {
+            single_lot: true,
+            partial_exits: false,
+            quantity_dependent: false,
+            reconstructible: true,
+            has_btc_filter: false,
+        }
+    }
+
+    fn capture_state(&self) -> GeometryState {
+        GeometryState::SmaCross {
+            prev_diff: self.strategy.prev_diff,
+        }
+    }
+
+    fn restore_state(&mut self, state: &GeometryState) -> Result<(), StrategyError> {
+        match state {
+            GeometryState::SmaCross { prev_diff } => {
+                self.strategy.prev_diff = *prev_diff;
+                Ok(())
+            }
+            GeometryState::Stateless => Err(StrategyError::UnsupportedControlGeometry {
+                id: ID,
+                reason: "état incompatible avec la géométrie sma_cross",
+            }),
+        }
+    }
+
+    fn advance_flat(&mut self, ctx: &BarContext<'_>) {
+        match self.strategy.evaluate(ctx) {
+            Evaluation::Skipped => {}
+            Evaluation::Invalid => self.strategy.prev_diff = None,
+            Evaluation::Valid { diff, .. } => self.strategy.prev_diff = Some(diff),
+        }
+    }
+
+    fn entry(&self, ctx: &BarContext<'_>, _mode: EntryIntervention) -> Option<Signal> {
+        let Evaluation::Valid { stop, .. } = self.strategy.evaluate(ctx) else {
+            return None;
+        };
+        if stop <= 0.0 || stop.is_nan() || !self.strategy.trend_allows(ctx) {
+            return None;
+        }
+        Some(SmaCross::entry_signal(stop))
+    }
+
+    fn exits(&mut self, ctx: &BarContext<'_>, out: &mut Vec<Signal>) {
+        match self.strategy.evaluate(ctx) {
+            Evaluation::Skipped => {}
+            Evaluation::Invalid => self.strategy.prev_diff = None,
+            Evaluation::Valid { diff, .. } => {
+                if let Some(exit) = self.strategy.inverse_crossing(ctx, diff) {
+                    out.push(exit);
+                }
+                self.strategy.prev_diff = Some(diff);
+            }
+        }
     }
 }
 

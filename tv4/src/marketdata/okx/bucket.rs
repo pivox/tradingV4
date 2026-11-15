@@ -54,7 +54,8 @@ impl TokenBucket {
     }
 
     /// Réserve le prochain créneau, dort jusqu'à lui et le renvoie (l'instant prévu, pas l'instant
-    /// de réveil, qui lui est postérieur ou égal : les tests comparent donc des valeurs exactes).
+    /// de réveil, qui lui est postérieur ou égal). Un appel tardif peut augmenter l'espacement au-delà
+    /// de `spacing`, qui reste le minimum garanti.
     ///
     /// Si une pause posée entre la réservation et le réveil couvre le créneau (`slot < paused_until`),
     /// le créneau est abandonné : le thread dort jusqu'à `paused_until` et en réserve un nouveau.
@@ -147,12 +148,24 @@ mod tests {
     use super::*;
 
     #[test]
-    fn les_creneaux_sont_espaces_exactement() {
-        let bucket = TokenBucket::new(Duration::from_millis(5));
-        let slots: Vec<Instant> = (0..4).map(|_| bucket.acquire()).collect();
+    fn les_creneaux_respectent_l_espacement_minimal_meme_apres_inactivite() {
+        let spacing = Duration::from_millis(5);
+        let bucket = TokenBucket::new(spacing);
+        let idle = Duration::from_millis(25);
+        let slots: Vec<Instant> = (0..4)
+            .map(|i| {
+                if i == 2 {
+                    // Reproduit un appel retardé au-delà du prochain créneau disponible.
+                    thread::sleep(idle);
+                }
+                bucket.acquire()
+            })
+            .collect();
+        // Le contrat garantit un minimum : l'inactivité ou un réveil tardif peut allonger un écart.
         for pair in slots.windows(2) {
-            assert_eq!(pair[1] - pair[0], Duration::from_millis(5));
+            assert!(pair[1] - pair[0] >= spacing);
         }
+        assert!(slots[2] - slots[1] >= idle);
     }
 
     #[test]

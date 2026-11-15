@@ -11,6 +11,7 @@
 //! pas les stratégies (règle vérifiée par `tests/architecture.rs`). Les fonctions de S11 sont pures :
 //! le zip est ouvert par la CLI.
 
+pub mod controls;
 pub mod noise;
 pub mod registry;
 pub mod stats;

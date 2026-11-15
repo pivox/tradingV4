@@ -97,6 +97,7 @@
 #![forbid(unsafe_code)]
 
 pub mod config;
+pub mod controls;
 mod portfolio;
 pub mod portfolio_config;
 pub mod preflight;
@@ -144,6 +145,8 @@ use crate::strategy::StrategyError;
 /// Erreurs d'une cellule de backtest.
 #[derive(Debug, Error)]
 pub enum EngineError {
+    #[error("budget des contrôles épuisé : {0:?}")]
+    ControlBudget(crate::research::controls::UnavailableReason),
     #[error(transparent)]
     Sim(#[from] SimError),
 

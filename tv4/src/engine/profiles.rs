@@ -120,7 +120,7 @@ pub(super) fn check_cost_config(config: &PortfolioConfig<'_>) -> Result<(), Engi
 
 /// Vrai si deux jeux déclarent la même chose : identité de la stratégie, indicateurs, timeframes,
 /// régime, warmup et TF de décision. Les colonnes d'indicateurs du premier servent au second.
-fn same_declaration(a: &[Box<dyn Strategy>], b: &[Box<dyn Strategy>]) -> bool {
+pub(super) fn same_declaration(a: &[Box<dyn Strategy>], b: &[Box<dyn Strategy>]) -> bool {
     let (Some(x), Some(y)) = (a.first(), b.first()) else {
         return a.is_empty() && b.is_empty();
     };

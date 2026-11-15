@@ -4,6 +4,9 @@ target/
 # Données et sorties du moteur (docs/03-architecture.md §4)
 data/
 runs/
+# Copies natives synthétiques S14, nécessaires au lecteur PHP et à leur régénération.
+!control-plane/tests/fixtures/controls-rust/*/runs/
+!control-plane/tests/fixtures/controls-rust/*/runs/**
 state/
 reports/
 notebooks/

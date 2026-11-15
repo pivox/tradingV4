@@ -28,6 +28,7 @@
 #![forbid(unsafe_code)]
 
 pub mod approx;
+pub mod controls;
 pub mod cost_arithmetic;
 pub mod distribution;
 pub mod drawdown;

@@ -116,6 +116,8 @@ const MAX_LINE_CHARS: usize = 200;
 /// Erreurs de `tv4 verify` : un run illisible ou incohérent n'est pas comparable.
 #[derive(Debug, Error)]
 pub enum VerifyError {
+    #[error(transparent)]
+    Controls(#[from] super::controls::ControlsError),
     /// Un fichier du run est absent ou illisible.
     #[error("run {label} (`{dir}`) : lecture de `{file}` impossible : {source}")]
     Read {
@@ -308,11 +310,15 @@ pub struct VerifiedRun {
     metrics: Value,
     trades_bytes: Vec<u8>,
     equity_bytes: Vec<u8>,
+    controls: Option<super::controls::verify::LoadedProjection>,
 }
 
 type LoadedRun = VerifiedRun;
 
 impl VerifiedRun {
+    pub fn controls(&self) -> Option<&super::controls::verify::LoadedProjection> {
+        self.controls.as_ref()
+    }
     pub fn manifest(&self) -> &Value {
         &self.manifest
     }
@@ -393,6 +399,24 @@ fn compare_runs(a: &LoadedRun, b: &LoadedRun) -> Result<Comparison, VerifyError>
     }
     describe_manifest_info(&a.manifest, &b.manifest, &mut lines);
     describe_research_info(&a.metrics, &b.metrics, &mut lines);
+    match (a.controls(), b.controls()) {
+        (None, None) => {}
+        (Some(a), Some(b)) => {
+            if a.files[0].1 == b.files[0].1 {
+                lines.push("controls.json : identique".into());
+            } else {
+                different_files += 1;
+                lines.push("controls.json : DIFFÉRENT".into());
+            }
+            if a.manifest != b.manifest {
+                lines.push("admissions actuelles : différentes (information)".into());
+            }
+        }
+        _ => {
+            different_files += 1;
+            lines.push("controls.json : présent dans une seule feuille".into());
+        }
+    }
     Ok(Comparison {
         lines,
         different_files,
@@ -402,6 +426,7 @@ fn compare_runs(a: &LoadedRun, b: &LoadedRun) -> Result<Comparison, VerifyError>
 /// Nature d'un dossier pour le message de [`VerifyError::LayoutMismatch`].
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Layout {
+    Controls,
     Run,
     Profiles,
     Lines,
@@ -411,7 +436,9 @@ impl Layout {
     /// Un dossier de lignes (`lines.json`) prime sur un dossier de profils (`profiles.json`), qui prime
     /// sur un dossier de run.
     fn of(dir: &Path) -> Layout {
-        if dir.join(LINES_FILE).exists() {
+        if super::controls::verify::present(&dir.join(super::controls::INDEX_FILE)) {
+            Layout::Controls
+        } else if dir.join(LINES_FILE).exists() {
             Layout::Lines
         } else if dir.join(PROFILES_FILE).exists() {
             Layout::Profiles
@@ -422,6 +449,7 @@ impl Layout {
 
     fn kind(self) -> &'static str {
         match self {
+            Layout::Controls => "un bundle de contrôles",
             Layout::Run => "un dossier de run",
             Layout::Profiles => "un dossier de profils",
             Layout::Lines => "un dossier de lignes",
@@ -437,11 +465,16 @@ impl Layout {
 pub fn verify(dir_a: &Path, dir_b: &Path) -> Result<VerifyReport, VerifyError> {
     let (layout_a, layout_b) = (Layout::of(dir_a), Layout::of(dir_b));
     match (layout_a, layout_b) {
+        (Layout::Controls, Layout::Controls) => {
+            Ok(super::controls::verify::compare_bundles(dir_a, dir_b)?)
+        }
         (Layout::Lines, Layout::Lines) => verify_lines(dir_a, dir_b),
         (Layout::Profiles, Layout::Profiles) => verify_profiles(dir_a, dir_b),
         (Layout::Run, Layout::Run) => verify_runs(dir_a, dir_b),
         _ => Err(VerifyError::LayoutMismatch {
-            rule: if layout_a == Layout::Lines || layout_b == Layout::Lines {
+            rule: if layout_a == Layout::Controls || layout_b == Layout::Controls {
+                "un bundle de contrôles ne se compare qu'à un bundle de contrôles"
+            } else if layout_a == Layout::Lines || layout_b == Layout::Lines {
                 "un dossier de lignes ne se compare qu'à un dossier de lignes"
             } else {
                 "un dossier de profils ne se compare qu'à un dossier de profils"
@@ -967,6 +1000,7 @@ pub fn load_verified_run(dir: &Path) -> Result<VerifiedRun, VerifyError> {
 
 /// Lit les quatre fichiers d'un run et contrôle sa cohérence interne.
 fn load_run(label: &'static str, dir: &Path) -> Result<LoadedRun, VerifyError> {
+    super::controls::verify::check_leaf_paths(dir)?;
     let shown = dir.display().to_string();
     let read = |file: &'static str| -> Result<Vec<u8>, VerifyError> {
         fs::read(dir.join(file)).map_err(|source| VerifyError::Read {
@@ -1093,6 +1127,7 @@ fn load_run(label: &'static str, dir: &Path) -> Result<LoadedRun, VerifyError> {
         metrics,
         trades_bytes,
         equity_bytes,
+        controls: None,
     };
     if let Some(value) = run.manifest.get("stats_inputs") {
         let invalid = |detail| VerifyError::Portfolio {
@@ -1115,6 +1150,7 @@ fn load_run(label: &'static str, dir: &Path) -> Result<LoadedRun, VerifyError> {
         run.stats_inputs =
             Some(super::stats_inputs::LoadedStatsInputs::from_bytes(bytes, &run).map_err(invalid)?);
     }
+    run.controls = super::controls::verify::load_projection(dir, &run)?;
     Ok(run)
 }
 
@@ -1790,6 +1826,17 @@ fn describe_csv_diff(a: &[u8], b: &[u8], lines: &mut Vec<String>) {
 /// Feuilles possédées et index de layout contrôlés par les mêmes lecteurs que `verify`.
 /// Aucun fichier n'est rouvert après validation.
 pub fn load_stats_leaves(dir: &Path) -> Result<StatsLeaves, VerifyError> {
+    fn leaf(dir: &Path, run: VerifiedRun, out: &mut StatsLeaves) {
+        if let Some(controls) = run.controls() {
+            out.layout_files.extend(
+                controls
+                    .files
+                    .iter()
+                    .map(|(name, bytes)| (dir.join(name), bytes.clone())),
+            );
+        }
+        out.leaves.push((dir.to_path_buf(), run));
+    }
     fn profiles(dir: &Path, p: LoadedProfiles, out: &mut StatsLeaves) {
         out.layout_files.push((dir.join(PROFILES_FILE), p.bytes));
         for ((_, run), entry) in p
@@ -1799,7 +1846,7 @@ pub fn load_stats_leaves(dir: &Path) -> Result<StatsLeaves, VerifyError> {
         {
             // Le lecteur strict vient de contrôler le type et le caractère simple de dir.
             let sub = entry["dir"].as_str().unwrap_or_default();
-            out.leaves.push((dir.join(sub), run));
+            leaf(&dir.join(sub), run, out);
         }
     }
     let mut out = StatsLeaves {
@@ -1807,9 +1854,12 @@ pub fn load_stats_leaves(dir: &Path) -> Result<StatsLeaves, VerifyError> {
         layout_files: Vec::new(),
     };
     match Layout::of(dir) {
-        Layout::Run => out
-            .leaves
-            .push((dir.to_path_buf(), load_run("stats", dir)?)),
+        Layout::Controls => {
+            let bundle = super::controls::verify::load_bundle(dir)?;
+            out.leaves = bundle.leaves;
+            out.layout_files = bundle.layout_files;
+        }
+        Layout::Run => leaf(dir, load_run("stats", dir)?, &mut out),
         Layout::Profiles => profiles(dir, load_profiles("stats", dir)?, &mut out),
         Layout::Lines => {
             let loaded = load_lines("stats", dir)?;
@@ -1821,7 +1871,7 @@ pub fn load_stats_leaves(dir: &Path) -> Result<StatsLeaves, VerifyError> {
             {
                 let sub = dir.join(entry["dir"].as_str().unwrap_or_default());
                 match body {
-                    LineBody::Run(run) => out.leaves.push((sub, *run)),
+                    LineBody::Run(run) => leaf(&sub, *run, &mut out),
                     LineBody::Profiles(p) => profiles(&sub, *p, &mut out),
                 }
             }

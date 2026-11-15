@@ -31,6 +31,7 @@ pub use compare_sources::{
     MEDIAN_ABS_DELTA_4H_MAX, MinuteCounts, RangeReport, ShareReport, SourceReport,
     ThresholdsReport, Verdict, WICK_THRESHOLDS, WickReport, WickSide, compare_sources,
 };
+pub use controls::ControlsArgs;
 pub use costs::{CalibrateStressArgs, CostsAction};
 pub use dataset::DatasetBuildArgs;
 pub use ingest::{IngestCsvArgs, IngestKrakenArgs, IngestSummary, ingest_kraken};
@@ -50,6 +51,7 @@ pub use verify::VerifyArgs;
 mod backtest;
 mod bench;
 mod compare_sources;
+mod controls;
 mod costs;
 mod dataset;
 mod ingest;
@@ -360,6 +362,8 @@ pub enum Command {
     Bench(BenchArgs),
     /// Calcule les post-traitements sur les seuls artefacts déjà admis (S13).
     Stats(StatsArgs),
+    /// Exécute les contrôles de timing S14 sur des feuilles vérifiées.
+    Controls(ControlsArgs),
     /// Instruments de l'exchange : lecture des minimums du compte OKX (S9).
     Instruments {
         /// Opération demandée.
@@ -420,6 +424,7 @@ pub fn run(command: &Command) -> Result<(), CliError> {
         Command::Verify(args) => verify::run(args),
         Command::Bench(args) => bench::run(args),
         Command::Stats(args) => stats::run(args),
+        Command::Controls(args) => controls::run(args),
         Command::Instruments { action } => match action {
             InstrumentsAction::Fetch(args) => instruments::fetch(args),
         },

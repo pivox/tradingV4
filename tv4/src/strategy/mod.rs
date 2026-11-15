@@ -43,6 +43,7 @@
 
 #![forbid(unsafe_code)]
 
+pub mod controls;
 pub mod registry;
 pub mod sma_cross;
 
@@ -58,6 +59,12 @@ use thiserror::Error;
 pub enum StrategyError {
     #[error("stratégie inconnue : `{id}` (connues : {known})")]
     UnknownStrategy { id: String, known: String },
+
+    #[error("stratégie `{id}` : géométrie de contrôle non prise en charge : {reason}")]
+    UnsupportedControlGeometry {
+        id: &'static str,
+        reason: &'static str,
+    },
 
     #[error("stratégie `{id}` : paramètres TOML invalides : {source}")]
     ParamsToml {
@@ -296,6 +303,15 @@ pub trait Strategy: Send {
     /// Appelée uniquement sur les bougies 1m où un timeframe déclaré vient de clôturer. `out` est
     /// réutilisé par le moteur (`clear()` avant l'appel) : aucune allocation par bougie.
     fn on_bar(&mut self, ctx: &BarContext<'_>, out: &mut Vec<Signal>);
+
+    /// Nouvelle géométrie à état initial, sans reprendre la mémoire d’un run Observed.
+    /// Les stratégies non certifiées pour S14 sont refusées explicitement.
+    fn control_geometry(&self) -> Result<Box<dyn controls::ControlGeometry>, StrategyError> {
+        Err(StrategyError::UnsupportedControlGeometry {
+            id: self.id(),
+            reason: "aucune géométrie causale déclarée",
+        })
+    }
 
     /// Entonnoir de la stratégie, lu une fois après la boucle (peut allouer). `None` si elle ne
     /// déclare rien.

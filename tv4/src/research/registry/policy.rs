@@ -4,6 +4,8 @@ use std::collections::BTreeSet;
 use crate::model::Ts;
 use crate::model::blocks::Block;
 
+use super::roles::{TrialRole, candidate_family, role_from_family};
+
 use super::{
     AdmissionTime, ClaimId, Digest, Event, HypothesisRef, Metrics, Quarter, ReadId, Registry,
     RegistryError, Status, TrialId, UtcDate, invalid,
@@ -115,7 +117,32 @@ impl Registry {
     /// Prépare inscriptions et réservations indivisibles. Une erreur sur le dernier profil annule
     /// toute la proposition, y compris les inscriptions et consommations préparées sur une copie.
     pub fn propose_admission(&self, request: &Admission) -> Result<AdmissionBatch, RegistryError> {
+        self.propose_admission_kind(request, false)
+    }
+    #[allow(dead_code, reason = "admission interne S14 branchée au lot CLI")]
+    pub(crate) fn propose_controls_admission(
+        &self,
+        request: &Admission,
+    ) -> Result<AdmissionBatch, RegistryError> {
+        self.propose_admission_kind(request, true)
+    }
+    fn propose_admission_kind(
+        &self,
+        request: &Admission,
+        controls: bool,
+    ) -> Result<AdmissionBatch, RegistryError> {
         super::validate_window(request.decision_start_ms, request.decision_end_ms)?;
+        if controls
+            && (!matches!(request.block, None | Some(Block::Dev))
+                || !request
+                    .configs
+                    .iter()
+                    .any(|c| role_from_family(&c.family) == Ok(TrialRole::NullControl)))
+        {
+            return Err(invalid(
+                "contrôles internes requis sur DEV effectif ou voie technique sans bloc",
+            ));
+        }
         if request.configs.is_empty() {
             return Err(invalid("admission sans configuration"));
         }
@@ -128,7 +155,12 @@ impl Registry {
             if !seen.insert(&config.config_hash) {
                 return Err(invalid("hash dupliqué dans l'admission"));
             }
-            if &config.hypothesis != first_hypothesis {
+            if !controls {
+                candidate_family(&config.family)?;
+            } else {
+                role_from_family(&config.family)?;
+            }
+            if !controls && &config.hypothesis != first_hypothesis {
                 return Err(invalid("plusieurs candidats dans une même invocation"));
             }
             if request.block.is_some() && config.hypothesis.is_none() {
@@ -157,6 +189,9 @@ impl Registry {
         let mut trial_ids = Vec::new();
         let mut claims_consumed = Vec::new();
         let read_id = self.next_read_id()?;
+        if controls {
+            next.control_reads.insert(read_id);
+        }
         for config in &request.configs {
             if !next.trials.contains_key(&config.config_hash) {
                 let event = Event {
@@ -221,6 +256,7 @@ impl Registry {
         family: &str,
         date: &UtcDate,
     ) -> Result<Vec<Event>, RegistryError> {
+        candidate_family(family)?;
         if hashes.is_empty() {
             return Err(invalid("liaison sans configuration"));
         }
@@ -230,6 +266,29 @@ impl Registry {
             let mut event = next.event_for(hash, date, Status::HypothesisLinked)?;
             event.hypothesis = Some(hypothesis.clone());
             event.family = family.to_owned();
+            next.push(event, &mut events)?;
+        }
+        Ok(events)
+    }
+    /// Ajout de la seule association H à un null technique ; rôle/famille conservés.
+    #[allow(dead_code, reason = "raccord interne de l'admission S14")]
+    pub(crate) fn propose_control_link(
+        &self,
+        hashes: &[Digest],
+        hypothesis: &HypothesisRef,
+        date: &UtcDate,
+    ) -> Result<Vec<Event>, RegistryError> {
+        if hashes.is_empty() {
+            return Err(invalid("liaison sans configuration"));
+        }
+        let mut next = self.clone();
+        let mut events = Vec::new();
+        for hash in hashes {
+            let mut event = next.event_for(hash, date, Status::HypothesisLinked)?;
+            if role_from_family(&event.family)? != TrialRole::NullControl {
+                return Err(invalid("liaison interne réservée aux contrôles nuls"));
+            }
+            event.hypothesis = Some(hypothesis.clone());
             next.push(event, &mut events)?;
         }
         Ok(events)
@@ -318,5 +377,139 @@ impl Registry {
             next.push(event, &mut events)?;
         }
         Ok(events)
+    }
+}
+
+#[cfg(test)]
+mod controls_tests {
+    use super::*;
+    fn digest(i: u32) -> Digest {
+        Digest::new(format!("{i:064x}")).unwrap()
+    }
+    fn hyp(i: u32) -> HypothesisRef {
+        HypothesisRef::new(format!("H-{i:03}"), digest(999)).unwrap()
+    }
+    fn request() -> Admission {
+        let date = UtcDate::new("2026-01-01T00:00:00Z").unwrap();
+        Admission {
+            configs: vec![
+                ConfigSpec {
+                    config_hash: digest(1),
+                    family: "F1".into(),
+                    hypothesis: Some(hyp(1)),
+                },
+                ConfigSpec {
+                    config_hash: digest(2),
+                    family: "F4".into(),
+                    hypothesis: Some(hyp(2)),
+                },
+                ConfigSpec::null_control(digest(3), "f1", "1", Some(hyp(1))).unwrap(),
+            ],
+            dataset_hash: digest(900),
+            block: Some(Block::Dev),
+            time: AdmissionTime::new(date.clone(), date.quarter()).unwrap(),
+            generation: 0,
+            decision_start_ms: None,
+            decision_end_ms: None,
+        }
+    }
+    #[test]
+    fn controls_multi_fiches_rejouent_et_terminent_tous_les_resultats() {
+        let req = request();
+        let reg = Registry::default();
+        assert!(reg.propose_admission(&req).is_err());
+        let batch = reg.propose_controls_admission(&req).unwrap();
+        let reg = reg.with_events(&batch.events).unwrap();
+        assert_eq!(reg.n(), 3);
+        assert_eq!(reg.role_counts().null_controls, 1);
+        let results = req
+            .configs
+            .iter()
+            .enumerate()
+            .map(|(i, c)| TrialResult {
+                config_hash: c.config_hash.clone(),
+                failed: i == 2,
+                metrics: Metrics::default(),
+            })
+            .collect::<Vec<_>>();
+        assert!(
+            reg.propose_results(batch.read_id, &results[..2], req.time.date())
+                .is_err()
+        );
+        let events = reg
+            .propose_results(batch.read_id, &results, req.time.date())
+            .unwrap();
+        let reg = reg.with_events(&events).unwrap();
+        assert!(reg.reads()[&batch.read_id].is_complete());
+        let csv = [
+            super::super::header_csv(),
+            super::super::encode_events(reg.events()).unwrap(),
+        ]
+        .concat();
+        assert_eq!(Registry::from_csv(&csv).unwrap(), reg);
+        assert_eq!(reg.propose_controls_admission(&req).unwrap().n, 3);
+        for block in [Block::Validation, Block::Holdout, Block::Forward] {
+            let mut req = req.clone();
+            req.block = Some(block);
+            assert!(reg.propose_controls_admission(&req).is_err());
+        }
+    }
+    #[test]
+    fn registre_inclusif_admet_10800_nulls_et_27_parents_sans_plafond_cache() {
+        let mut req = request();
+        req.configs.clear();
+        for parent in 1..=27 {
+            req.configs.push(ConfigSpec {
+                config_hash: digest(parent),
+                family: format!("F{parent}"),
+                hypothesis: Some(hyp(parent)),
+            });
+        }
+        for i in 0..10800 {
+            req.configs.push(
+                ConfigSpec::null_control(digest(100 + i), "fixture", "1", Some(hyp(1 + i % 27)))
+                    .unwrap(),
+            );
+        }
+        let batch = Registry::default()
+            .propose_controls_admission(&req)
+            .unwrap();
+        assert_eq!(batch.n, 10827);
+        let reg = Registry::default().with_events(&batch.events).unwrap();
+        assert_eq!(reg.role_counts().candidates, 27);
+        assert_eq!(reg.role_counts().null_controls, 10800);
+    }
+    #[test]
+    fn null_technique_peut_lier_h_seulement_sans_promotion_ni_claim() {
+        let mut req = request();
+        req.configs = vec![ConfigSpec::null_control(digest(3), "f1", "1", None).unwrap()];
+        req.block = None;
+        let batch = Registry::default()
+            .propose_controls_admission(&req)
+            .unwrap();
+        let reg = Registry::default().with_events(&batch.events).unwrap();
+        assert!(
+            reg.propose_link(&[digest(3)], &hyp(1), "F1", req.time.date())
+                .is_err()
+        );
+        let linked = reg
+            .propose_control_link(&[digest(3)], &hyp(1), req.time.date())
+            .unwrap();
+        let mut forged = linked.clone();
+        forged[0].family = "F1".into();
+        assert!(reg.with_events(&forged).is_err());
+        let reg = reg.with_events(&linked).unwrap();
+        assert!(
+            reg.propose_claims(&[digest(3)], &hyp(1), req.time.date())
+                .is_err()
+        );
+        let mut forged = linked[0].clone();
+        forged.event_id = reg.next_event_id().unwrap();
+        forged.status = Status::Claim;
+        forged.block = Some(Block::Holdout);
+        forged.claim_holdout = Some(ClaimId(99));
+        assert!(reg.with_events(&[forged]).is_err());
+        assert!(ConfigSpec::null_control(digest(4), "f:1", "1", None).is_err());
+        assert!(ConfigSpec::null_control(digest(4), "f1", "1:2", None).is_err());
     }
 }
