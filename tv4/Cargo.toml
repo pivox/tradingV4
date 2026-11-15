@@ -21,6 +21,7 @@ arrow.workspace = true
 blake3.workspace = true
 clap.workspace = true
 csv.workspace = true
+num-bigint.workspace = true
 parquet.workspace = true
 serde.workspace = true
 serde_json.workspace = true

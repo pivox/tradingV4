@@ -163,6 +163,51 @@ partir de 36 mois calendaires et la borne mensuelle n'est calculée qu'en DEV.
 
 Conventions et contrats : [conception S13](docs/specs/s13.md).
 
+## Contrôles aléatoires natifs (S14)
+
+`tv4 controls` compare un panneau de configurations à des entrées aléatoires
+exécutées par le portefeuille partagé. Il conserve les sorties, les coûts et les
+quotas de lots par paire et année du fill ; le mode sans BTC conserve lui aussi
+ce rythme annuel. Pour `sma_cross`, qui ne lit pas le régime BTC, ce mode est un
+alias exact. Le contrôle apparié réutilise les mêmes réalisations.
+
+Préparer et commiter un plan `tv4-controls-plan-v1` conforme à la
+[conception S14](docs/specs/s14.md), avec les parents, recettes de rejeu, fichiers
+d'entrée hashés, graines et budgets. Les sources doivent venir du même moteur et
+former un panneau homogène. Conserver le binaire qui a produit les sources et
+l'invoquer directement pour les contrôles. La commande vérifie les sources,
+effectue l'admission S12, charge les données une fois, puis vérifie le rejeu Observed avant les tirages.
+Le chemin de recherche accepte DEV effectif ; les sources techniques sans bloc
+restent explicitement non qualifiantes.
+
+```bash
+./target/release/tv4 controls runs/source-a \
+  --peer-run runs/source-b --plan research/controls/s14.json \
+  --root data --seed 42 --out runs/controls-a
+
+cd control-plane
+php bin/console tv4:report ../runs/controls-a --output ../runs/controls-a/report.html
+```
+
+Le répertoire de sortie doit être nouveau. Il contient le panneau
+`controls.json`, son admission dans `controls-manifest.json`, l'index final de
+complétude et les copies autonomes `runs/<config_hash>/`. Les sources originales
+restent en lecture seule. Deux invocations avec des sorties neuves conservent les
+mêmes résultats numériques et enregistrent deux lectures S12 distinctes. Les
+programmes aléatoires comptent dans le N du registre ; le rapport distingue ce
+N du nombre de configurations du panneau.
+
+K vaut 200 par défaut, avec 1 000 comme cible de campagne. K = 20 et tout K < 200 sont
+marqués « smoke test, pas une porte ». La résolution affichée est `1/(K+1)` et les
+égalités sont défavorables au setup. Le rapport distingue l'erreur Monte Carlo
+du contrôle et l'incertitude temporelle du contraste apparié. Une réalisation
+manquante rend le panneau inconclusif ; les budgets sont déterministes et aucun
+quota n'est complété artificiellement. Ces résultats décrivent un modèle nul
+conditionnel et des fragments de G1, sans verdict économique complet.
+
+Les conventions, restrictions de géométrie, identités et codes de sortie sont
+décrits dans [la spécification S14](docs/specs/s14.md).
+
 ## Exploration DuckDB
 
 Les bougies sont des fichiers Parquet ordinaires sous `data/candles/<exchange>/<SYMBOLE>/<tf>/`, lisibles par DuckDB sans import. `open_time_ms` est un entier en millisecondes UTC : `epoch_ms(open_time_ms)` le convertit en horodatage UTC sans dépendre du fuseau de la session (contrairement à `to_timestamp`, qui rend un `TIMESTAMP WITH TIME ZONE` affiché dans le fuseau local).
