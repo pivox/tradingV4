@@ -1,16 +1,11 @@
 //! Bootstrap circulaire par blocs contigus de trades conservés, R déjà nets.
 use super::approx::{quantile_type7, sample_standard_deviation};
+use super::random::{STREAM_BOOTSTRAP, uniform_index};
 use super::types::{
     Availability, Metric, StatsError, StatsOptions, TradeRecord, finite, sorted_trades,
 };
 use crate::model::rng::{self, SplitMix64};
 use serde::{Deserialize, Serialize};
-
-/// Espaces de tirages distincts réservés aux post-traitements S13.
-pub const STREAM_BOOTSTRAP: u64 = 0x5331_3300_0000_0001;
-pub const STREAM_MONTE_CARLO: u64 = 0x5331_3300_0000_0002;
-pub const STREAM_REMOVAL: u64 = 0x5331_3300_0000_0003;
-pub const STREAM_MONTHLY_BOOTSTRAP: u64 = 0x5331_3300_0000_0004;
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct BootstrapStats {
@@ -21,17 +16,6 @@ pub struct BootstrapStats {
     pub mean_r: Metric,
     pub lb90_r: Metric,
     pub standard_error_r: Metric,
-}
-
-/// Échantillonnage entier uniforme par rejet de la zone incomplète de 2^64.
-fn uniform_index(rng: &mut SplitMix64, bound: u64) -> usize {
-    let threshold = bound.wrapping_neg() % bound;
-    loop {
-        let value = rng.next_u64();
-        if value >= threshold {
-            return (value % bound) as usize;
-        }
-    }
 }
 
 pub fn bootstrap(
