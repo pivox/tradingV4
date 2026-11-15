@@ -297,17 +297,43 @@ impl Family {
 const MANIFEST_SCHEMAS: &str =
     "`tv4-manifest-s8`, `tv4-manifest-s9`, `tv4-manifest-s10` ou `tv4-manifest-s11`";
 
-/// Un run lu et vérifié en interne.
-struct LoadedRun {
+/// Image immuable contrôlée par `verify`, avec tous les octets originaux conservés.
+#[derive(Debug)]
+pub struct VerifiedRun {
     family: Family,
     manifest: Value,
+    manifest_bytes: Vec<u8>,
+    stats_inputs: Option<super::stats_inputs::LoadedStatsInputs>,
     metrics_bytes: Vec<u8>,
     metrics: Value,
     trades_bytes: Vec<u8>,
     equity_bytes: Vec<u8>,
 }
 
-impl LoadedRun {
+type LoadedRun = VerifiedRun;
+
+impl VerifiedRun {
+    pub fn manifest(&self) -> &Value {
+        &self.manifest
+    }
+    pub fn manifest_bytes(&self) -> &[u8] {
+        &self.manifest_bytes
+    }
+    pub fn metrics(&self) -> &Value {
+        &self.metrics
+    }
+    pub fn metrics_bytes(&self) -> &[u8] {
+        &self.metrics_bytes
+    }
+    pub fn trades_bytes(&self) -> &[u8] {
+        &self.trades_bytes
+    }
+    pub fn equity_bytes(&self) -> &[u8] {
+        &self.equity_bytes
+    }
+    pub fn stats_inputs(&self) -> Option<&super::stats_inputs::LoadedStatsInputs> {
+        self.stats_inputs.as_ref()
+    }
     /// Octets du fichier nommé (un des trois comparés).
     fn bytes(&self, file: &str) -> &[u8] {
         match file {
@@ -934,6 +960,11 @@ fn line_kind(body: &LineBody) -> &'static str {
     }
 }
 
+/// Charge une image possédée selon les mêmes contrôles que `verify`.
+pub fn load_verified_run(dir: &Path) -> Result<VerifiedRun, VerifyError> {
+    load_run("stats", dir)
+}
+
 /// Lit les quatre fichiers d'un run et contrôle sa cohérence interne.
 fn load_run(label: &'static str, dir: &Path) -> Result<LoadedRun, VerifyError> {
     let shown = dir.display().to_string();
@@ -1053,14 +1084,38 @@ fn load_run(label: &'static str, dir: &Path) -> Result<LoadedRun, VerifyError> {
             detail,
         })?;
     }
-    Ok(LoadedRun {
+    let mut run = LoadedRun {
         family,
         manifest,
+        manifest_bytes,
+        stats_inputs: None,
         metrics_bytes,
         metrics,
         trades_bytes,
         equity_bytes,
-    })
+    };
+    if let Some(value) = run.manifest.get("stats_inputs") {
+        let invalid = |detail| VerifyError::Portfolio {
+            label,
+            dir: shown.clone(),
+            detail,
+        };
+        let reference: super::stats_inputs::StatsInputsRef = serde_json::from_value(value.clone())
+            .map_err(|e| invalid(format!("référence stats_inputs : {e}")))?;
+        reference.validate().map_err(invalid)?;
+        let bytes = read(super::stats_inputs::STATS_INPUTS_FILE)?;
+        let found = hash::blake3_prefixed(&bytes);
+        if found != reference.hash {
+            return Err(inconsistent(
+                super::stats_inputs::STATS_INPUTS_FILE,
+                &reference.hash,
+                &found,
+            ));
+        }
+        run.stats_inputs =
+            Some(super::stats_inputs::LoadedStatsInputs::from_bytes(bytes, &run).map_err(invalid)?);
+    }
+    Ok(run)
 }
 
 /// Nombre situé au chemin `path` d'un objet JSON, si c'est un nombre.

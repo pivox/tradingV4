@@ -41,3 +41,32 @@ pub(crate) fn sample_standard_deviation(values: &[f64]) -> Result<f64, StatsErro
     }
     finite((m2 / (values.len() - 1) as f64).sqrt())
 }
+
+pub(crate) fn ln(value: f64) -> Result<f64, StatsError> {
+    if !value.is_finite() || value <= 0. {
+        return Err(StatsError::InvalidInput(
+            "logarithme : argument positif fini requis".into(),
+        ));
+    }
+    finite(value.ln())
+}
+pub(crate) fn exp_m1(value: f64) -> Result<f64, StatsError> {
+    finite(value)?;
+    finite(value.exp_m1())
+}
+pub(crate) fn powf(value: f64, exponent: f64) -> Result<f64, StatsError> {
+    finite(value)?;
+    finite(exponent)?;
+    if value < 0. || (value == 0. && exponent <= 0.) {
+        return Err(StatsError::InvalidInput(
+            "puissance : domaine réel positif requis".into(),
+        ));
+    }
+    finite(value.powf(exponent))
+}
+pub(crate) fn annualized(growth: f64, years: f64) -> Result<f64, StatsError> {
+    if growth == 0. {
+        return Ok(-1.);
+    }
+    exp_m1(ln(growth)? / years)
+}
