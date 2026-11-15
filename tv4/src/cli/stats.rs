@@ -229,6 +229,9 @@ pub(super) fn run(args: &StatsArgs) -> Result<(), CliError> {
         let p = leaf.packet().map(|p| &p.inputs);
         let marks = p.map_or(&[][..], |p| p.marks.as_slice());
         let markets = p.map_or(&[][..], |p| p.markets.as_slice());
+        // Le paquet admis conserve son C0 exact avec ses marquages ; l'écart de
+        // sérialisation toléré face au journal ne doit pas désaccorder les noyaux.
+        let capital = p.map_or(image.provenance.initial_cash, |p| p.provenance.initial_cash);
         let (selection, symbols) = selection::resolve(args, &image.pair_symbols, markets)?;
         let partition = partition(leaf);
         let corpus = corpus::build(leaf, &leaves, &peers, &registry, &options)?;
@@ -284,7 +287,7 @@ pub(super) fn run(args: &StatsArgs) -> Result<(), CliError> {
                 p.map_or(&[], |p| p.closures.as_slice()),
                 marks,
                 image.provenance.window,
-                image.provenance.initial_cash,
+                capital,
                 image.sizing,
                 &options,
             )
@@ -302,7 +305,7 @@ pub(super) fn run(args: &StatsArgs) -> Result<(), CliError> {
                     marks,
                     cash: p.map_or(&[], |p| p.cash.as_slice()),
                     markets,
-                    capital: image.provenance.initial_cash,
+                    capital,
                     window: image.provenance.window,
                     pair_symbols: &image.pair_symbols,
                     symbols: &symbols,

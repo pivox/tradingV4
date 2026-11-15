@@ -320,6 +320,119 @@ fn marked_monte_carlo_is_wired_on_a_real_45_day_technical_run() {
 }
 
 #[test]
+fn admitted_packet_capital_is_used_by_the_real_cli_without_changing_sources() {
+    let tmp = tempfile::tempdir().unwrap();
+    let root = tmp.path();
+    let original = fixture_n(root, "cell", 64_800);
+    let files = [
+        "metrics.json",
+        "trades.csv",
+        "equity.csv",
+        "manifest.json",
+        "stats-inputs.json",
+    ];
+    let mut packet: tv4::report::stats_inputs::StatsInputs =
+        serde_json::from_slice(&fs::read(original.join("stats-inputs.json")).unwrap()).unwrap();
+    let journal_capital = packet.provenance.initial_cash;
+    packet.provenance.initial_cash = f64::from_bits(journal_capital.to_bits() + 1);
+    packet.marks[0].equity = packet.provenance.initial_cash;
+    let packet_bytes = serde_json::to_vec(&packet).unwrap();
+    let registry_before =
+        ["trials.csv", "README.md"].map(|f| fs::read(root.join("research").join(f)).ok());
+    for referenced in [false, true] {
+        let out = root.join(if referenced { "referenced" } else { "external" });
+        fs::create_dir(&out).unwrap();
+        for file in files {
+            fs::copy(original.join(file), out.join(file)).unwrap();
+        }
+        let mut manifest: serde_json::Value =
+            serde_json::from_slice(&fs::read(out.join("manifest.json")).unwrap()).unwrap();
+        if referenced {
+            manifest["stats_inputs"]["hash"] =
+                tv4::model::hash::blake3_prefixed(&packet_bytes).into();
+        } else {
+            manifest.as_object_mut().unwrap().remove("stats_inputs");
+        }
+        fs::write(
+            out.join("manifest.json"),
+            serde_json::to_vec(&manifest).unwrap(),
+        )
+        .unwrap();
+        fs::write(out.join("stats-inputs.json"), &packet_bytes).unwrap();
+        let sources = files.map(|f| fs::read(out.join(f)).unwrap());
+        let mut args = strings(&[
+            "stats",
+            out.to_str().unwrap(),
+            "--seed",
+            "1",
+            "--research-root",
+            root.to_str().unwrap(),
+        ]);
+        if !referenced {
+            args.extend(strings(&[
+                "--inputs",
+                out.join("stats-inputs.json").to_str().unwrap(),
+            ]));
+        }
+        let mut first = Vec::new();
+        for _ in 0..2 {
+            let result = tv4(&args);
+            assert!(
+                result.status.success(),
+                "référencé={referenced} : {}",
+                String::from_utf8_lossy(&result.stderr)
+            );
+            let bytes = fs::read(out.join("stats.json")).unwrap();
+            if first.is_empty() {
+                first = bytes;
+            } else {
+                assert_eq!(first, bytes);
+            }
+        }
+        let stats: serde_json::Value = serde_json::from_slice(&first).unwrap();
+        assert!(stats["monte_carlo"]["n_trades"].as_u64().unwrap() >= 40);
+        assert!(stats["monte_carlo"]["n_blocks"].as_u64().unwrap() >= 2);
+        assert!(stats["monte_carlo"]["dd_initial_p95_2y"]["value"].is_number());
+        assert!(stats["benchmarks"]["strategy_total_return"]["value"].is_number());
+        assert!(stats["benchmarks"]["cash_reference_return"]["value"].is_number());
+        assert_eq!(
+            stats["source"]["provenance"]["initial_cash"],
+            journal_capital
+        );
+        assert_eq!(stats["corpus"]["members"][0]["source"], stats["source"]);
+        assert_eq!(stats["corpus"]["complete_daily_configs"], 1);
+        assert_eq!(
+            stats["source"]["files"]["stats_inputs_json"],
+            tv4::model::hash::blake3_prefixed(&packet_bytes)
+        );
+        assert_eq!(sources, files.map(|f| fs::read(out.join(f)).unwrap()));
+
+        // Un vrai écart de capital reste interdit, même avec une ancre interne cohérente.
+        let mut wrong = packet.clone();
+        wrong.provenance.initial_cash = journal_capital + 1.;
+        wrong.marks[0].equity = wrong.provenance.initial_cash;
+        let wrong_path = root.join("wrong-capital.json");
+        fs::write(&wrong_path, serde_json::to_vec(&wrong).unwrap()).unwrap();
+        let mut bad_args = args.clone();
+        if !referenced {
+            bad_args.truncate(bad_args.len() - 2);
+        }
+        bad_args.extend(strings(&["--inputs", wrong_path.to_str().unwrap()]));
+        let result = tv4(&bad_args);
+        assert_eq!(result.status.code(), Some(1));
+        assert!(
+            String::from_utf8_lossy(&result.stderr).contains("provenance du paquet différente")
+        );
+        assert_eq!(first, fs::read(out.join("stats.json")).unwrap());
+        assert_eq!(sources, files.map(|f| fs::read(out.join(f)).unwrap()));
+    }
+    assert_eq!(
+        registry_before,
+        ["trials.csv", "README.md"].map(|f| fs::read(root.join("research").join(f)).ok())
+    );
+}
+
+#[test]
 fn corpus_is_order_independent_deduplicated_and_never_reduces_declared_n() {
     let tmp = tempfile::tempdir().unwrap();
     let root = tmp.path();
