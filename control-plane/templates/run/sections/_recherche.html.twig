@@ -4,7 +4,9 @@
 <section id="recherche" class="section" aria-labelledby="recherche-titre">
   <h2 id="recherche-titre">Recherche</h2>
   {% if rs.isUnguarded %}
-  <p class="callout-garde"><strong>Lecture protégée sans garde-fou.</strong> Ce run a été joué avec l'option cachée <code>--unguarded-protected-read</code> (<code>research.guard</code> = <code>unguarded</code>) : les garde-fous de S12 (fiche gelée, claim, registre des lectures) ne sont pas livrés, aucune lecture n'est inscrite (docs/specs/s11.md §9.5). Ce run n'est pas une lecture de VALIDATION ou de HOLDOUT au sens du protocole.</p>
+  <p class="callout-garde"><strong>Lecture protégée sans garde-fou.</strong> Ce run historique utilisait <code>--unguarded-protected-read</code> et porte <code>research.guard</code> = <code>unguarded</code> : aucune admission protégée n’est attestée. Ce run n'est pas une lecture de VALIDATION ou de HOLDOUT au sens du protocole.</p>
+  {% elseif rs.guard == 'guarded' %}
+  <p class="note"><strong>Lecture protégée avec garde-fou.</strong> La fiche gelée et les inscriptions de cette lecture figurent dans la section « Essais et lectures ».</p>
   {% endif %}
   <p class="note">Run joué sur un dataset de recherche par bloc (docs/specs/s11.md). {% if rs.metricsBasis == 'kept_trades' %}<strong>Les métriques de trades portent sur les trades conservés</strong> (<code>metrics_basis</code> = <code>kept_trades</code>) : les trades encore ouverts à la fin de la fenêtre de décision sont purgés.{% else %}Base des métriques de trades : <code>{{ rs.metricsBasis }}</code>.{% endif %} Les métriques d'equity (PnL net, drawdowns, rendement), l'exposition et les jours de régime portent sur la fenêtre de décision, PnL des trades purgés compris.</p>
 

@@ -13,6 +13,9 @@
 
 #![allow(dead_code)]
 
+#[path = "../research_test_support/mod.rs"]
+mod research_test_support;
+
 use std::collections::BTreeMap;
 use std::fmt::Write as _;
 use std::fs;
@@ -151,8 +154,10 @@ pub fn corrompre_en_tete_local(chemin: &Path, nom: &str) {
 }
 
 pub fn tv4(args: &[String]) -> Output {
-    Command::new(env!("CARGO_BIN_EXE_tv4"))
-        .args(args)
+    let mut command = Command::new(env!("CARGO_BIN_EXE_tv4"));
+    command.args(args);
+    let _research_root = research_test_support::isolate(&mut command, args);
+    command
         .output()
         .expect("le binaire tv4 doit pouvoir être lancé")
 }
@@ -206,6 +211,7 @@ impl World {
         let dir = tempfile::tempdir().expect("dossier temporaire");
         let root = dir.path().join("racine");
         fs::create_dir_all(&root).expect("racine");
+        init_research(&root);
         let zip = dir.path().join("dump.zip");
         let sha = ecrire_zip_synthetique(&zip);
         let params = dir.path().join("params.toml");
@@ -315,6 +321,12 @@ impl World {
             "--universe".to_string(),
             self.universe.display().to_string(),
         ]);
+        args.extend([
+            "--research-root".into(),
+            self.root.display().to_string(),
+            "--hypothesis".into(),
+            "H-001".into(),
+        ]);
         args.extend(strings(extra));
         args
     }
@@ -349,4 +361,76 @@ impl World {
 /// Lit un fichier JSON.
 pub fn json(path: &Path) -> serde_json::Value {
     serde_json::from_slice(&fs::read(path).expect("fichier JSON")).expect("JSON valide")
+}
+
+/// Checkout et fiche de recherche entièrement synthétiques.
+pub fn init_research(root: &Path) {
+    git(root, &["init", "-q"]);
+    git(root, &["config", "user.name", "Test"]);
+    git(root, &["config", "user.email", "test@example.invalid"]);
+    fs::create_dir_all(root.join("research")).expect("research");
+    let fields = [
+        "H-NNN",
+        "Date / auteur",
+        "Famille",
+        "Hypothèse économique",
+        "Règle d'entrée",
+        "Règle de sortie",
+        "Paramètres",
+        "Timeframe",
+        "Univers",
+        "Profil de coûts",
+        "Faisabilité G0",
+        "n_min / μ_cible",
+        "Signaux attendus",
+        "Contrôle",
+        "Règle d'abandon",
+        "Connaissances antérieures",
+        "Claim holdout",
+        "dataset_hash",
+    ];
+    let text = fields
+        .iter()
+        .map(|key| {
+            format!(
+                "{key} : {}\n",
+                match *key {
+                    "H-NNN" => "H-001",
+                    "Famille" => "F1",
+                    _ => "renseigné",
+                }
+            )
+        })
+        .collect::<String>();
+    fs::write(root.join("research/H-001.md"), text).expect("fiche");
+    git(root, &["add", "research/H-001.md"]);
+    git(root, &["commit", "-qm", "fiche synthétique"]);
+}
+pub fn git(root: &Path, args: &[&str]) {
+    let o = Command::new("git")
+        .arg("-C")
+        .arg(root)
+        .args(args)
+        .output()
+        .expect("git");
+    assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
+}
+pub fn freeze(root: &Path, hashes: &[String], subset_hash: &str) {
+    let fiche = fs::read(root.join("research/H-001.md")).expect("fiche");
+    use sha2::{Digest as _, Sha256};
+    let sha = Sha256::digest(&fiche)
+        .iter()
+        .map(|b| format!("{b:02x}"))
+        .collect::<String>();
+    let binary = fs::read(env!("CARGO_BIN_EXE_tv4")).expect("binary");
+    let candidate = serde_json::json!({"schema":"tv4-frozen-candidate-v1","hypothesis":"H-001","fiche_sha256":sha,"config_hashes":hashes,"engine_commit":tv4::GIT_SHA,"engine_binary_hash":format!("blake3:{}",blake3::hash(&binary).to_hex()),"okx_subset_hash":subset_hash});
+    fs::create_dir_all(root.join("research/frozen")).expect("frozen");
+    fs::write(
+        root.join("research/frozen/H-001.json"),
+        serde_json::to_vec(&candidate).unwrap(),
+    )
+    .unwrap();
+    git(root, &["add", "research/frozen/H-001.json"]);
+    git(root, &["commit", "-qm", "gel synthétique"]);
+    git(root, &["tag", "frozen/H-001"]);
 }

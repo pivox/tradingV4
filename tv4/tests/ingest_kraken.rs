@@ -6,6 +6,8 @@
 //! échantillons **synthétiques** annoncés comme tels (`AIXBTUSD_1.csv`, `ETHUSD_1.csv`) et le
 //! `MANIFEST.json` **synthétique** de `common`. Aucun zip n'est commité.
 
+mod research_test_support;
+
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
 
@@ -22,8 +24,10 @@ const RESUME: &str = "reports/ingest/kraken/_summary.json";
 
 fn tv4(args: &[String]) -> Output {
     let refs: Vec<&str> = args.iter().map(String::as_str).collect();
-    Command::new(env!("CARGO_BIN_EXE_tv4"))
-        .args(refs)
+    let mut command = Command::new(env!("CARGO_BIN_EXE_tv4"));
+    command.args(refs);
+    let _research_root = research_test_support::isolate(&mut command, args);
+    command
         .output()
         .expect("le binaire tv4 doit pouvoir être lancé")
 }

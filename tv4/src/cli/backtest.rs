@@ -22,6 +22,7 @@ use std::time::Instant;
 
 use clap::Args;
 
+use super::research::admission::Session;
 use super::{CliError, now_ms};
 use crate::engine::{self, CellConfig, DEFAULT_MIN_TRADES};
 use crate::marketdata::kraken;
@@ -31,6 +32,7 @@ use crate::model::{
 };
 use crate::report::manifest::{ManifestInputs, OutputFiles, Timings};
 use crate::report::{self, DataInfo, DatasetRef, EngineInfo, Manifest, Metrics, TradesContext};
+use crate::research::registry::{Metrics as TrialMetrics, TrialResult};
 use crate::sim::SimRules;
 use crate::store::{self, Columns, GapsPolicy, Window, dsh};
 use crate::strategy::{Strategy, registry};
@@ -61,6 +63,8 @@ const BINARY_HASH_BUFFER: usize = 64 * 1024;
 #[derive(Debug, Args)]
 #[command(group(clap::ArgGroup::new("donnees").required(true).args(["fixture", "dataset"])))]
 pub struct RunInputArgs {
+    #[command(flatten)]
+    pub(crate) research: super::research::ResearchArgs,
     /// CSV Kraken OHLCVT en 1m, sans en-tête (par exemple fixtures/kraken_xbtusd_1m.csv).
     /// Exclusif avec --dataset.
     #[arg(long, value_name = "CSV")]
@@ -251,6 +255,16 @@ pub(super) fn run(args: &BacktestArgs) -> Result<(), CliError> {
     let prepared = prepare(&args.inputs)?;
     let strategy = prepared.build_strategy()?;
     let config = prepared.cell_config();
+    let expected =
+        engine::preflight::cell(strategy.as_ref(), &config, prepared.min_trades)?.hash()?;
+    let mut session = Session::begin(
+        &args.inputs.research,
+        &[expected],
+        &prepared.dataset_hash,
+        None,
+        None,
+        None,
+    )?;
     let load_ms = elapsed_ms(t0);
 
     let t_run = Instant::now();
@@ -269,6 +283,13 @@ pub(super) fn run(args: &BacktestArgs) -> Result<(), CliError> {
         prepared.data.clone(),
         prepared.dataset_hash.clone(),
     )?;
+    let governance = session.context(&metrics.config_hash)?;
+    session.finish(&[trial_result(
+        &metrics.config_hash,
+        metrics.expectancy_r,
+        metrics.n_trades,
+        metrics.profit_factor,
+    )?])?;
     let context = TradesContext {
         symbol: &prepared.symbol,
         span_ms: metrics.window.span_ms(),
@@ -322,7 +343,7 @@ pub(super) fn run(args: &BacktestArgs) -> Result<(), CliError> {
     // Hash du binaire après l'arrêt du chronomètre ; un run sans hash de binaire n'est pas un résultat
     // valide : il échoue avant le manifeste.
     let engine_info = EngineInfo::current(binary_hash()?);
-    let manifest = Manifest::new(
+    let mut manifest = Manifest::new(
         &metrics,
         ManifestInputs {
             hash_format: prepared.hash_format.clone(),
@@ -338,6 +359,7 @@ pub(super) fn run(args: &BacktestArgs) -> Result<(), CliError> {
             },
         },
     )?;
+    manifest.governance = Some(governance);
     debug_assert_eq!(manifest.run_id, run_id);
     report::write_json_atomic(&out, MANIFEST_FILE, &manifest)?;
     println!(
@@ -347,7 +369,26 @@ pub(super) fn run(args: &BacktestArgs) -> Result<(), CliError> {
         result.pnl_net,
         metrics.verdict
     );
+    session.print_context();
     Ok(())
+}
+
+/// Copie les métriques du moteur dans le registre sans recalcul financier dans la CLI.
+pub(super) fn trial_result(
+    config_hash: &str,
+    mu_r: Option<f64>,
+    n: u64,
+    pf: Option<f64>,
+) -> Result<TrialResult, CliError> {
+    Ok(TrialResult {
+        config_hash: super::research::digest(config_hash)?,
+        failed: false,
+        metrics: TrialMetrics {
+            mu_r,
+            n: Some(n),
+            pf,
+        },
+    })
 }
 
 /// Supprime `dir/name` s'il existe ; une absence (fichier ou dossier) n'est pas une erreur.

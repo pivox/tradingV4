@@ -21,12 +21,15 @@ use App\Run\Dto\ExitTypeStat;
 use App\Run\Dto\Exposure;
 use App\Run\Dto\Funnel;
 use App\Run\Dto\G1Executable;
+use App\Run\Dto\GovernanceContext;
 use App\Run\Dto\Histogram;
+use App\Run\Dto\HypothesisContext;
 use App\Run\Dto\InstrumentsInfo;
 use App\Run\Dto\Manifest;
 use App\Run\Dto\ManifestData;
 use App\Run\Dto\MaxDrawdown;
 use App\Run\Dto\Metrics;
+use App\Run\Dto\NoiseContext;
 use App\Run\Dto\PairFunnel;
 use App\Run\Dto\PairStat;
 use App\Run\Dto\PnlWithoutBest;
@@ -49,6 +52,7 @@ use App\Run\Dto\TradeRow;
 use App\Run\Dto\UpcomingChange;
 use App\Run\Dto\YearStat;
 use App\Run\Json\JsonObject;
+use DateTimeImmutable;
 
 /**
  * Lit les quatre fichiers d'un run (`manifest.json`, `metrics.json`, `trades.csv`, `equity.csv`) et
@@ -141,6 +145,7 @@ final class RunDirectoryReader
         }
 
         $this->checkCostsConsistency($manifest, $metrics);
+        $this->checkGovernanceConsistency($manifest, $metrics->research);
 
         $trades = $this->tradesReader->read($dir . '/' . TradesCsvReader::FILE);
         if (null !== $metrics->research) {
@@ -272,10 +277,162 @@ final class RunDirectoryReader
             costMeasuresFile: $costs ? $this->optionalString($j, 'cost_measures_file') : null,
             costMeasuresHash: $costs ? $this->optionalString($j, 'cost_measures_hash') : null,
             profilesId: $costs ? $this->optionalString($j, 'profiles_id') : null,
+            governance: $this->hasBlock($j, 'governance') ? $this->governance($j->object('governance')) : null,
             researchInputs: $research && $j->has('research_inputs') && !$j->isNull('research_inputs')
                 ? $j->scalarMap('research_inputs')
                 : null,
         );
+    }
+
+    /** Contexte optionnel, mais complet et strictement typé lorsqu'il est présent. */
+    private function governance(JsonObject $g): GovernanceContext
+    {
+        $schema = $g->string('schema');
+        if ('tv4-governance-v1' !== $schema) {
+            throw $this->governanceError('schema', 'schéma inconnu "' . $schema . '"');
+        }
+        // Les champs nullable restent obligatoires dans un contexte présent.
+        $hypothesis = null;
+        if (!$g->isNull('hypothesis')) {
+            $h = $g->object('hypothesis');
+            $hypothesis = new HypothesisContext($h->string('identifiant'), $h->string('sha256'));
+            if ('H-000' === $hypothesis->identifiant || 1 !== preg_match('/\AH-[0-9]{3}\z/', $hypothesis->identifiant)) {
+                throw $this->governanceError('hypothesis.identifiant', 'fiche exécutable H-NNN attendue, différente de H-000');
+            }
+            if (1 !== preg_match('/\A[0-9a-fA-F]{64}\z/', $hypothesis->sha256)) {
+                throw $this->governanceError('hypothesis.sha256', '64 caractères hexadécimaux attendus');
+            }
+        }
+        $noise = $g->object('noise');
+        $context = new GovernanceContext(
+            schema: $schema,
+            configHash: $g->string('config_hash'),
+            datasetHash: $g->string('dataset_hash'),
+            trialId: $g->int('trial_id'),
+            readId: $g->int('read_id'),
+            hypothesis: $hypothesis,
+            frozenTag: $g->nullableString('frozen_tag'),
+            frozenAt: $g->nullableString('frozen_at'),
+            sourceBlock: $g->nullableString('source_block'),
+            effectiveBlock: $g->nullableString('effective_block'),
+            generation: $g->int('generation'),
+            claimHoldout: $g->nullableInt('claim_holdout'),
+            noise: new NoiseContext(
+                n: $noise->int('n'),
+                nEff: $noise->nullableInt('n_eff'),
+                selectionYears: $noise->float('selection_years'),
+                expected: $noise->nullableFloat('expected'),
+                approxQ90: $noise->nullableFloat('approx_q90'),
+                q95: $noise->nullableFloat('q95'),
+            ),
+        );
+        $positiveCounts = [
+            'trial_id' => $context->trialId,
+            'read_id' => $context->readId,
+            'noise.n' => $context->noise->n,
+            'noise.n_eff' => $context->noise->nEff,
+            'claim_holdout' => $context->claimHoldout,
+        ];
+        foreach ($positiveCounts as $path => $value) {
+            if (null !== $value && $value <= 0) {
+                throw $this->governanceError($path, 'entier strictement positif attendu');
+            }
+        }
+        if (null !== $context->noise->nEff && $context->noise->nEff > $context->noise->n) {
+            throw $this->governanceError('noise.n_eff', 'ne peut pas dépasser N');
+        }
+        if ($context->generation < 0) {
+            throw $this->governanceError('generation', 'entier positif ou nul attendu');
+        }
+        if (!is_finite($context->noise->selectionYears) || $context->noise->selectionYears <= 0) {
+            throw $this->governanceError('noise.selection_years', 'durée finie strictement positive attendue');
+        }
+        $estimates = [
+            'expected' => $context->noise->expected,
+            'approx_q90' => $context->noise->approxQ90,
+            'q95' => $context->noise->q95,
+        ];
+        foreach ($estimates as $path => $value) {
+            if (null !== $value && !is_finite($value)) {
+                throw $this->governanceError('noise.' . $path, 'nombre fini ou null attendu');
+            }
+        }
+        foreach (['source_block' => $context->sourceBlock, 'effective_block' => $context->effectiveBlock] as $path => $block) {
+            if (null !== $block && !in_array($block, ResearchInfo::BLOCKS, true)) {
+                throw $this->governanceError($path, 'bloc inconnu "' . $block . '"');
+            }
+        }
+        $effective = $context->sourceBlock;
+        if ($context->generation >= 1) {
+            $effective = match ($effective) {
+                'HOLDOUT' => 'VALIDATION',
+                'FORWARD' => 'HOLDOUT',
+                default => $effective,
+            };
+        }
+        if ($context->effectiveBlock !== $effective) {
+            throw $this->governanceError('effective_block', 'incohérent avec source_block et generation');
+        }
+        if (('HOLDOUT' === $effective) !== (null !== $context->claimHoldout)) {
+            throw $this->governanceError('claim_holdout', 'requis uniquement pour le bloc effectif HOLDOUT');
+        }
+        if (null !== $context->frozenAt) {
+            $this->checkFrozenAt($context->frozenAt);
+        }
+        if (in_array($effective, ['VALIDATION', 'HOLDOUT'], true)) {
+            if (null === $hypothesis || 1 !== preg_match('/\AH-[0-9]{3}\z/', $hypothesis->identifiant)) {
+                throw $this->governanceError('hypothesis', 'une fiche H-NNN est requise pour une lecture protégée');
+            }
+            if ('frozen/' . $hypothesis->identifiant !== $context->frozenTag) {
+                throw $this->governanceError('frozen_tag', 'tag frozen/H-NNN correspondant à la fiche requis');
+            }
+            if (null === $context->frozenAt) {
+                throw $this->governanceError('frozen_at', 'date de gel UTC requise pour une lecture protégée');
+            }
+        }
+
+        return $context;
+    }
+
+    private function checkFrozenAt(string $value): void
+    {
+        if (1 !== preg_match('/\A[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(?:\.[0-9]{1,9})?(?:Z|\+00:00)\z/', $value)) {
+            throw $this->governanceError('frozen_at', 'date et heure UTC lisibles attendues');
+        }
+        // Le format a été vérifié ; le parseur relève aussi les dates impossibles (31 février, etc.).
+        DateTimeImmutable::createFromFormat('!Y-m-d\TH:i:s', substr($value, 0, 19));
+        if (false !== DateTimeImmutable::getLastErrors()) {
+            throw $this->governanceError('frozen_at', 'date et heure UTC invalides');
+        }
+    }
+
+    private function checkGovernanceConsistency(Manifest $manifest, ?ResearchInfo $research): void
+    {
+        $g = $manifest->governance;
+        if (null === $g) {
+            if ('guarded' === $research?->guard) {
+                throw $this->governanceError('', 'contexte requis pour research.guard = guarded');
+            }
+
+            return;
+        }
+        if ($g->configHash !== $manifest->configHash) {
+            throw $this->governanceError('config_hash', 'différent de celui du manifeste');
+        }
+        if ($g->datasetHash !== $manifest->datasetHash) {
+            throw $this->governanceError('dataset_hash', 'différent de celui du manifeste');
+        }
+        if ($g->effectiveBlock !== $research?->block) {
+            throw $this->governanceError('effective_block', 'différent de research.block des métriques');
+        }
+        if (in_array($g->effectiveBlock, ['VALIDATION', 'HOLDOUT'], true) && 'guarded' !== $research?->guard) {
+            throw InvalidRunException::invalidValue(self::METRICS_FILE, 'research.guard', 'guarded requis pour une lecture protégée');
+        }
+    }
+
+    private function governanceError(string $path, string $reason): InvalidRunException
+    {
+        return InvalidRunException::invalidValue(self::MANIFEST_FILE, '' === $path ? 'governance' : 'governance.' . $path, $reason);
     }
 
     /** `manifest.data` d'un run s9 : univers, paire de régime et segments chargés ; le reste est facultatif. */

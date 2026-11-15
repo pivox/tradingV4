@@ -76,6 +76,8 @@
 //! comparée à son homologue comme un run ou un dossier de profils, puis `lines.json` est comparé à
 //! l'octet. Code 3 au premier écart, avec les chemins en écart.
 
+mod governance;
+
 use std::fs;
 use std::path::{Component, Path};
 
@@ -1019,6 +1021,11 @@ fn load_run(label: &'static str, dir: &Path) -> Result<LoadedRun, VerifyError> {
     if result_hash != trades_hash {
         return Err(inconsistent("result_hash", &result_hash, &trades_hash));
     }
+    governance::check(&metrics, &manifest).map_err(|detail| VerifyError::Portfolio {
+        label,
+        dir: shown.clone(),
+        detail,
+    })?;
     if family.is_portfolio() {
         check_portfolio(&metrics, &manifest, &trades_bytes).map_err(|detail| {
             VerifyError::Portfolio {

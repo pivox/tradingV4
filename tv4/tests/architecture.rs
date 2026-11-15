@@ -672,7 +672,7 @@ fn les_fichiers_d_un_module_absent_sont_une_liste_vide() {
     assert!(module_files(&src_dir(), "execution").is_empty());
 }
 
-/// Appels de la libm interdits hors de `report/approx.rs` (docs/03 §7.4) : leurs résultats ne sont
+/// Appels de la libm confinés aux calculs approximatifs (docs/03 §7.4) : leurs résultats ne sont
 /// pas exacts au bit d'une machine à l'autre. Forme méthode (`x.ln()`) et forme chemin (`f64::ln(x)`).
 const LIBM_CALLS: [&str; 17] = [
     ".ln(", ".ln_1p(", ".log(", ".log2(", ".log10(", ".exp(", ".exp2(", ".exp_m1(", ".powf(",
@@ -703,28 +703,36 @@ fn libm_calls(source: &str) -> Vec<&'static str> {
 }
 
 #[test]
-fn la_libm_n_est_appelee_que_dans_report_approx() {
+fn la_libm_est_confinee_aux_calculs_approximatifs() {
     let src = src_dir();
     let mut files = Vec::new();
     collect_rs_files(&src, &mut files);
     assert!(files.len() > 40, "{} fichiers lus", files.len());
     let approx = src.join("report").join("approx.rs");
     assert!(approx.is_file(), "report/approx.rs absent");
+    let noise = src.join("research").join("noise.rs");
+    assert!(noise.is_file(), "research/noise.rs absent");
     let mut violations = Vec::new();
     for path in files {
         if path == approx {
             continue;
         }
         for call in libm_calls(&read(&path)) {
+            // S12 : seuls ln et exp_m1 pour le contexte de sélection hors simulation.
+            if path == noise && matches!(call, ".ln(" | ".exp_m1(") {
+                continue;
+            }
             violations.push(format!("{} appelle `{call}`", path.display()));
         }
     }
     assert!(
         violations.is_empty(),
-        "la libm n'est permise que dans report/approx.rs (docs/03 §7.4) :\n{}",
+        "la libm est confinée à report/approx.rs et ln/exp_m1 dans research/noise.rs (docs/03 §7.4) :\n{}",
         violations.join("\n")
     );
-    // Le seul fichier autorisé s'en sert bien : la règle n'est pas vacuement verte.
+    // Les deux exceptions s'en servent bien : la règle n'est pas vacuement verte.
+    let noise_calls = libm_calls(&read(&noise));
+    assert!(noise_calls.contains(&".ln(") && noise_calls.contains(&".exp_m1("));
     let calls = libm_calls(&read(&approx));
     assert!(
         calls.contains(&".ln(") && calls.contains(&".powf("),

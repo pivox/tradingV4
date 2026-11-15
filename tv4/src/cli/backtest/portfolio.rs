@@ -21,6 +21,8 @@ use std::time::Instant;
 
 use clap::Args;
 
+use super::trial_result;
+use crate::cli::research::admission::Session;
 use crate::cli::{CliError, now_ms};
 use crate::engine::{
     self, DEFAULT_MAX_POSITIONS, DEFAULT_QUOTE_GAP_MS, MAX_POSITIONS_LIMIT, PortfolioConfig,
@@ -104,10 +106,6 @@ pub struct PortfolioArgs {
     /// de recherche (`full/`, `okx_usdc/`, `lines.json`). Obligatoire pour VALIDATION et HOLDOUT.
     #[arg(long, value_name = "JSON")]
     pub okx_subset: Option<PathBuf>,
-    /// Lit un bloc protégé (VALIDATION, HOLDOUT) malgré l'absence des garde-fous de S12 ; tracé dans
-    /// chaque rapport (`research.guard = unguarded`) et sur stderr (docs/specs/s11.md §9.5).
-    #[arg(long, hide = true)]
-    pub unguarded_protected_read: bool,
 }
 
 impl PortfolioArgs {
@@ -118,7 +116,7 @@ impl PortfolioArgs {
 
     /// Vrai si une option propre à la recherche de S11 est donnée (elle exige un dataset de bloc).
     pub fn has_research_option(&self) -> bool {
-        self.universe.is_some() || self.okx_subset.is_some() || self.unguarded_protected_read
+        self.universe.is_some() || self.okx_subset.is_some()
     }
 
     /// Paire de régime : `--regime-symbol`, sinon [`DEFAULT_REGIME_SYMBOL`].
@@ -144,7 +142,6 @@ impl PortfolioArgs {
             ("--quote-gap-days", self.quote_gap_days.is_some()),
             ("--min-order-bump-risk", self.min_order_bump_risk.is_some()),
             ("--okx-subset", self.okx_subset.is_some()),
-            ("--unguarded-protected-read", self.unguarded_protected_read),
         ];
         match given.iter().find(|(_, present)| *present) {
             Some((option, _)) => Err(CliError::PortfolioOptionWithoutSymbols {
@@ -430,7 +427,16 @@ pub(super) fn prepare(
 
     let shown = dataset_arg.display().to_string();
     let path = resolve_dataset_path(&args.root, dataset_arg)?;
-    let loaded = store::load_dataset_multi(&args.root, &path)?;
+    let manifest = store::read_dataset_manifest(&path)?;
+    // L'aiguillage a lu une autre copie : refuser tout remplacement en dataset de bloc
+    // avant d'ouvrir une série, puis charger exactement la copie contrôlée ici.
+    if manifest.block.is_some() {
+        return Err(crate::cli::research::refused(
+            "manifeste de recherche remplacé après aiguillage ; relancer pour son admission",
+        )
+        .into());
+    }
+    let loaded = store::load_dataset_multi_manifest(&args.root, &path, manifest)?;
     if loaded.manifest.tfs.as_slice() != [Timeframe::M1] {
         return Err(CliError::DatasetTimeframe {
             path: shown,
@@ -512,6 +518,15 @@ pub(super) fn run(args: &BacktestArgs) -> Result<(), CliError> {
     let prepared = prepare(&args.inputs, &args.portfolio)?;
     let strategies = prepared.build_strategies()?;
     let config = prepared.portfolio_config(prepared.slippage);
+    let expected = engine::preflight::portfolio(&strategies, &config, None, None)?.hash()?;
+    let mut session = Session::begin(
+        &args.inputs.research,
+        &[expected],
+        &prepared.dataset.dataset_hash,
+        None,
+        None,
+        None,
+    )?;
     let load_ms = elapsed_ms(t0);
 
     let t_run = Instant::now();
@@ -536,6 +551,13 @@ pub(super) fn run(args: &BacktestArgs) -> Result<(), CliError> {
             markets,
         },
     )?;
+    let governance = session.context(&metrics.config_hash)?;
+    session.finish(&[trial_result(
+        &metrics.config_hash,
+        metrics.expectancy_r,
+        metrics.n_trades,
+        metrics.profit_factor,
+    )?])?;
     let symbols: Vec<&str> = result.universe.iter().map(String::as_str).collect();
     let metrics_bytes = report::json_bytes(&metrics)?;
     let trades_bytes = report::writers::trades_csv_legs(
@@ -580,7 +602,7 @@ pub(super) fn run(args: &BacktestArgs) -> Result<(), CliError> {
     let cli_cold_ms = elapsed_ms(t0);
 
     let engine_info = report::EngineInfo::current(binary_hash()?);
-    let manifest = ManifestS9::new(
+    let mut manifest = ManifestS9::new(
         &metrics,
         ManifestS9Inputs {
             instruments_file: prepared.instruments.file_as_given.clone(),
@@ -595,6 +617,7 @@ pub(super) fn run(args: &BacktestArgs) -> Result<(), CliError> {
             },
         },
     )?;
+    manifest.governance = Some(governance);
     debug_assert_eq!(manifest.run_id, run_id);
     report::write_json_atomic(&out, MANIFEST_FILE, &manifest)?;
     println!(
@@ -605,6 +628,7 @@ pub(super) fn run(args: &BacktestArgs) -> Result<(), CliError> {
         result.pnl_net,
         metrics.verdict
     );
+    session.print_context();
     Ok(())
 }
 

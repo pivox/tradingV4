@@ -62,17 +62,20 @@ jobs:
       - name: Construire le binaire
         run: cargo build --locked --bin tv4
 
+      - name: Préparer le registre isolé des fumées S12
+        run: python3 .github/scripts/s12-smoke-study.py "$RUNNER_TEMP/tv4-smoke-study"
+
       # Même job, deux process : le double run que les tests Rust ne font que depuis un test. `tv4 verify`
       # compare metrics.json, trades.csv et equity.csv à l'octet (code 0 identiques, 3 différents).
       - name: Backtest de fumée, deux process, et tv4 verify
         run: |
           set -euo pipefail
           for r in a b; do
-            ./target/debug/tv4 backtest --fixture fixtures/kraken_xbtusd_1m.csv --strategy sma_cross \
+            ./target/debug/tv4 backtest --research-root "$RUNNER_TEMP/tv4-smoke-study" --fixture fixtures/kraken_xbtusd_1m.csv --strategy sma_cross \
               --params config/strategies/sma_cross.toml --fees okx --out runs/fumee-$r
           done
           ./target/debug/tv4 verify runs/fumee-a runs/fumee-b
-          ./target/debug/tv4 backtest --fixture fixtures/kraken_xbtusd_1m.csv --strategy sma_cross \
+          ./target/debug/tv4 backtest --research-root "$RUNNER_TEMP/tv4-smoke-study" --fixture fixtures/kraken_xbtusd_1m.csv --strategy sma_cross \
             --params config/strategies/sma_cross.toml --fees bitvavo_usdc --out runs/fumee-bitvavo
 
       # Portefeuille (docs/specs/s9.md §18, lot H) : même principe, deux process, sur un dataset à deux
@@ -91,7 +94,7 @@ jobs:
           ./target/debug/tv4 dataset build --root smoke-s9 --name fumee_duo --exchange kraken \
             --symbol BTC-USD --symbol ETH-USD --tf 1m --from 2020-01-01T00:00:00Z --to 2020-01-09T00:00:00Z
           for r in a b; do
-            ./target/debug/tv4 backtest --root smoke-s9 --dataset fumee_duo --strategy sma_cross \
+            ./target/debug/tv4 backtest --research-root "$RUNNER_TEMP/tv4-smoke-study" --root smoke-s9 --dataset fumee_duo --strategy sma_cross \
               --params config/strategies/sma_cross.toml --fees okx --symbols BTC-USD,ETH-USD \
               --max-positions 8 --sizing research --capital 300 \
               --instruments-okx tv4/tests/fixtures/okx_instruments_spot.json --out runs/portefeuille-$r
@@ -109,14 +112,14 @@ jobs:
         run: |
           set -euo pipefail
           for r in a b; do
-            ./target/debug/tv4 backtest --root smoke-s9 --dataset fumee_duo --strategy sma_cross \
+            ./target/debug/tv4 backtest --research-root "$RUNNER_TEMP/tv4-smoke-study" --root smoke-s9 --dataset fumee_duo --strategy sma_cross \
               --params config/strategies/sma_cross.toml --fees okx --symbols BTC-USD,ETH-USD \
               --max-positions 8 --sizing research --capital 300 \
               --instruments-okx tv4/tests/fixtures/okx_instruments_spot.json \
               --costs config/costs.toml --out runs/profils-$r
           done
           ./target/debug/tv4 verify runs/profils-a runs/profils-b
-          ./target/debug/tv4 backtest --root smoke-s9 --dataset fumee_duo --strategy sma_cross \
+          ./target/debug/tv4 backtest --research-root "$RUNNER_TEMP/tv4-smoke-study" --root smoke-s9 --dataset fumee_duo --strategy sma_cross \
             --params config/strategies/sma_cross.toml --fees okx_regular --symbols BTC-USD,ETH-USD \
             --max-positions 8 --sizing research --capital 300 \
             --instruments-okx tv4/tests/fixtures/okx_instruments_spot.json \
@@ -157,11 +160,11 @@ jobs:
           mkdir -p smoke-s11/subset
           ./target/debug/tv4 universe okx-subset --instruments tv4/tests/fixtures/okx_instruments_spot.json \
             --out smoke-s11/subset/okx_usdc.json
-          ./target/debug/tv4 backtest --root smoke-s11 --dataset fumee_dev --strategy sma_cross \
+          ./target/debug/tv4 backtest --research-root "$RUNNER_TEMP/tv4-smoke-study" --hypothesis H-001 --root smoke-s11 --dataset fumee_dev --strategy sma_cross \
             --params config/strategies/sma_cross.toml --fees okx --symbols BTC-USD \
             --sizing research --capital 300 --out runs/recherche-simple
           for r in a b; do
-            ./target/debug/tv4 backtest --root smoke-s11 --dataset fumee_dev --strategy sma_cross \
+            ./target/debug/tv4 backtest --research-root "$RUNNER_TEMP/tv4-smoke-study" --hypothesis H-001 --root smoke-s11 --dataset fumee_dev --strategy sma_cross \
               --params config/strategies/sma_cross.toml --fees okx --symbols BTC-USD \
               --okx-subset smoke-s11/subset/okx_usdc.json --sizing research --capital 300 --out runs/recherche-$r
           done
@@ -439,6 +442,16 @@ jobs:
             echo "::error::le rapport du run simple porte une section Deux lignes"
             statut=1
           fi
+          for fichier in rapport-fumee.html rapport-portefeuille.html rapport-profils.html rapport-recherche.html rapport-lignes.html; do
+            if ! grep -qF 'id="essais-lectures"' "$fichier" || ! grep -qF 'N déclaré' "$fichier"; then
+              echo "::error::le rapport ${fichier} ne porte pas le contexte S12"
+              statut=1
+            fi
+            if grep -qF 'Ce run ne porte pas de contexte' "$fichier"; then
+              echo "::error::le rapport ${fichier} a perdu sa provenance S12"
+              statut=1
+            fi
+          done
           exit "$statut"
 
       - name: Publier les rapports

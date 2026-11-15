@@ -31,10 +31,12 @@ use std::time::Instant;
 
 use clap::Args;
 
+use super::trial_result;
+use crate::cli::research::admission::Session;
 use crate::cli::{CliError, now_ms};
 use crate::engine::{self, CostSetup, NoopObserver, ProfileRun, ProfilesInputs};
 use crate::model::Slippage;
-use crate::model::costs::{CostMeasures, CostsFile, MAX_COST_SEED};
+use crate::model::costs::{CostMeasures, CostProfileName, CostsFile, MAX_COST_SEED};
 use crate::report::manifest::{ManifestS9Inputs, Timings};
 use crate::report::metrics_s9::{CostsInputs, MetricsS9Inputs};
 use crate::report::profiles::{
@@ -126,6 +128,7 @@ fn render(
 
 /// Ce qu'il faut pour écrire le manifeste de chaque profil.
 struct ManifestContext<'a> {
+    session: &'a Session,
     prepared: &'a PreparedPortfolio,
     costs_path: &'a Path,
     measures_path: Option<&'a Path>,
@@ -162,7 +165,7 @@ fn write_profile(
             info
         }
     };
-    let manifest = ManifestS9::new_s10(
+    let mut manifest = ManifestS9::new_s10(
         &rendered.metrics,
         ManifestS10Inputs {
             base: ManifestS9Inputs {
@@ -182,6 +185,7 @@ fn write_profile(
             profiles_id: context.profiles_id.to_string(),
         },
     )?;
+    manifest.governance = Some(context.session.context(&rendered.metrics.config_hash)?);
     report::write_json_atomic(&dir, MANIFEST_FILE, &manifest)?;
     Ok(())
 }
@@ -218,6 +222,29 @@ pub(super) fn run(args: &BacktestArgs) -> Result<(), CliError> {
         prepared.build_strategies()?,
         prepared.build_strategies()?,
     ];
+    let config = prepared.portfolio_config(Slippage::ZERO);
+    let costs = CostSetup {
+        file: &costs_file,
+        measures: measures.as_ref(),
+        seed,
+    };
+    let expected = CostProfileName::ALL
+        .into_iter()
+        .map(|profile| {
+            engine::preflight::portfolio(&strategies[0], &config, Some((costs, profile)), None)
+                .map_err(CliError::from)?
+                .hash()
+                .map_err(CliError::from)
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    let mut session = Session::begin(
+        &args.inputs.research,
+        &expected,
+        &prepared.dataset.dataset_hash,
+        None,
+        None,
+        None,
+    )?;
     let load_ms = elapsed_ms(t0);
 
     let t_run = Instant::now();
@@ -226,12 +253,8 @@ pub(super) fn run(args: &BacktestArgs) -> Result<(), CliError> {
             series: &prepared.series,
             strategies,
             // Le slippage scalaire est nul : le slippage vient du profil de coûts.
-            config: prepared.portfolio_config(Slippage::ZERO),
-            costs: CostSetup {
-                file: &costs_file,
-                measures: measures.as_ref(),
-                seed,
-            },
+            config,
+            costs,
         },
         &mut NoopObserver,
     )?;
@@ -249,6 +272,20 @@ pub(super) fn run(args: &BacktestArgs) -> Result<(), CliError> {
     let baseline = render(run_baseline, &prepared, costs_inputs, args)?;
     let adverse = render(run_adverse, &prepared, costs_inputs, args)?;
     let maker = render(run_maker, &prepared, costs_inputs, args)?;
+
+    let completed = [&baseline, &adverse, &maker]
+        .into_iter()
+        .map(|run| {
+            session.context(&run.metrics.config_hash)?;
+            trial_result(
+                &run.metrics.config_hash,
+                run.metrics.expectancy_r,
+                run.metrics.n_trades,
+                run.metrics.profit_factor,
+            )
+        })
+        .collect::<Result<Vec<_>, CliError>>()?;
+    session.finish(&completed)?;
 
     let id = profiles_id(
         &baseline.metrics.run_id(),
@@ -294,6 +331,7 @@ pub(super) fn run(args: &BacktestArgs) -> Result<(), CliError> {
         remove_stale(&out, stale)?;
     }
     let context = ManifestContext {
+        session: &session,
         prepared: &prepared,
         costs_path,
         measures_path: args.costs.cost_measures.as_deref(),
@@ -345,5 +383,6 @@ pub(super) fn run(args: &BacktestArgs) -> Result<(), CliError> {
         profiles.label.fr(),
         profiles.label.as_str()
     );
+    session.print_context();
     Ok(())
 }

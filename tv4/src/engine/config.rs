@@ -7,6 +7,8 @@ use crate::model::{FeeSchedule, InstrumentRules, ModelError, Slippage, hash};
 use crate::sim::SimRules;
 use crate::strategy::Strategy;
 
+use super::EngineError;
+
 /// Nombre minimal de trades en dessous duquel le verdict est `rejected_too_few_trades` (docs/03 §5.3).
 pub const DEFAULT_MIN_TRADES: u32 = 30;
 
@@ -72,6 +74,18 @@ impl RunConfig {
             instrument: config.instrument,
             min_trades: DEFAULT_MIN_TRADES,
         }
+    }
+
+    /// Remplace le seuil d'effectif dans l'objet canonique, avant ou après calcul.
+    ///
+    /// # Erreurs
+    /// Un seuil nul est refusé comme dans `CellResult::with_min_trades`.
+    pub fn with_min_trades(mut self, min_trades: u32) -> Result<Self, EngineError> {
+        if min_trades == 0 {
+            return Err(EngineError::InvalidMinTrades);
+        }
+        self.min_trades = min_trades;
+        Ok(self)
     }
 
     /// Hash blake3 hexadécimal du JSON canonique de la configuration.

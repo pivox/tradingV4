@@ -5,6 +5,9 @@
 
 #![allow(dead_code)]
 
+#[path = "../research_test_support/mod.rs"]
+mod research_test_support;
+
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
 
@@ -88,8 +91,10 @@ pub fn repo(relative: &str) -> PathBuf {
 }
 
 pub fn tv4(args: &[String]) -> Output {
-    Command::new(env!("CARGO_BIN_EXE_tv4"))
-        .args(args)
+    let mut command = Command::new(env!("CARGO_BIN_EXE_tv4"));
+    command.args(args);
+    let _research_root = research_test_support::isolate(&mut command, args);
+    command
         .output()
         .expect("le binaire tv4 doit pouvoir être lancé")
 }

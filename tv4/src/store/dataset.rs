@@ -880,8 +880,23 @@ fn read_series_files<'a>(
 /// [`load_dataset`] garde son refus des datasets multi-séries : le chemin du jalon 1 ne lit jamais
 /// un dataset multi-séries par erreur.
 pub fn load_dataset_multi(root: &Path, manifest_path: &Path) -> Result<MultiDataset, StoreError> {
-    let shown = manifest_path.display().to_string();
     let manifest = read_dataset_manifest(manifest_path)?;
+    load_dataset_multi_manifest(root, manifest_path, manifest)
+}
+
+/// Charge les séries du manifeste déjà admis par la CLI, sans relire un fichier JSON
+/// qui pourrait avoir été remplacé après le contrôle des autorisations. `manifest_path`
+/// sert uniquement à nommer la source dans les erreurs. Tous les hashes des bougies
+/// restent vérifiés comme dans `load_dataset_multi`.
+///
+/// # Erreurs
+/// Celles de `load_dataset_multi` hors lecture du manifeste JSON.
+pub fn load_dataset_multi_manifest(
+    root: &Path,
+    manifest_path: &Path,
+    manifest: DatasetManifest,
+) -> Result<MultiDataset, StoreError> {
+    let shown = manifest_path.display().to_string();
     if manifest.hash_format != HASH_FORMAT {
         return Err(StoreError::UnsupportedHashFormat {
             path: shown,

@@ -39,6 +39,11 @@ final readonly class LineEntry
         return $this->profiles?->baseline() ?? $this->run ?? throw new RuntimeException('ligne sans run : ' . $this->line);
     }
 
+    public function isUnguarded(): bool
+    {
+        return $this->profiles?->isUnguarded() ?? $this->research()->isUnguarded();
+    }
+
     public function research(): ResearchInfo
     {
         return $this->referenceRun()->metrics->research ?? throw new RuntimeException('ligne sans bloc research : ' . $this->line);

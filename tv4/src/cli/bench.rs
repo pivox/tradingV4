@@ -1,7 +1,8 @@
 //! Sous-commande `tv4 bench` (S8) : coût de la boucle par bougie 1m et coût moyen par appel de
 //! `Strategy::on_bar` (docs/03-architecture.md §8 et §15.1).
 //!
-//! Mêmes entrées que `tv4 backtest` ([`RunInputArgs`]) ; rien n'est écrit sur disque. La CLI est un des
+//! Mêmes entrées que `tv4 backtest` ([`RunInputArgs`]) ; aucun run n’est écrit.
+//! Le registre d’essais reste alimenté (S12), une seule lecture pour les répétitions. La CLI est un des
 //! rares endroits qui lisent l'horloge : `engine` et `strategy` restent sans horloge, la boucle est
 //! chronométrée par un [`LoopObserver`] et `on_bar` par une enveloppe de stratégie ([`TimedStrategy`]).
 //!
@@ -24,7 +25,9 @@ use std::time::{Duration, Instant};
 use clap::Args;
 
 use super::CliError;
+use super::backtest::trial_result;
 use super::backtest::{PreparedRun, RunInputArgs, prepare};
+use super::research::admission::Session;
 use crate::engine::{self, LoopObserver};
 use crate::model::Timeframe;
 use crate::strategy::{BarContext, IndicatorSpec, Signal, Strategy, StrategyFunnel};
@@ -230,8 +233,32 @@ fn ms(duration: Duration) -> f64 {
 
 /// `tv4 bench`.
 pub(super) fn run(args: &BenchArgs) -> Result<(), CliError> {
+    if let Some(dataset) = args.inputs.dataset.as_deref() {
+        let path = super::backtest::resolve_dataset_path(&args.inputs.root, dataset)?;
+        let manifest = crate::store::read_dataset_manifest(&path)?;
+        if manifest.block.is_some() {
+            return Err(super::research::refused(
+                "bench refuse les datasets de recherche, dont les blocs protégés ; utiliser backtest sous admission",
+            ).into());
+        }
+    }
     let t_load = Instant::now();
     let prepared = prepare(&args.inputs)?;
+    let strategy = prepared.build_strategy()?;
+    let expected = engine::preflight::cell(
+        strategy.as_ref(),
+        &prepared.cell_config(),
+        prepared.min_trades,
+    )?
+    .hash()?;
+    let mut session = Session::begin(
+        &args.inputs.research,
+        &[expected],
+        &prepared.dataset_hash,
+        None,
+        None,
+        None,
+    )?;
     let load = t_load.elapsed();
     let repeat = usize::try_from(args.repeat).unwrap_or(usize::MAX);
 
@@ -290,6 +317,7 @@ pub(super) fn run(args: &BenchArgs) -> Result<(), CliError> {
     let overhead = clock_overhead_ns();
     let net = (measured - overhead).max(0.0);
 
+    session.finish(&[trial_result(&config_hash, None, n_trades as u64, None)?])?;
     let strategy = prepared.build_strategy()?;
     println!(
         "tv4 bench : {} {}, {bars} bougies 1m dans la fenêtre, {} répétitions (médianes)",
@@ -307,5 +335,6 @@ pub(super) fn run(args: &BenchArgs) -> Result<(), CliError> {
     println!(
         "on_bar : {calls_seen} appels, {measured:.1} ns/appel mesurés, surcoût du chronomètre {overhead:.1} ns/appel, {net:.1} ns/appel net estimé"
     );
+    session.print_context();
     Ok(())
 }

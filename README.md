@@ -24,7 +24,7 @@ cargo run --release --bin tv4 -- backtest --fixture fixtures/kraken_xbtusd_1m.cs
 # Comparaison à l'octet de deux runs : code 0 identiques, 3 différents, 1 erreur ou run incohérent
 cargo run --release --bin tv4 -- verify runs/exemple-a runs/exemple-b
 
-# Coût de la boucle par 1m et coût moyen par appel de on_bar (mêmes entrées que backtest, rien d'écrit)
+# Coût de la boucle par 1m et coût moyen par appel de on_bar (mêmes entrées que backtest, sans artefact de run ; registre mis à jour)
 cargo run --release --bin tv4 -- bench --fixture fixtures/kraken_xbtusd_1m.csv --strategy sma_cross \
   --params config/strategies/sma_cross.toml --repeat 5
 
@@ -34,9 +34,78 @@ cargo run --release --bin tv4 -- bench --fixture fixtures/kraken_xbtusd_1m.csv -
 
 Le rapport s'écrit par défaut dans `<run_dir>/report.html`. Codes de sortie de `tv4:report` : 0 rendu écrit, 1 run invalide ou écriture impossible, 2 erreur d'usage (argument manquant, option ou commande inconnue). L'environnement se règle par `--env`/`-e` (sinon `APP_ENV`, sinon `prod`) ; le debug est actif par défaut, `APP_DEBUG=0` ou `--no-debug` le coupe, et dans ce cas il faut vider `var/cache/` du control plane après un `git pull` (le cache Twig compilé est désactivé, mais pas le conteneur Symfony). Détail : `control-plane/README.md`.
 
-`tv4 verify` ne lit du manifeste que les hashes annoncés (cohérence interne), `config_hash`, `dataset_hash` et `engine` à titre d'information ; `timings`, `started_at` et `run_id` sont ignorés.
+`tv4 verify` contrôle la cohérence des fichiers et, lorsqu’il existe, le contexte de provenance `governance`. Les compteurs historiques d’admission ne participent pas à la comparaison des simulations ; rejouer une configuration après d’autres essais reste comparable. Les timings restent informatifs.
 
 Contrôles de reproductibilité en CI (`.github/workflows/ci.yml`) : le backtest de fumée tourne deux fois en deux process puis `tv4 verify` ; les deux goldens de run `tv4/tests/golden_runs/sma_cross_15m_okx/` (fumée, 2 trades) et `tv4/tests/golden_runs/sma_cross_1m_court_okx/` (49 trades, verdict, distribution) détectent la dérive entre commits, le bloc `approx` à `approx::ULP_TOLERANCE` ULP (20) et le reste à l'octet (mise à jour des deux : `TV4_GOLDEN_UPDATE=1 cargo test --test golden_run`, refusée si `CI` est définie, puis relecture du diff) ; le bench criterion `engine_2y_1m` (`cargo bench --locked --bench engine -- engine_2y_1m`) est archivé et sa borne basse est limitée à 50 ns par 1m par `.github/scripts/criterion-gate.sh`. La spécification de S8 est `docs/specs/s8.md` ; les points qu'elle laisse à la validation du propriétaire sont en §17.
+
+## Registre et autorisations de recherche (S12)
+
+Chaque `backtest` et chaque invocation de `bench` inscrit ses configurations dans
+`research/trials.csv`, avant le moteur. N compte les configurations distinctes :
+rejouer un hash ajoute une lecture, pas un essai. Les trois profils de coûts
+comptent trois configurations ; les deux lignes ne les doublent pas.
+Le verrou permanent est sous `state/locks/`. `research/README.md` est la projection
+du journal ; ne jamais éditer le CSV pour récupérer une lecture ou un claim.
+
+```sh
+cargo run --release --bin tv4 -- research status
+# --root concerne les données ; --research-root le checkout Git de l'étude.
+cargo run --release --bin tv4 -- research status --research-root /chemin/etude
+```
+
+Une fixture ou un ancien dataset sans bloc peut être joué sans fiche : son origine
+reste `unregistered_hypothesis`. Tout dataset de recherche exige une fiche
+`research/H-NNN.md` remplie et commitée, identique à HEAD. Partir du
+[modèle](research/H-000-modele.md), qui n'est pas exécutable, puis donner
+`--hypothesis H-NNN` à `backtest`. Changer `--root` ou `--out` ne remet aucun
+compteur à zéro. Pour une démonstration isolée, utiliser un autre checkout Git
+avec son `--research-root`, comme les tests et les fumées de CI.
+
+VALIDATION et HOLDOUT exigent en plus un candidat déjà testé sur DEV, associé
+à la même fiche, puis gelé. Le fichier commité `research/frozen/H-NNN.json`
+est couvert, avec la fiche, par le tag Git `frozen/H-NNN`. Son contrat est :
+
+```json
+{
+  "schema": "tv4-frozen-candidate-v1",
+  "hypothesis": "H-001",
+  "fiche_sha256": "<SHA-256 exact des octets de la fiche, 64 hex minuscules>",
+  "config_hashes": ["<config_hash déjà enregistré>"],
+  "engine_commit": "<engine.git_sha du manifeste DEV>",
+  "engine_binary_hash": "<engine.binary_hash du même binaire>",
+  "okx_subset_hash": "<subset_hash du sous-ensemble OKX figé>"
+}
+```
+
+`config_hashes` contient soit un hash, soit les trois profils exacts. Compiler le
+binaire avant le gel et conserver ce binaire ; un moteur ou un sous-ensemble
+différent est refusé. L'inscription et l'association des hashes doivent précéder
+le gel. Le tag n'est jamais créé implicitement par la CLI.
+
+```sh
+# Après avoir commité la fiche et le candidat puis créé frozen/H-NNN,
+# invoquer directement le binaire conservé avant le gel :
+./target/release/tv4 research claim --hypothesis H-NNN
+# Dans la commande backtest de bloc habituelle :
+# ... --hypothesis H-NNN --okx-subset chemin/okx_usdc.json
+```
+
+Le claim HOLDOUT s'inscrit dans une invocation antérieure à la lecture. Une
+réservation consomme le claim et le quota même en cas d'échec ou d'interruption.
+VALIDATION autorise trois candidats par trimestre UTC, une lecture par candidat ;
+HOLDOUT une lecture par trimestre, trois par génération. Après rotation, l'ancien
+HOLDOUT devient VALIDATION et les trimestres complets de FORWARD postérieurs au
+gel et à la génération précédente deviennent HOLDOUT. Le bloc effectif figure
+dans le rapport. Le benchmark mono-paire refuse tout dataset de recherche.
+L'ancien contournement `--unguarded-protected-read` a été retiré.
+
+Le manifeste conserve N, N_eff non calculé, T de sélection DEV (5 ans), les
+repères BLP/q90/q95 et les identifiants d'admission, hors hashes et métriques de
+simulation. La CLI et le HTML affichent « Essais et lectures ». Ces repères du
+Sharpe de l'excédent à exposition égale ne sont pas une porte de validation.
+Un ancien rapport sans contexte le signale ; un ancien run `unguarded` garde son
+avertissement. Détail : [conception S12](docs/specs/s12.md) et
+[protocole](docs/04-protocole-recherche.md).
 
 ## Exploration DuckDB
 
