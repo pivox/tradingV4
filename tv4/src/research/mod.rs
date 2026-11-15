@@ -13,6 +13,7 @@
 
 pub mod noise;
 pub mod registry;
+pub mod stats;
 pub mod stress;
 pub mod survivorship;
 pub mod universe;
