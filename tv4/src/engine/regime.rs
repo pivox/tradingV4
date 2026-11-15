@@ -115,6 +115,15 @@ impl<'s> RegimeFeed<'s> {
         }
     }
 
+    /// Place le curseur au slot en O(log N), sans parcourir sa chauffe.
+    pub(crate) fn at(series: &'s RegimeSeries<'s>, now_ms: Ts) -> RegimeFeed<'s> {
+        let consumed = series
+            .mtf
+            .m1()
+            .partition_point(|c| c.open_time_ms.saturating_add(MINUTE_MS) <= now_ms);
+        RegimeFeed { series, consumed }
+    }
+
     /// Nombre de bougies 1d closes à `now_ms`. `now_ms` ne doit pas décroître d'un appel à l'autre.
     pub(crate) fn advance(&mut self, now_ms: Ts) -> usize {
         let m1 = self.series.mtf.m1();
@@ -150,6 +159,36 @@ mod tests {
 
     /// 2024-01-01T00:00:00Z.
     const T0: Ts = 1_704_067_200_000;
+
+    #[test]
+    fn feed_at_slot_has_no_prefix_to_scan_and_matches_native_feed() {
+        let mut candles = minutes(203);
+        candles.retain(|c| {
+            !(T0 + 200 * DAY_MS..T0 + 201 * DAY_MS).contains(&c.open_time_ms)
+                && c.open_time_ms != T0 + 202 * DAY_MS - MINUTE_MS
+        });
+        let series = RegimeSeries::new(&candles).unwrap();
+        let mut native = RegimeFeed::new(&series);
+        for now_ms in [
+            T0 + 200 * DAY_MS,
+            T0 + 201 * DAY_MS,
+            T0 + 202 * DAY_MS - MINUTE_MS,
+            T0 + 202 * DAY_MS,
+            T0 + 202 * DAY_MS + MINUTE_MS,
+        ] {
+            let expected = native.advance(now_ms);
+            let mut direct = RegimeFeed::at(&series, now_ms);
+            assert_eq!(
+                direct.consumed,
+                candles.partition_point(|c| c.open_time_ms + MINUTE_MS <= now_ms)
+            );
+            assert_eq!(direct.advance(now_ms), expected);
+            assert_eq!(
+                direct.view(expected).unwrap().bull(),
+                native.view(expected).unwrap().bull()
+            );
+        }
+    }
 
     /// `days` jours de 1m (1 440 par jour), close = `100 + jour` (tendance haussière).
     fn minutes(days: i64) -> Vec<Candle> {

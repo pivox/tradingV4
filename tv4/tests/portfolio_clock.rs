@@ -543,3 +543,62 @@ fn trace_cash_utilise_la_realisation_du_gap_et_garde_le_quote_reserve() {
         "quote réservé encore en cash"
     );
 }
+
+#[test]
+fn release_then_entry_same_close() {
+    let mut candles = flat_series(0, 10, 100.0, 1e6);
+    candles[3].low = 80.0;
+    let universe = names(&["X-USD"]);
+    let instruments = [instrument(0.0)];
+    let strategy = Scripted::new(vec![
+        (T0 + MINUTE, buy_risk(0.01, 90.0)),
+        (T0 + 4 * MINUTE, buy_risk(0.01, 90.0)),
+    ])
+    .0;
+    let result = run(
+        &[("X-USD", candles)],
+        vec![Box::new(strategy)],
+        one_slot(&universe, &instruments),
+    );
+    assert_eq!(result.trades.len(), 2);
+    assert_eq!(result.trades[0].exit_reason, ExitReason::Stop);
+    assert_eq!(result.trades[0].exit_ms, T0 + 3 * MINUTE);
+    // La clôture du pas qui exécute le stop peut immédiatement décider la nouvelle entrée.
+    assert_eq!(result.trades[1].entry_signal_ms, T0 + 4 * MINUTE);
+    assert_eq!(result.trades[1].entry_ms, T0 + 5 * MINUTE);
+    assert_eq!(result.funnel.entry_orders, 2);
+    assert_eq!(result.max_positions_rejected, 0);
+}
+
+#[test]
+fn quote_gap_release_then_entry_uses_actual_processing_close() {
+    let mut candles = flat_series(0, 10, 100.0, 1e6);
+    let returned = 8 * 1440;
+    candles.extend(flat_series(returned, 5, 100.0, 1e6));
+    let universe = names(&["X-USD"]);
+    let instruments = [instrument(0.0)];
+    let strategy = Scripted::new(vec![
+        (T0 + MINUTE, buy_risk(0.01, 90.0)),
+        (T0 + (returned + 1) * MINUTE, buy_risk(0.01, 90.0)),
+    ])
+    .0;
+    let result = run(
+        &[("X-USD", candles)],
+        vec![Box::new(strategy)],
+        one_slot(&universe, &instruments),
+    );
+    assert_eq!(result.trades.len(), 2);
+    assert_eq!(result.trades[0].exit_reason, ExitReason::QuoteGap);
+    assert_eq!(result.trades[0].exit_ms, T0 + 10 * MINUTE + GAP_DAYS * DAY);
+    let processing_open = result
+        .grid_open_ms
+        .iter()
+        .copied()
+        .find(|&t| t > result.trades[0].exit_ms)
+        .unwrap();
+    assert_eq!(processing_open, T0 + returned * MINUTE);
+    assert_eq!(result.trades[1].entry_signal_ms, processing_open + MINUTE);
+    assert_eq!(result.trades[1].entry_ms, processing_open + 2 * MINUTE);
+    assert_eq!(result.funnel.entry_orders, 2);
+    assert_eq!(result.max_positions_rejected, 0);
+}

@@ -40,7 +40,7 @@
 //! # Sizing (docs S9 §7)
 //!
 //! * mode recherche : la base de `Size::RiskPct` est `initial_cash` et chaque entrée est plafonnée à
-//!   `initial_cash / N` de notional ;
+//!   `initial_cash / max_positions` de notional ;
 //! * mode capitalisé : la base est l'equity du portefeuille à la minute du signal, sans plafond.
 //!
 //! La base passe par `SubmitContext.equity`, le plafond par le 4e argument de [`Book::submit`].
@@ -65,10 +65,13 @@
 //! 3. La paire de régime est lue même si elle n'est pas dans l'univers ; elle est alors absente de la
 //!    grille, du rang et des rapports par paire.
 
+pub(super) mod controls;
+mod step;
+
 use std::collections::BTreeMap;
 
 use crate::model::costs::LegCostHashed;
-use crate::model::{Candle, FeeSchedule, Side, Timeframe, Ts};
+use crate::model::{Candle, Side, Timeframe, Ts};
 use crate::mtf::Mtf;
 use crate::sim::{
     Book, BookConfig, BookRejection, CostCounters, SimCounters, SimDetail, SimError, SizingMode,
@@ -1211,32 +1214,19 @@ pub(super) fn book_config(config: &PortfolioConfig<'_>, window_max: usize) -> Bo
     }
 }
 
-/// Joue un profil sur la préparation partagée : vues par jambe (coût O(jambes × TF), sans agrégation),
-/// curseur de régime **neuf**, tampons, boucle de la grille, puis synthèse. `shared` est prêté en lecture
-/// seule : ni les bougies possédées ni de quoi appeler [`share`] ne sont ici, donc un `Mtf` ne peut pas
-/// être reconstruit par profil (docs S10 §9.4).
-///
-/// Rend le résultat et les compteurs de coûts de chaque jambe (nuls pour un coût hérité).
-///
-/// `research` : `None` hors recherche (chemin hérité, inchangé au bit), `Some` en mode recherche (docs
-/// S11 §8).
-#[allow(clippy::too_many_arguments)]
-pub(super) fn play_profile(
+/// Construit les vues dans leur portée propriétaire ; aucune vue ne survit au callback.
+fn with_runs<R>(
     shared: &Shared<'_>,
     strategies: Vec<Box<dyn Strategy>>,
-    mut book: Book,
     config: &PortfolioConfig<'_>,
-    run_config: PortfolioRunConfig,
-    config_hash: String,
-    research: Option<&ResearchRun<'_>>,
-    observer: &mut dyn LoopObserver,
-) -> Result<(PortfolioResult, Vec<CostCounters>), EngineError> {
+    research: bool,
+    start_ms: Option<Ts>,
+    recording: Recording,
+    action: impl FnOnce(Vec<LegRun<'_>>) -> Result<R, EngineError>,
+) -> Result<R, EngineError> {
     let legs = config.universe.len();
     let candle_store = shared.candle_store;
-    let ranks = &shared.ranks;
     let window_start_ms = shared.window_start_ms;
-    let mut feed: Option<RegimeFeed<'_>> = shared.regime.as_ref().map(RegimeFeed::new);
-
     // --- Vues par jambe (emprunts de `shared`) ---
     let column_refs: Vec<Vec<Vec<&[f64]>>> = shared
         .preps
@@ -1261,10 +1251,11 @@ pub(super) fn play_profile(
             return Err(EngineError::EmptyUniverse);
         };
         let live_ms = shared.live_ms.get(k).copied().unwrap_or(window_start_ms);
-        let first = candles.partition_point(|c| c.open_time_ms < live_ms);
+        let first =
+            candles.partition_point(|c| c.open_time_ms < live_ms.max(start_ms.unwrap_or(Ts::MIN)));
         if first >= candles.len() {
             // En recherche, une jambe qui ne devient jamais vivante n'est jamais jouée (docs S11 §8.2).
-            if research.is_none() {
+            if !research && start_ms.is_none() {
                 return Err(EngineError::LegNotEnoughBars {
                     symbol: symbol.clone(),
                     warmup_bars: prep.warmup_bars,
@@ -1303,7 +1294,10 @@ pub(super) fn play_profile(
             evaluated: false,
             signals: Vec::with_capacity(2 * SIGNALS_FLOOR.max(max_pending)),
             funnel: EngineFunnel::default(),
-            entry_fractions: Vec::with_capacity((rows / 2 + 1).min(TRADES_INITIAL_CAPACITY)),
+            entry_fractions: Vec::with_capacity(match recording {
+                Recording::Full => (rows / 2 + 1).min(TRADES_INITIAL_CAPACITY),
+                Recording::Reduced => 1,
+            }),
             max_positions_rejected: 0,
             deadline: Ts::MAX,
             start_index: first,
@@ -1312,227 +1306,288 @@ pub(super) fn play_profile(
         });
     }
 
-    // --- État de recherche : éligibilité de chaque jambe, construite avant la boucle ---
-    let mut state: Option<ResearchState> =
-        research.map(|r| ResearchState::new(r.spec, config.universe, r.decision_tf));
-    let record_from = state
-        .as_ref()
-        .map_or(Ts::MIN, ResearchState::decision_start_ms);
+    action(runs)
+}
 
-    // --- Tampons de la boucle, tous préalloués ---
-    let grid_minutes = count_grid(&runs, record_from);
-    let mut buffers = PlayBuffers {
-        grid: Vec::with_capacity(grid_minutes),
-        equity: Vec::with_capacity(grid_minutes),
-        cash: Vec::with_capacity(grid_minutes),
-        pending: Vec::with_capacity(max_pending),
-        emitted: 0,
-        accepted: 0,
-        bars_in_position: 0,
-        last_open_ms: None,
-    };
-    let max_notional = match config.sizing {
-        SizingMode::Research => Some(config.initial_cash / f64::from(config.max_positions)),
-        SizingMode::Compounding => None,
-    };
-
-    // --- Boucle : 0 allocation attendue (tolérance documentée : 1 pour 10 000 minutes) ---
-    observer.loop_started();
-    let played = play(
-        &mut book,
-        &mut runs,
-        ranks,
-        feed.as_mut(),
+/// Joue un profil sur la préparation partagée : vues par jambe (coût O(jambes × TF), sans agrégation),
+/// curseur de régime **neuf**, tampons, boucle de la grille, puis synthèse. `shared` est prêté en lecture
+/// seule : ni les bougies possédées ni de quoi appeler [`share`] ne sont ici, donc un `Mtf` ne peut pas
+/// être reconstruit par profil (docs S10 §9.4).
+///
+/// Rend le résultat et les compteurs de coûts de chaque jambe (nuls pour un coût hérité).
+///
+/// `research` : `None` hors recherche (chemin hérité, inchangé au bit), `Some` en mode recherche (docs
+/// S11 §8).
+#[allow(clippy::too_many_arguments)]
+pub(super) fn play_profile(
+    shared: &Shared<'_>,
+    strategies: Vec<Box<dyn Strategy>>,
+    book: Book,
+    config: &PortfolioConfig<'_>,
+    run_config: PortfolioRunConfig,
+    config_hash: String,
+    research: Option<&ResearchRun<'_>>,
+    observer: &mut dyn LoopObserver,
+) -> Result<(PortfolioResult, Vec<CostCounters>), EngineError> {
+    play_profile_driven(
+        shared,
+        strategies,
+        book,
         config,
-        max_notional,
-        &mut buffers,
-        state.as_mut(),
-    );
-    observer.loop_finished();
-    played?;
-
-    // --- Fin de run, hors boucle ---
-    let (Some(&window_first_open_ms), Some(&window_last_open_ms)) =
-        (buffers.grid.first(), buffers.grid.last())
-    else {
-        return Err(EngineError::EmptyData);
-    };
-    let last_per_leg: Vec<Option<Candle>> =
-        runs.iter().map(|r| r.candles.last().copied()).collect();
-    book.close_all_at_end(&last_per_leg)?;
-    let outcome = book.into_outcome();
-
-    let mut totals = Totals::default();
-    for trade in &outcome.trades {
-        totals.fees += trade.entry_fee;
-        totals.fees += trade.exit_fee;
-        totals.slippage += trade.entry_slippage;
-        totals.slippage += trade.exit_slippage;
-        if trade.forced_close {
-            totals.marked += trade.pnl_net;
-            totals.forced += 1;
-        } else {
-            totals.realized += trade.pnl_net;
-        }
-    }
-    let mut trades_by_leg = vec![0u64; legs];
-    for &leg in &outcome.trade_legs {
-        if let Some(count) = trades_by_leg.get_mut(usize::from(leg)) {
-            *count += 1;
-        }
-    }
-    let mut leg_results: Vec<LegResult> = Vec::with_capacity(legs);
-    let mut research_legs: Vec<LegOutcome<'_>> = Vec::with_capacity(legs);
-    for (k, mut run) in runs.into_iter().enumerate() {
-        run.funnel.strategy = run
-            .strategy
-            .funnel()
-            .map(|f: StrategyFunnel| StrategyFunnelCounts {
-                raw_entry_signals: f.raw_entry_signals,
-                filtered: f.filtered,
-            });
-        let (Some(counters), Some(detail), Some(symbol)) = (
-            outcome.counters.get(k),
-            outcome.details.get(k),
-            config.universe.get(k),
-        ) else {
-            return Err(EngineError::EmptyUniverse);
-        };
-        let last_ms = run
-            .candles
-            .last()
-            .map_or(window_last_open_ms, |c| c.open_time_ms);
-        let first_ms = run
-            .candles
-            .get(run.start_index)
-            .map_or(window_first_open_ms, |c| c.open_time_ms);
-        if research.is_some() {
-            research_legs.push(LegOutcome {
-                symbol,
-                live_from_ms: run.candles.get(run.start_index).map(|c| c.open_time_ms),
-                counters: run.research,
-            });
-        }
-        leg_results.push(LegResult {
-            symbol: symbol.clone(),
-            start_index: run.start_index,
-            rows: run.rows,
-            first_ms,
-            last_ms,
-            funnel: run.funnel,
-            counters: *counters,
-            detail: *detail,
-            max_positions_rejected: run.max_positions_rejected,
-            entry_fractions: run.entry_fractions,
-            trades: trades_by_leg.get(k).copied().unwrap_or(0),
-        });
-    }
-    let mut sim = SimCounters::default();
-    let mut detail = SimDetail::default();
-    let mut rejections = SignalRejections::default();
-    let mut max_positions_rejected = 0u64;
-    for leg in &leg_results {
-        add_counters(&mut sim, &leg.counters);
-        add_detail(&mut detail, &leg.detail);
-        rejections.add(&leg.funnel.entry_rejections);
-        rejections.add(&leg.funnel.other_rejections);
-        max_positions_rejected += leg.max_positions_rejected;
-    }
-    let funnel = sum_funnels(&leg_results);
-    let regime = match (shared.regime.as_ref(), shared.regime_ready_ms) {
-        (Some(series), Some(first_ready_ms)) => {
-            let (days_bull, days_bear) =
-                series.day_counts(window_first_open_ms, window_last_open_ms);
-            Some(RegimeStats {
-                symbol: config.regime_symbol.to_string(),
-                first_ready_ms,
-                days_bull,
-                days_bear,
-            })
-        }
-        _ => None,
-    };
-
-    // Recherche : la fenêtre jouée commence à la plus précoce des jambes vivantes, et aucune entrée n'a pu
-    // être décidée avant `decision_start` (docs S11 §3.4, côté gauche de la purge).
-    let mut window_start_ms = window_start_ms;
-    let research_result = match (research, state.as_ref()) {
-        (Some(run), Some(state)) => {
-            debug_assert!(
-                outcome
-                    .trades
-                    .iter()
-                    .all(|trade| trade.entry_signal_ms >= state.decision_start_ms()),
-                "mode recherche : une entrée a été décidée avant decision_start"
-            );
-            window_start_ms = leg_results
-                .iter()
-                .filter(|leg| leg.rows > 0)
-                .map(|leg| leg.first_ms)
-                .min()
-                .unwrap_or(window_start_ms);
-            Some(build_result(
-                run.spec,
-                config,
-                run.decision_tf,
-                &run.costs_legs,
-                shared.regime.is_some(),
-                &research_legs,
-            )?)
-        }
-        _ => None,
-    };
-
-    let cost_by_leg = outcome.cost_by_leg;
-    let result = PortfolioResult {
-        config: run_config,
+        run_config,
         config_hash,
-        initial_cash: config.initial_cash,
-        sizing: config.sizing,
-        max_positions: config.max_positions,
-        quote_gap_ms: config.quote_gap_ms,
-        universe: config.universe.to_vec(),
-        legs: leg_results,
-        warmup_bars: shared.warmup_bars,
-        window_start_ms,
-        grid_minutes,
-        window_first_open_ms,
-        window_last_open_ms,
-        grid_open_ms: buffers.grid,
-        equity: buffers.equity,
-        cash: buffers.cash,
-        trades: outcome.trades,
-        trade_legs: outcome.trade_legs,
-        cash_final: outcome.cash,
-        equity_final: outcome.cash,
-        forced_close: outcome.forced_close,
-        n_trades_forced: totals.forced,
-        pnl_net: outcome.cash - config.initial_cash,
-        pnl_realized: totals.realized,
-        pnl_marked: totals.marked,
-        fees_total: totals.fees,
-        slippage_total: totals.slippage,
-        signals_emitted: buffers.emitted,
-        signals_accepted: buffers.accepted,
-        rejections,
-        max_positions_rejected,
-        sim,
-        quote_gap_exits: detail.quote_gap_exits,
-        detail,
-        funnel,
-        bars_in_position: buffers.bars_in_position,
-        max_open_positions: outcome.max_open_positions,
-        max_cost_to_initial: outcome.max_cost_to_initial,
-        priority: PriorityStats {
-            rule: PRIORITY_RULE,
-            liquidity_window_days: LIQUIDITY_WINDOW_DAYS,
-            rank_days: ranks.days(),
-            partial_days: ranks.partial_days(window_first_open_ms, window_last_open_ms),
+        research,
+        observer,
+        &mut step::Observed,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn play_profile_driven<D: step::EntryDriver>(
+    shared: &Shared<'_>,
+    strategies: Vec<Box<dyn Strategy>>,
+    mut book: Book,
+    config: &PortfolioConfig<'_>,
+    run_config: PortfolioRunConfig,
+    config_hash: String,
+    research: Option<&ResearchRun<'_>>,
+    observer: &mut dyn LoopObserver,
+    driver: &mut D,
+) -> Result<(PortfolioResult, Vec<CostCounters>), EngineError> {
+    let legs = config.universe.len();
+    let ranks = &shared.ranks;
+    let window_start_ms = shared.window_start_ms;
+    let mut feed: Option<RegimeFeed<'_>> = shared.regime.as_ref().map(RegimeFeed::new);
+
+    with_runs(
+        shared,
+        strategies,
+        config,
+        research.is_some(),
+        None,
+        Recording::Full,
+        |mut runs| {
+            let max_pending = config.sim_rules.max_pending;
+            // --- État de recherche : éligibilité de chaque jambe, construite avant la boucle ---
+            let mut state: Option<ResearchState> =
+                research.map(|r| ResearchState::new(r.spec, config.universe, r.decision_tf));
+            let record_from = state
+                .as_ref()
+                .map_or(Ts::MIN, ResearchState::decision_start_ms);
+
+            // --- Tampons de la boucle, tous préalloués ---
+            let mut buffers = PlayBuffers::new(&runs, record_from, max_pending, Recording::Full);
+            let max_notional = match config.sizing {
+                SizingMode::Research => Some(config.initial_cash / f64::from(config.max_positions)),
+                SizingMode::Compounding => None,
+            };
+
+            // --- Boucle : 0 allocation attendue (tolérance documentée : 1 pour 10 000 minutes) ---
+            observer.loop_started();
+            let played = play(
+                &mut book,
+                &mut runs,
+                ranks,
+                feed.as_mut(),
+                config,
+                max_notional,
+                &mut buffers,
+                state.as_mut(),
+                driver,
+            );
+            observer.loop_finished();
+            played?;
+            let grid_minutes = buffers.recorded_minutes;
+
+            // --- Fin de run, hors boucle ---
+            let (Some(&window_first_open_ms), Some(&window_last_open_ms)) =
+                (buffers.grid.first(), buffers.grid.last())
+            else {
+                return Err(EngineError::EmptyData);
+            };
+            let last_per_leg: Vec<Option<Candle>> =
+                runs.iter().map(|r| r.candles.last().copied()).collect();
+            book.close_all_at_end(&last_per_leg)?;
+            step::EntryDriver::after_events(
+                driver,
+                &book,
+                window_last_open_ms.saturating_add(MINUTE_MS),
+            );
+            let outcome = book.into_outcome();
+
+            let mut totals = Totals::default();
+            for trade in &outcome.trades {
+                totals.fees += trade.entry_fee;
+                totals.fees += trade.exit_fee;
+                totals.slippage += trade.entry_slippage;
+                totals.slippage += trade.exit_slippage;
+                if trade.forced_close {
+                    totals.marked += trade.pnl_net;
+                    totals.forced += 1;
+                } else {
+                    totals.realized += trade.pnl_net;
+                }
+            }
+            let mut trades_by_leg = vec![0u64; legs];
+            for &leg in &outcome.trade_legs {
+                if let Some(count) = trades_by_leg.get_mut(usize::from(leg)) {
+                    *count += 1;
+                }
+            }
+            let mut leg_results: Vec<LegResult> = Vec::with_capacity(legs);
+            let mut research_legs: Vec<LegOutcome<'_>> = Vec::with_capacity(legs);
+            for (k, mut run) in runs.into_iter().enumerate() {
+                run.funnel.strategy =
+                    run.strategy
+                        .funnel()
+                        .map(|f: StrategyFunnel| StrategyFunnelCounts {
+                            raw_entry_signals: f.raw_entry_signals,
+                            filtered: f.filtered,
+                        });
+                let (Some(counters), Some(detail), Some(symbol)) = (
+                    outcome.counters.get(k),
+                    outcome.details.get(k),
+                    config.universe.get(k),
+                ) else {
+                    return Err(EngineError::EmptyUniverse);
+                };
+                let last_ms = run
+                    .candles
+                    .last()
+                    .map_or(window_last_open_ms, |c| c.open_time_ms);
+                let first_ms = run
+                    .candles
+                    .get(run.start_index)
+                    .map_or(window_first_open_ms, |c| c.open_time_ms);
+                if research.is_some() {
+                    research_legs.push(LegOutcome {
+                        symbol,
+                        live_from_ms: run.candles.get(run.start_index).map(|c| c.open_time_ms),
+                        counters: run.research,
+                    });
+                }
+                leg_results.push(LegResult {
+                    symbol: symbol.clone(),
+                    start_index: run.start_index,
+                    rows: run.rows,
+                    first_ms,
+                    last_ms,
+                    funnel: run.funnel,
+                    counters: *counters,
+                    detail: *detail,
+                    max_positions_rejected: run.max_positions_rejected,
+                    entry_fractions: run.entry_fractions,
+                    trades: trades_by_leg.get(k).copied().unwrap_or(0),
+                });
+            }
+            let mut sim = SimCounters::default();
+            let mut detail = SimDetail::default();
+            let mut rejections = SignalRejections::default();
+            let mut max_positions_rejected = 0u64;
+            for leg in &leg_results {
+                add_counters(&mut sim, &leg.counters);
+                add_detail(&mut detail, &leg.detail);
+                rejections.add(&leg.funnel.entry_rejections);
+                rejections.add(&leg.funnel.other_rejections);
+                max_positions_rejected += leg.max_positions_rejected;
+            }
+            let funnel = sum_funnels(&leg_results);
+            let regime = match (shared.regime.as_ref(), shared.regime_ready_ms) {
+                (Some(series), Some(first_ready_ms)) => {
+                    let (days_bull, days_bear) =
+                        series.day_counts(window_first_open_ms, window_last_open_ms);
+                    Some(RegimeStats {
+                        symbol: config.regime_symbol.to_string(),
+                        first_ready_ms,
+                        days_bull,
+                        days_bear,
+                    })
+                }
+                _ => None,
+            };
+
+            // Recherche : la fenêtre jouée commence à la plus précoce des jambes vivantes, et aucune entrée n'a pu
+            // être décidée avant `decision_start` (docs S11 §3.4, côté gauche de la purge).
+            let mut window_start_ms = window_start_ms;
+            let research_result = match (research, state.as_ref()) {
+                (Some(run), Some(state)) => {
+                    debug_assert!(
+                        outcome
+                            .trades
+                            .iter()
+                            .all(|trade| trade.entry_signal_ms >= state.decision_start_ms()),
+                        "mode recherche : une entrée a été décidée avant decision_start"
+                    );
+                    window_start_ms = leg_results
+                        .iter()
+                        .filter(|leg| leg.rows > 0)
+                        .map(|leg| leg.first_ms)
+                        .min()
+                        .unwrap_or(window_start_ms);
+                    Some(build_result(
+                        run.spec,
+                        config,
+                        run.decision_tf,
+                        &run.costs_legs,
+                        shared.regime.is_some(),
+                        &research_legs,
+                    )?)
+                }
+                _ => None,
+            };
+
+            let cost_by_leg = outcome.cost_by_leg;
+            let result = PortfolioResult {
+                config: run_config,
+                config_hash,
+                initial_cash: config.initial_cash,
+                sizing: config.sizing,
+                max_positions: config.max_positions,
+                quote_gap_ms: config.quote_gap_ms,
+                universe: config.universe.to_vec(),
+                legs: leg_results,
+                warmup_bars: shared.warmup_bars,
+                window_start_ms,
+                grid_minutes,
+                window_first_open_ms,
+                window_last_open_ms,
+                grid_open_ms: buffers.grid,
+                equity: buffers.equity,
+                cash: buffers.cash,
+                trades: outcome.trades,
+                trade_legs: outcome.trade_legs,
+                cash_final: outcome.cash,
+                equity_final: outcome.cash,
+                forced_close: outcome.forced_close,
+                n_trades_forced: totals.forced,
+                pnl_net: outcome.cash - config.initial_cash,
+                pnl_realized: totals.realized,
+                pnl_marked: totals.marked,
+                fees_total: totals.fees,
+                slippage_total: totals.slippage,
+                signals_emitted: buffers.emitted,
+                signals_accepted: buffers.accepted,
+                rejections,
+                max_positions_rejected,
+                sim,
+                quote_gap_exits: detail.quote_gap_exits,
+                detail,
+                funnel,
+                bars_in_position: buffers.bars_in_position,
+                max_open_positions: outcome.max_open_positions,
+                max_cost_to_initial: outcome.max_cost_to_initial,
+                priority: PriorityStats {
+                    rule: PRIORITY_RULE,
+                    liquidity_window_days: LIQUIDITY_WINDOW_DAYS,
+                    rank_days: ranks.days(),
+                    partial_days: ranks.partial_days(window_first_open_ms, window_last_open_ms),
+                },
+                regime,
+                research: research_result,
+            };
+            Ok((result, cost_by_leg))
         },
-        regime,
-        research: research_result,
-    };
-    Ok((result, cost_by_leg))
+    )
 }
 
 /// Totaux accumulés dans l'ordre des trades (boucles `for`, jamais `.sum()`, docs/03 §7.4).
@@ -1545,8 +1600,18 @@ struct Totals {
     forced: u64,
 }
 
+/// Les rejeux réduits ne réservent et ne stockent aucune courbe minute.
+#[derive(Clone, Copy)]
+enum Recording {
+    Full,
+    Reduced,
+}
+
 /// Tampons et compteurs de la boucle, tous préalloués avant elle.
 struct PlayBuffers {
+    recording: Recording,
+    first_recorded_open_ms: Option<Ts>,
+    recorded_minutes: usize,
     grid: Vec<Ts>,
     equity: Vec<f64>,
     cash: Vec<f64>,
@@ -1558,6 +1623,38 @@ struct PlayBuffers {
     /// `open_time` de la dernière minute de la grille jouée, enregistrée ou non (en recherche, les
     /// minutes d'avant `decision_start` sont jouées sans être enregistrées).
     last_open_ms: Option<Ts>,
+}
+
+impl PlayBuffers {
+    fn new(runs: &[LegRun<'_>], record_from: Ts, max_pending: usize, recording: Recording) -> Self {
+        let capacity = match recording {
+            Recording::Full => count_grid(runs, record_from),
+            Recording::Reduced => 0,
+        };
+        Self {
+            recording,
+            first_recorded_open_ms: None,
+            recorded_minutes: 0,
+            grid: Vec::with_capacity(capacity),
+            equity: Vec::with_capacity(capacity),
+            cash: Vec::with_capacity(capacity),
+            pending: Vec::with_capacity(max_pending),
+            emitted: 0,
+            accepted: 0,
+            bars_in_position: 0,
+            last_open_ms: None,
+        }
+    }
+
+    fn record(&mut self, t: Ts, equity: f64, cash: f64) {
+        self.first_recorded_open_ms.get_or_insert(t);
+        self.recorded_minutes += 1;
+        if matches!(self.recording, Recording::Full) {
+            self.grid.push(t);
+            self.equity.push(equity);
+            self.cash.push(cash);
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -1618,7 +1715,7 @@ fn cancel_left_universe(
 /// Boucle des étapes de docs S9 §4.2 sur la grille des minutes. `research` : état du mode recherche
 /// (docs S11 §8), `None` hors recherche.
 #[allow(clippy::too_many_arguments)]
-fn play(
+fn play<D: step::EntryDriver>(
     book: &mut Book,
     runs: &mut [LegRun<'_>],
     ranks: &RankTable,
@@ -1627,12 +1724,8 @@ fn play(
     max_notional: Option<f64>,
     buffers: &mut PlayBuffers,
     mut research: Option<&mut ResearchState>,
+    driver: &mut D,
 ) -> Result<(), EngineError> {
-    let legs = runs.len();
-    let fees: FeeSchedule = config.fees;
-    let record_from = research
-        .as_deref()
-        .map_or(Ts::MIN, ResearchState::decision_start_ms);
     if let Some(state) = research.as_deref_mut()
         && let Some(first) = next_open(runs)
     {
@@ -1640,218 +1733,31 @@ fn play(
         state.init_at(first);
     }
     while let Some(t) = next_open(runs) {
-        let now_ms = t.saturating_add(MINUTE_MS);
-        let order = ranks.order_at(now_ms);
-
-        // 1. Trous de cotation, avant tout `on_bar`.
-        force_quote_gaps(book, runs, order, t)?;
-        // 1 bis (recherche). Sortie de l'univers : annulation des entrées en attente des jambes à plat.
-        if let Some(state) = research.as_deref_mut() {
-            cancel_left_universe(book, runs, order, state, t)?;
-        }
-
-        // 2a. Toutes les jambes qui ont des ordres en attente appliquent leurs annulations et expirations
-        // échues à `t`, sans fill, dans l'ordre du rang et avant tout `on_bar`. Une échéance est une heure
-        // d'horloge, pas un nombre de bougies de la jambe : une limit échue ne doit garder ni sa place de
-        // `max_positions` ni son quote réservé, et toutes les échéances de la minute passent avant les fills
-        // pour qu'aucune jambe ne soit plafonnée par la réservation d'un ordre mort d'une autre. Le résultat
-        // propre de chaque jambe ne change pas : son `on_bar` commence par les mêmes échéances, avec les
-        // mêmes compteurs, et n'y trouve plus rien à retirer.
-        for &k in order {
-            let k = usize::from(k);
-            if book.pending_len(k) > 0 {
-                book.expire_due(k, t)?;
-            }
-        }
-
-        // 2. Annulations, expirations, fills et stops de chaque 1m présente, dans l'ordre du rang.
-        for &k in order {
-            let k = usize::from(k);
-            let Some(run) = runs.get_mut(k) else {
-                continue;
-            };
-            let Some(candle) = run.candles.get(run.idx) else {
-                continue;
-            };
-            if candle.open_time_ms != t {
-                continue;
-            }
-            book.on_bar(k, candle)?;
-            if candle.volume > 0.0 {
-                run.deadline = now_ms.saturating_add(config.quote_gap_ms);
-            }
-            run.present = true;
-        }
-        let recorded = t >= record_from;
-        if recorded && (0..legs).any(|k| book.position(k).is_some()) {
-            buffers.bars_in_position += 1;
-        }
-
-        // 3. Equity du portefeuille, une fois par minute de la grille. En recherche, les minutes d'avant
-        // `decision_start` sont jouées sans être enregistrées (docs S11 §8.2).
-        let equity_i = book.equity();
-        if recorded {
-            buffers.grid.push(t);
-            buffers.equity.push(equity_i);
-            buffers.cash.push(book.cash());
-        }
-        buffers.last_open_ms = Some(t);
-        book.check_invariants();
-        let base = match config.sizing {
-            SizingMode::Research => config.initial_cash,
-            SizingMode::Compounding => equity_i,
-        };
-
-        // 4. Stratégies : toutes voient le même état, aucune soumission avant la fin de l'étape.
-        for &k in order {
-            let k = usize::from(k);
-            let Some(run) = runs.get_mut(k) else {
-                continue;
-            };
-            if !run.present {
-                continue;
-            }
-            let i = run.idx;
-            let mask = run.mtf.just_closed(i) & run.declared_mask;
-            if mask == 0 {
-                continue;
-            }
-            for (j, current) in run.current.iter_mut().enumerate() {
-                let (Some(base_view), Some(counts)) = (run.base.get(j), run.closed.get(j)) else {
-                    return Err(EngineError::MissingClosedCount { index: i });
-                };
-                let count = counts
-                    .get(i)
-                    .copied()
-                    .ok_or(EngineError::MissingClosedCount { index: i })?;
-                *current = base_view.with_closed(count)?;
-            }
-            buffers.pending.clear();
-            buffers
-                .pending
-                .extend(book.pending(k).map(|view| to_pending_order(view, now_ms)));
-            let state = BarState {
-                now_ms,
-                equity: equity_i,
-                quote_free: book.quote_free(),
-                qty_free: book.qty_free(k),
-                position: book.position(k).map(to_position),
-                fees,
-            };
-            let Some(symbol) = config.universe.get(k) else {
-                return Err(EngineError::EmptyUniverse);
-            };
-            run.signals.clear();
-            {
-                let mut ctx = BarContext::new(symbol, state, &buffers.pending, &run.current, mask)?;
-                if run.uses_regime
-                    && let Some(feed) = feed.as_deref_mut()
-                {
-                    let closed = feed.advance(now_ms);
-                    ctx = ctx.with_regime(Some(feed.view(closed)?))?;
-                }
-                run.strategy.on_bar(&ctx, &mut run.signals);
-            }
-            run.funnel.evaluations += 1;
-            run.evaluated = true;
-        }
-
-        // 5. Soumission, jambe par jambe dans l'ordre du rang, signal par signal dans l'ordre d'émission.
-        for &k in order {
-            let k = usize::from(k);
-            let Some(run) = runs.get_mut(k) else {
-                continue;
-            };
-            if !run.evaluated {
-                continue;
-            }
-            run.evaluated = false;
-            let Some(candle) = run.candles.get(run.idx) else {
-                continue;
-            };
-            debug_assert!(
-                config.sizing != SizingMode::Research || base == config.initial_cash,
-                "mode recherche : la base de sizing doit valoir le capital initial"
-            );
-            let context = SubmitContext {
-                signal_ms: now_ms,
-                equity: base,
-                ref_price: candle.close,
-            };
-            buffers.emitted += run.signals.len() as u64;
-            for signal in &run.signals {
-                let funnel = &mut run.funnel;
-                let class = classify(signal);
-                let (emitted, orders, rejections) = match class {
-                    SignalClass::Entry => (
-                        &mut funnel.entry_signals,
-                        &mut funnel.entry_orders,
-                        &mut funnel.entry_rejections,
-                    ),
-                    SignalClass::Exit => (
-                        &mut funnel.exit_signals,
-                        &mut funnel.exit_orders,
-                        &mut funnel.other_rejections,
-                    ),
-                    SignalClass::Other => (
-                        &mut funnel.other_signals,
-                        &mut funnel.other_accepted,
-                        &mut funnel.other_rejections,
-                    ),
-                };
-                *emitted += 1;
-                // Recherche : filtre des entrées à `now_ms`. Le refus est compté, l'ordre n'est pas
-                // soumis, aucune fraction de capital n'est enregistrée ; sorties, `MoveStop` et
-                // annulations ne sont jamais filtrés.
-                if class == SignalClass::Entry
-                    && let Some(state) = research.as_deref_mut()
-                    && let Some(refusal) = state.refusal(k, now_ms)
-                {
-                    run.research.record(refusal);
-                    continue;
-                }
-                let fraction = if class == SignalClass::Entry {
-                    entry_fraction(signal, base, candle.close)
-                } else {
-                    None
-                };
-                let record = match book.submit(k, instruction(signal), context, max_notional) {
-                    Ok(()) => {
-                        *orders += 1;
-                        buffers.accepted += 1;
-                        true
-                    }
-                    Err(BookRejection::Sim(rejection)) => {
-                        rejections.record(rejection);
-                        matches!(
-                            rejection,
-                            crate::sim::Rejection::InsufficientQuote
-                                | crate::sim::Rejection::BelowMinimum
-                        )
-                    }
-                    Err(BookRejection::MaxPositions) => {
-                        run.max_positions_rejected += 1;
-                        true
-                    }
-                    Err(BookRejection::UnknownLeg) => {
-                        return Err(EngineError::Sim(SimError::UnknownLeg { leg: k, legs }));
-                    }
-                };
-                if record && let Some(fraction) = fraction {
-                    run.entry_fractions.push(fraction);
-                }
-            }
-        }
-
-        // Les jambes présentes avancent d'une bougie.
-        for run in runs.iter_mut() {
-            if run.present {
-                run.idx += 1;
-                run.present = false;
-            }
-        }
+        step::advance_minute(
+            book,
+            runs,
+            ranks,
+            feed.as_deref_mut(),
+            config,
+            max_notional,
+            buffers,
+            research.as_deref_mut(),
+            t,
+            driver,
+        )?;
     }
 
+    finish_clock(book, runs, ranks, buffers, research.as_deref(), driver)
+}
+
+fn finish_clock<D: step::EntryDriver>(
+    book: &mut Book,
+    runs: &mut [LegRun<'_>],
+    ranks: &RankTable,
+    buffers: &PlayBuffers,
+    research: Option<&ResearchState>,
+    driver: &mut D,
+) -> Result<(), EngineError> {
     // Fin de fenêtre : un trou encore ouvert est soldé comme un trou de cotation, avant la clôture forcée.
     if let Some(last) = buffers.last_open_ms {
         let end_ms = last.saturating_add(MINUTE_MS);
@@ -1859,11 +1765,12 @@ fn play(
         // En recherche, une échéance qui tombe à `decision_end` ou au-delà n'est pas soldée en trou de
         // cotation : la position passe à la clôture forcée (`end_of_window`) et elle est purgée
         // (docs S11 §3.4), sinon `exit_ms >= decision_end` sans être `end_of_window` ferait échouer le run.
-        let at_ms = match research.as_deref() {
+        let at_ms = match research {
             Some(state) => end_ms.min(state.decision_end_ms().saturating_sub(1)),
             None => end_ms,
         };
         force_quote_gaps(book, runs, order, at_ms)?;
+        driver.after_events(book, end_ms);
     }
     Ok(())
 }
