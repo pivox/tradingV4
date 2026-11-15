@@ -1,6 +1,8 @@
 //! Contrôles Git/fiche/candidat sans ouverture des données de marché.
 use super::{ResearchError, binary_hash, io, refused, safe_path};
-use crate::research::registry::{Digest, HypothesisRef, Registry, Status};
+use crate::research::registry::{
+    Digest, HypothesisRef, Registry, Status, TrialRole, role_from_family,
+};
 use crate::store::time::parse_rfc3339_utc;
 use serde::Deserialize;
 use sha2::{Digest as _, Sha256};
@@ -137,6 +139,11 @@ pub(crate) fn load_hypothesis(root: &Path, id: &str) -> Result<Hypothesis, Resea
         .get("Famille")
         .ok_or_else(|| refused("fiche : Famille absente"))?
         .to_string();
+    if role_from_family(&family)? != TrialRole::Candidate {
+        return Err(refused(
+            "fiche : préfixe de famille réservé aux contrôles internes",
+        ));
+    }
     let sha: String = Sha256::digest(&bytes)
         .iter()
         .map(|b| format!("{b:02x}"))
@@ -181,6 +188,9 @@ pub(crate) fn load_frozen(
             .trials()
             .get(&hash)
             .ok_or_else(|| refused("candidat gelé : config_hash inconnu du registre"))?;
+        if role_from_family(&trial.family)? != TrialRole::Candidate {
+            return Err(refused("candidat gelé : contrôle nul non promouvable"));
+        }
         if trial.hypothesis.as_ref() != Some(&fiche.reference) || trial.family != fiche.family {
             return Err(refused(
                 "candidat gelé : config_hash associé à une autre fiche ou famille",

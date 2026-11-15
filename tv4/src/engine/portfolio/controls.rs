@@ -541,3 +541,209 @@ pub(in crate::engine) fn prepare_catalogues(
     }
     Ok((slots, probes, modes))
 }
+
+/// Journal natif temporaire ; aucune courbe n'est allouée pendant le rejeu.
+pub(in crate::engine) struct ScheduledRun {
+    pub trace: Vec<NativeTrace>,
+    pub occupied: bool,
+}
+struct ScheduledDriver<'a> {
+    slots: &'a [Vec<PreparedSlot>],
+    selections: Vec<Vec<usize>>,
+    cursors: Vec<usize>,
+    geometries: Vec<Box<dyn ControlGeometry>>,
+    trace: Vec<NativeTrace>,
+    occupied: bool,
+    work: &'a mut EngineWork,
+    budgets: &'a Budgets,
+}
+impl step::EntryDriver for ScheduledDriver<'_> {
+    fn before_minute(&mut self, steps: u64) -> Result<(), EngineError> {
+        self.work
+            .charge_replay(steps, self.budgets)
+            .map_err(EngineError::ControlBudget)
+    }
+    fn evaluate(
+        &mut self,
+        leg: usize,
+        _: &mut dyn Strategy,
+        ctx: &BarContext<'_>,
+        out: &mut Vec<Signal>,
+    ) -> Result<(), EngineError> {
+        let cursor = self.cursors[leg];
+        let selected = self.selections[leg].get(cursor).copied();
+        if let Some(decision) = selected {
+            let slot = &self.slots[leg][decision];
+            if slot.signal_ms == ctx.now_ms() {
+                self.cursors[leg] += 1;
+                if ctx.position().is_some() || !ctx.pending().is_empty() {
+                    self.occupied = true;
+                } else {
+                    self.geometries[leg].restore_state(&slot.state)?;
+                    // L'intention est recalculée depuis le seed causal et les mêmes vues natives.
+                    let signal = self.geometries[leg].entry(ctx, EntryIntervention::RemoveBtc);
+                    if signal != Some(slot.signal) {
+                        return Err(crate::strategy::StrategyError::UnsupportedControlGeometry {
+                            id: "controls",
+                            reason: "seed causal non reconstructible",
+                        }
+                        .into());
+                    }
+                    out.push(slot.signal);
+                }
+            }
+        }
+        self.geometries[leg].exits(ctx, out);
+        Ok(())
+    }
+    fn after_events(&mut self, book: &Book, at_ms: Ts) {
+        let (trades, legs) = book.trades();
+        for (trade, &leg) in trades.iter().zip(legs).skip(self.trace.len()) {
+            self.trace.push(NativeTrace {
+                leg: usize::from(leg),
+                trade: *trade,
+                release_ms: at_ms,
+            });
+        }
+    }
+}
+
+pub(in crate::engine) fn scheduled(
+    source: &crate::engine::controls::PreparedSource<'_, '_>,
+    selections: Vec<Vec<usize>>,
+    work: &mut EngineWork,
+    budgets: &Budgets,
+) -> Result<ScheduledRun, ControlError> {
+    let strategies = fresh(source.runtime, source.declaration)?;
+    let geometries = strategies
+        .iter()
+        .map(|s| s.control_geometry())
+        .collect::<Result<Vec<_>, _>>()?;
+    let (mut book, _, research, _) = parts(
+        source.runtime,
+        source.loaded,
+        &strategies,
+        source.checked,
+        source.decision_tf,
+        true,
+    )?;
+    let mut driver = ScheduledDriver {
+        slots: &source.slots,
+        selections,
+        cursors: vec![0; strategies.len()],
+        geometries,
+        trace: Vec::new(),
+        occupied: false,
+        work,
+        budgets,
+    };
+    let mut feed = source.shared.regime.as_ref().map(RegimeFeed::new);
+    with_runs(
+        source.shared,
+        strategies,
+        &source.runtime.config,
+        research.is_some(),
+        None,
+        Recording::Reduced,
+        |mut runs| {
+            let mut state = source.runtime.research.map(|spec| {
+                ResearchState::new(spec, source.runtime.config.universe, source.decision_tf)
+            });
+            let mut buffers = PlayBuffers::new(
+                &runs,
+                Ts::MIN,
+                source.runtime.config.sim_rules.max_pending,
+                Recording::Reduced,
+            );
+            play(
+                &mut book,
+                &mut runs,
+                &source.shared.ranks,
+                feed.as_mut(),
+                &source.runtime.config,
+                Some(
+                    source.runtime.config.initial_cash
+                        / f64::from(source.runtime.config.max_positions),
+                ),
+                &mut buffers,
+                state.as_mut(),
+                &mut driver,
+            )?;
+            let last: Vec<Option<Candle>> =
+                runs.iter().map(|r| r.candles.last().copied()).collect();
+            book.close_all_at_end(&last)?;
+            if let Some(last) = buffers.last_open_ms {
+                step::EntryDriver::after_events(&mut driver, &book, last.saturating_add(MINUTE_MS));
+            }
+            Ok(())
+        },
+    )?;
+    Ok(ScheduledRun {
+        trace: driver.trace,
+        occupied: driver.occupied,
+    })
+}
+
+/// Bornes des minutes réellement jouables, jamais celles d'une jambe future non vivante.
+pub(in crate::engine) fn played_bounds(
+    source: &crate::engine::controls::PreparedSource<'_, '_>,
+) -> Vec<Option<(Ts, Ts)>> {
+    source
+        .shared
+        .candle_store
+        .iter()
+        .zip(&source.shared.live_ms)
+        .map(|(candles, &live)| {
+            let first = candles.partition_point(|c| c.open_time_ms < live);
+            candles
+                .get(first)
+                .zip(candles.last())
+                .map(|(a, b)| (a.open_time_ms, b.open_time_ms.saturating_add(MINUTE_MS)))
+        })
+        .collect()
+}
+
+/// Couverture stricte : une clôture UTC quotidienne doit être observée dans la grille union
+/// des jambes vivantes et éligibles. Une paire exclue n'efface pas les autres observations.
+pub(in crate::engine) fn daily_coverage(
+    source: &crate::engine::controls::PreparedSource<'_, '_>,
+    start: Ts,
+    end: Ts,
+) -> Vec<(bool, bool)> {
+    const DAY: Ts = 86_400_000;
+    let mut eligibility = source
+        .runtime
+        .research
+        .map(|spec| ResearchState::new(spec, source.runtime.config.universe, source.decision_tf));
+    let mut days = Vec::new();
+    let mut day = start.div_euclid(DAY) * DAY;
+    while day < end {
+        let close = day.saturating_add(DAY);
+        let open = close.saturating_sub(MINUTE_MS);
+        let sample = open.min(end.saturating_sub(MINUTE_MS)).max(start);
+        let mut eligible = false;
+        let mut observed = false;
+        for (leg, candles) in source.shared.candle_store.iter().enumerate() {
+            if source.shared.live_ms[leg] > sample
+                || candles.last().is_none_or(|c| c.open_time_ms < sample)
+            {
+                continue;
+            }
+            if eligibility
+                .as_mut()
+                .is_some_and(|state| state.refusal(leg, sample).is_some())
+            {
+                continue;
+            }
+            eligible = true;
+            observed |= open >= start
+                && open < end
+                && candles
+                    .binary_search_by_key(&open, |c| c.open_time_ms)
+                    .is_ok();
+        }
+        days.push((eligible, observed));
+        day = close;
+    }
+    days
+}

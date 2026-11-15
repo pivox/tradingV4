@@ -11,6 +11,10 @@ use tv4::strategy::{BarContext, IndicatorSpec, OrderKind, Signal, Size, Strategy
 #[derive(Clone)]
 pub struct Fixture {
     pub signal_ms: i64,
+    pub observed_every_ms: Option<i64>,
+    pub entry_until_ms: Option<i64>,
+    pub variable_hold: bool,
+    pub stagger_observed: bool,
     pub hold_ms: i64,
     pub limit: Option<(f64, u32)>,
     pub stop: Option<f64>,
@@ -22,6 +26,10 @@ impl Default for Fixture {
     fn default() -> Self {
         Self {
             signal_ms: 0,
+            observed_every_ms: None,
+            entry_until_ms: None,
+            variable_hold: false,
+            stagger_observed: false,
             hold_ms: 0,
             limit: None,
             stop: Some(90.0),
@@ -60,7 +68,7 @@ impl Strategy for Fixture {
         "1"
     }
     fn params_json(&self) -> serde_json::Value {
-        serde_json::json!({"hold": self.hold_ms,"signal":self.signal_ms,"limit":self.limit,"tf":self.tf,"btc":self.btc,"stop":self.stop,"warmup":self.warmup})
+        serde_json::json!({"hold": self.hold_ms,"signal":self.signal_ms,"limit":self.limit,"tf":self.tf,"btc":self.btc,"stop":self.stop,"warmup":self.warmup,"observed_every":self.observed_every_ms,"until":self.entry_until_ms,"variable":self.variable_hold,"stagger":self.stagger_observed})
     }
     fn timeframes(&self) -> &[Timeframe] {
         std::slice::from_ref(&self.tf)
@@ -76,7 +84,18 @@ impl Strategy for Fixture {
     }
     fn on_bar(&mut self, ctx: &BarContext<'_>, out: &mut Vec<Signal>) {
         self.exits(ctx, out);
-        if ctx.now_ms() == self.signal_ms
+        let observed_signal = self.signal_ms
+            + if self.stagger_observed && ctx.symbol().starts_with("Y-") {
+                10 * 60_000
+            } else {
+                0
+            };
+        if (ctx.now_ms() == observed_signal
+            || self.observed_every_ms.is_some_and(|period| {
+                ctx.now_ms() >= observed_signal && (ctx.now_ms() - observed_signal) % period == 0
+            }))
+            && ctx.position().is_none()
+            && ctx.pending().is_empty()
             && let Some(signal) = self.entry(ctx, EntryIntervention::PreserveBtc)
         {
             out.push(signal);
@@ -108,7 +127,8 @@ impl ControlGeometry for Fixture {
     }
     fn advance_flat(&mut self, _: &BarContext<'_>) {}
     fn entry(&self, ctx: &BarContext<'_>, mode: EntryIntervention) -> Option<Signal> {
-        if !ctx.just_closed(self.tf)
+        if self.entry_until_ms.is_some_and(|end| ctx.now_ms() >= end)
+            || !ctx.just_closed(self.tf)
             || (self.btc
                 && mode == EntryIntervention::PreserveBtc
                 && ctx.regime().and_then(|r| r.bull()) != Some(true))
@@ -120,9 +140,15 @@ impl ControlGeometry for Fixture {
     }
     fn exits(&mut self, ctx: &BarContext<'_>, out: &mut Vec<Signal>) {
         if ctx.just_closed(self.tf)
-            && ctx
-                .position()
-                .is_some_and(|p| ctx.now_ms() >= p.opened_at_ms + self.hold_ms)
+            && ctx.position().is_some_and(|p| {
+                ctx.now_ms()
+                    >= p.opened_at_ms
+                        + if self.variable_hold {
+                            (1 + p.opened_at_ms.div_euclid(60_000).rem_euclid(7)) * 60_000
+                        } else {
+                            self.hold_ms
+                        }
+            })
         {
             out.push(Signal::ExitLong {
                 kind: OrderKind::Market,

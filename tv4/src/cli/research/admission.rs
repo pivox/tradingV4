@@ -1,6 +1,9 @@
 //! Admission sérialisée, sans verrou conservé pendant la lecture ou le calcul.
 use super::{
-    ResearchArgs, ResearchError, digest, hypothesis::load_frozen, journal::Journal, refused,
+    ResearchArgs, ResearchError, digest,
+    hypothesis::{load_frozen, load_hypothesis},
+    journal::Journal,
+    refused,
 };
 use crate::{
     cli::{CliError, now_ms},
@@ -9,7 +12,8 @@ use crate::{
     research::{
         noise::noise_context,
         registry::{
-            Admission, AdmissionTime, ConfigSpec, Metrics, ReadId, Registry, TrialResult, UtcDate,
+            Admission, AdmissionTime, ConfigSpec, Digest, HypothesisRef, Metrics, ReadId, Registry,
+            TrialResult, TrialRole, UtcDate, role_from_family,
         },
     },
     store::time::{civil_from_days, days_from_civil, format_rfc3339_utc},
@@ -19,6 +23,37 @@ use std::{
     path::PathBuf,
 };
 
+/// Spécifications internes : les familles réservées ne viennent jamais d'une fiche libre.
+#[allow(dead_code, reason = "entrée préparée pour la CLI controls du lot 11")]
+pub(crate) struct ControlSpecs {
+    configs: Vec<ConfigSpec>,
+}
+#[allow(dead_code, reason = "entrée préparée pour la CLI controls du lot 11")]
+impl ControlSpecs {
+    pub(crate) fn new(parents: Vec<ConfigSpec>) -> Result<Self, ResearchError> {
+        for parent in &parents {
+            if role_from_family(&parent.family)? != TrialRole::Candidate {
+                return Err(refused("parent candidat attendu"));
+            }
+        }
+        Ok(Self { configs: parents })
+    }
+    pub(crate) fn push_null(
+        &mut self,
+        hash: Digest,
+        parent: &crate::engine::StrategyRecord,
+        hypothesis: Option<HypothesisRef>,
+    ) -> Result<(), ResearchError> {
+        self.configs.push(ConfigSpec::null_control(
+            hash,
+            parent.id,
+            parent.version,
+            hypothesis,
+        )?);
+        Ok(())
+    }
+}
+
 pub(crate) struct Session {
     root: PathBuf,
     read_id: ReadId,
@@ -26,6 +61,7 @@ pub(crate) struct Session {
     block: Option<Block>,
     window: Option<(Ts, Ts)>,
     generation: u32,
+    role_counts: crate::research::registry::RoleCounts,
     finished: bool,
 }
 impl Session {
@@ -58,10 +94,62 @@ impl Session {
         subset_hash: Option<&str>,
         prepare: impl FnOnce(Option<Block>, Option<(Ts, Ts)>) -> Result<(), CliError>,
     ) -> Result<Self, CliError> {
+        Self::begin_core(
+            args,
+            config_hashes,
+            dataset_hash,
+            source_block,
+            decision_window,
+            subset_hash,
+            None,
+            prepare,
+        )
+    }
+    /// Même transaction que les candidats ; les contrôles refusent le bloc effectif avant séries.
+    #[allow(
+        dead_code,
+        clippy::too_many_arguments,
+        reason = "raccord interne du futur CLI S14"
+    )]
+    pub(crate) fn begin_specs_with_prepare(
+        args: &ResearchArgs,
+        specs: &ControlSpecs,
+        dataset_hash: &str,
+        source_block: Option<Block>,
+        decision_window: Option<(Ts, Ts)>,
+        prepare: impl FnOnce(Option<Block>, Option<(Ts, Ts)>) -> Result<(), CliError>,
+    ) -> Result<Self, CliError> {
+        let hashes = specs
+            .configs
+            .iter()
+            .map(|s| s.config_hash.to_string())
+            .collect::<Vec<_>>();
+        Self::begin_core(
+            args,
+            &hashes,
+            dataset_hash,
+            source_block,
+            decision_window,
+            None,
+            Some(specs),
+            prepare,
+        )
+    }
+    #[allow(clippy::too_many_arguments)]
+    fn begin_core(
+        args: &ResearchArgs,
+        config_hashes: &[String],
+        dataset_hash: &str,
+        source_block: Option<Block>,
+        decision_window: Option<(Ts, Ts)>,
+        subset_hash: Option<&str>,
+        specs: Option<&ControlSpecs>,
+        prepare: impl FnOnce(Option<Block>, Option<(Ts, Ts)>) -> Result<(), CliError>,
+    ) -> Result<Self, CliError> {
         let root = args.resolve_root()?;
         let mut journal = Journal::open(&root)?;
         let date = UtcDate::from_timestamp_ms(now_ms()?).map_err(ResearchError::from)?;
-        let fiche = if source_block.is_some() || args.hypothesis.is_some() {
+        let fiche = if specs.is_none() && (source_block.is_some() || args.hypothesis.is_some()) {
             Some(args.load_hypothesis(&root)?)
         } else {
             None
@@ -91,12 +179,33 @@ impl Session {
                 events.extend(linked);
             }
         }
+        if let Some(specs) = specs {
+            let groups = control_links(specs, &staged, |id| load_hypothesis(&root, id))?;
+            for ((_, family), (reference, hashes)) in groups {
+                let linked = if role_from_family(&family).map_err(ResearchError::from)?
+                    == TrialRole::NullControl
+                {
+                    staged.propose_control_link(&hashes, &reference, &date)
+                } else {
+                    staged.propose_link(&hashes, &reference, &family, &date)
+                }
+                .map_err(ResearchError::from)?;
+                staged = staged.with_events(&linked).map_err(ResearchError::from)?;
+                events.extend(linked);
+            }
+        }
         let generation = staged.generation();
         let block = match (source_block, generation) {
             (Some(Block::Holdout), 1..) => Some(Block::Validation),
             (Some(Block::Forward), 1..) => Some(Block::Holdout),
             _ => source_block,
         };
+        if specs.is_some() && !matches!(block, None | Some(Block::Dev)) {
+            return Err(refused(
+                "contrôles S14 autorisés seulement sur DEV effectif ou voie technique sans bloc",
+            )
+            .into());
+        }
         let frozen = if block.is_some_and(Block::is_protected) {
             let fiche = fiche
                 .as_ref()
@@ -121,22 +230,27 @@ impl Session {
             frozen.as_ref().map(|f| f.frozen_at_ms),
         )?;
         prepare(block, window)?;
-        let configs = hashes
-            .iter()
-            .map(|hash| {
-                let (family, hypothesis) = match (&fiche, staged.trials().get(hash)) {
-                    (Some(fiche), _) => (fiche.family.clone(), Some(fiche.reference.clone())),
-                    (None, Some(trial)) => (trial.family.clone(), trial.hypothesis.clone()),
-                    (None, None) => ("unregistered_hypothesis".into(), None),
-                };
-                ConfigSpec {
-                    config_hash: hash.clone(),
-                    family,
-                    hypothesis,
-                }
-            })
-            .collect::<Vec<_>>();
-        if let Some(first) = configs.first()
+        let configs = if let Some(specs) = specs {
+            specs.configs.clone()
+        } else {
+            hashes
+                .iter()
+                .map(|hash| {
+                    let (family, hypothesis) = match (&fiche, staged.trials().get(hash)) {
+                        (Some(fiche), _) => (fiche.family.clone(), Some(fiche.reference.clone())),
+                        (None, Some(trial)) => (trial.family.clone(), trial.hypothesis.clone()),
+                        (None, None) => ("unregistered_hypothesis".into(), None),
+                    };
+                    ConfigSpec {
+                        config_hash: hash.clone(),
+                        family,
+                        hypothesis,
+                    }
+                })
+                .collect::<Vec<_>>()
+        };
+        if specs.is_none()
+            && let Some(first) = configs.first()
             && configs.iter().any(|c| c.hypothesis != first.hypothesis)
         {
             return Err(refused(
@@ -153,9 +267,12 @@ impl Session {
             decision_start_ms: window.map(|w| w.0),
             decision_end_ms: window.map(|w| w.1),
         };
-        let batch = staged
-            .propose_admission(&request)
-            .map_err(ResearchError::from)?;
+        let batch = if specs.is_some() {
+            staged.propose_controls_admission(&request)
+        } else {
+            staged.propose_admission(&request)
+        }
+        .map_err(ResearchError::from)?;
         events.extend(batch.events.clone());
         journal.append(&events)?;
         let noise = noise_context(batch.n as u64, 5.0).map_err(|e| refused(e.to_string()))?;
@@ -198,6 +315,7 @@ impl Session {
                 },
             );
         }
+        let role_counts = journal.registry().role_counts();
         drop(journal);
         Ok(Self {
             root,
@@ -206,8 +324,16 @@ impl Session {
             block,
             window,
             generation,
+            role_counts,
             finished: false,
         })
+    }
+    #[allow(
+        dead_code,
+        reason = "comptes par rôle du manifest controls au lot suivant"
+    )]
+    pub(crate) fn role_counts(&self) -> crate::research::registry::RoleCounts {
+        self.role_counts
     }
     pub(crate) fn context(&self, hash: &str) -> Result<GovernanceContext, CliError> {
         self.contexts
@@ -275,6 +401,46 @@ impl Drop for Session {
             eprintln!("échec de journalisation : {error}");
         }
     }
+}
+
+type ControlLinks = BTreeMap<(String, String), (HypothesisRef, Vec<Digest>)>;
+/// Chaque fiche est vérifiée une seule fois, puis les liaisons tardives sont groupées par identité/famille.
+fn control_links(
+    specs: &ControlSpecs,
+    registry: &Registry,
+    mut load: impl FnMut(&str) -> Result<super::hypothesis::Hypothesis, ResearchError>,
+) -> Result<ControlLinks, ResearchError> {
+    let mut verified = BTreeMap::new();
+    let mut groups = ControlLinks::new();
+    for config in &specs.configs {
+        let Some(reference) = &config.hypothesis else {
+            continue;
+        };
+        let fiche = match verified.entry(reference.id().to_owned()) {
+            std::collections::btree_map::Entry::Occupied(entry) => entry.into_mut(),
+            std::collections::btree_map::Entry::Vacant(entry) => {
+                entry.insert(load(reference.id())?)
+            }
+        };
+        let role = role_from_family(&config.family)?;
+        if &fiche.reference != reference
+            || (role == TrialRole::Candidate && fiche.family != config.family)
+        {
+            return Err(refused("spécification incompatible avec la fiche commitée"));
+        }
+        if registry
+            .trials()
+            .get(&config.config_hash)
+            .is_some_and(|t| t.hypothesis.is_none())
+        {
+            groups
+                .entry((reference.id().to_owned(), config.family.clone()))
+                .or_insert_with(|| (reference.clone(), Vec::new()))
+                .1
+                .push(config.config_hash.clone());
+        }
+    }
+    Ok(groups)
 }
 
 fn resolve_window(
@@ -552,6 +718,252 @@ mod tests {
         let journal = Journal::open(root.path()).unwrap();
         assert_eq!(journal.registry().n(), 1);
         assert_eq!(journal.registry().reads().len(), 2);
+    }
+    #[test]
+    fn controls_dev_verifie_les_fiches_de_chaque_parent_sous_le_meme_verrou() {
+        let root = tempfile::tempdir().unwrap();
+        for args in [
+            vec!["init", "-q"],
+            vec!["config", "user.name", "Test"],
+            vec!["config", "user.email", "test@example.invalid"],
+        ] {
+            assert!(
+                std::process::Command::new("git")
+                    .arg("-C")
+                    .arg(root.path())
+                    .args(args)
+                    .output()
+                    .unwrap()
+                    .status
+                    .success()
+            );
+        }
+        std::fs::create_dir_all(root.path().join("research")).unwrap();
+        let fields = [
+            "Date / auteur",
+            "Hypothèse économique",
+            "Règle d'entrée",
+            "Règle de sortie",
+            "Paramètres",
+            "Timeframe",
+            "Univers",
+            "Profil de coûts",
+            "Faisabilité G0",
+            "n_min / μ_cible",
+            "Signaux attendus",
+            "Contrôle",
+            "Règle d'abandon",
+            "Connaissances antérieures",
+            "Claim holdout",
+            "dataset_hash",
+        ];
+        for i in 1..=3 {
+            let mut text = format!(
+                "H-NNN: H-{i:03}\nFamille: {}\n",
+                if i == 3 {
+                    "__tv4_null_v1__:f:1".into()
+                } else {
+                    format!("F{i}")
+                }
+            );
+            for field in fields {
+                text.push_str(&format!("{field}: fixture\n"));
+            }
+            std::fs::write(root.path().join(format!("research/H-{i:03}.md")), text).unwrap();
+        }
+        for args in [vec!["add", "research"], vec!["commit", "-qm", "fixtures"]] {
+            assert!(
+                std::process::Command::new("git")
+                    .arg("-C")
+                    .arg(root.path())
+                    .args(args)
+                    .output()
+                    .unwrap()
+                    .status
+                    .success()
+            );
+        }
+        assert!(load_hypothesis(root.path(), "H-003").is_err());
+        let mut parents = Vec::new();
+        for i in 1..=2 {
+            let h = load_hypothesis(root.path(), &format!("H-{i:03}")).unwrap();
+            parents.push(ConfigSpec {
+                config_hash: Digest::new(format!("{i:064x}")).unwrap(),
+                family: h.family,
+                hypothesis: Some(h.reference),
+            });
+        }
+        let reference = parents[0].hypothesis.clone();
+        let mut specs = ControlSpecs::new(parents).unwrap();
+        specs
+            .push_null(
+                Digest::new("a".repeat(64)).unwrap(),
+                &crate::engine::StrategyRecord {
+                    id: "fixture",
+                    version: "1",
+                    params: serde_json::json!({}),
+                },
+                reference,
+            )
+            .unwrap();
+        for digit in ["b", "d"] {
+            specs
+                .push_null(
+                    Digest::new(digit.repeat(64)).unwrap(),
+                    &crate::engine::StrategyRecord {
+                        id: "fixture",
+                        version: "1",
+                        params: serde_json::json!({}),
+                    },
+                    specs.configs[0].hypothesis.clone(),
+                )
+                .unwrap();
+        }
+        let mut loads = 0;
+        control_links(&specs, &Registry::default(), |id| {
+            loads += 1;
+            load_hypothesis(root.path(), id)
+        })
+        .unwrap();
+        assert_eq!(loads, 2, "une lecture Git par fiche, pas par programme nul");
+        let technical = ControlSpecs {
+            configs: specs
+                .configs
+                .iter()
+                .cloned()
+                .map(|mut c| {
+                    if role_from_family(&c.family).unwrap() == TrialRole::NullControl {
+                        c.hypothesis = None;
+                    }
+                    c
+                })
+                .collect(),
+        };
+        let args = ResearchArgs {
+            research_root: Some(root.path().into()),
+            hypothesis: None,
+        };
+        let mut first = Session::begin_specs_with_prepare(
+            &args,
+            &technical,
+            &"c".repeat(64),
+            None,
+            None,
+            |_, _| Ok(()),
+        )
+        .unwrap();
+        first.fail().unwrap();
+        let journal = Journal::open(root.path()).unwrap();
+        let groups = control_links(&specs, journal.registry(), |id| {
+            load_hypothesis(root.path(), id)
+        })
+        .unwrap();
+        assert_eq!(groups.len(), 1);
+        assert_eq!(groups.values().next().unwrap().1.len(), 3);
+        drop(journal);
+        let args = ResearchArgs {
+            research_root: Some(root.path().into()),
+            hypothesis: None,
+        };
+        let mut session = Session::begin_specs_with_prepare(
+            &args,
+            &specs,
+            &"c".repeat(64),
+            Some(Block::Dev),
+            Some((
+                Block::Dev.span().start_ms,
+                Block::Dev.span().end_ms.unwrap(),
+            )),
+            |block, _| {
+                assert_eq!(block, Some(Block::Dev));
+                Ok(())
+            },
+        )
+        .unwrap();
+        assert_eq!(session.role_counts().candidates, 2);
+        assert_eq!(session.role_counts().null_controls, 3);
+        session.fail().unwrap();
+        let journal = Journal::open(root.path()).unwrap();
+        assert!(journal.registry().pending_reads().is_empty());
+    }
+    #[test]
+    fn controls_dev_techniques_partagent_journal_et_refusent_protected_avant_prepare() {
+        let root = tempfile::tempdir().unwrap();
+        assert!(
+            std::process::Command::new("git")
+                .arg("-C")
+                .arg(root.path())
+                .args(["init", "-q"])
+                .output()
+                .unwrap()
+                .status
+                .success()
+        );
+        let args = ResearchArgs {
+            research_root: Some(root.path().into()),
+            hypothesis: None,
+        };
+        let parent = crate::engine::StrategyRecord {
+            id: "fixture",
+            version: "1",
+            params: serde_json::json!({}),
+        };
+        let mut specs = ControlSpecs::new(Vec::new()).unwrap();
+        specs
+            .push_null(Digest::new("a".repeat(64)).unwrap(), &parent, None)
+            .unwrap();
+        for block in [Block::Validation, Block::Holdout, Block::Forward] {
+            let prepared = std::cell::Cell::new(false);
+            assert!(
+                Session::begin_specs_with_prepare(
+                    &args,
+                    &specs,
+                    &"c".repeat(64),
+                    Some(block),
+                    None,
+                    |_, _| {
+                        prepared.set(true);
+                        Ok(())
+                    }
+                )
+                .is_err()
+            );
+            assert!(!prepared.get());
+            assert!(!root.path().join("research/trials.csv").exists());
+        }
+        let mut session = Session::begin_specs_with_prepare(
+            &args,
+            &specs,
+            &"c".repeat(64),
+            None,
+            None,
+            |block, _| {
+                assert_eq!(block, None);
+                Ok(())
+            },
+        )
+        .unwrap();
+        let first = session.context(&"a".repeat(64)).unwrap();
+        assert_eq!(first.noise.n, 1);
+        session.fail().unwrap();
+        let mut next = Session::begin_specs_with_prepare(
+            &args,
+            &specs,
+            &"c".repeat(64),
+            None,
+            None,
+            |_, _| Ok(()),
+        )
+        .unwrap();
+        assert_ne!(
+            first.read_id,
+            next.context(&"a".repeat(64)).unwrap().read_id
+        );
+        next.fail().unwrap();
+        let journal = Journal::open(root.path()).unwrap();
+        assert_eq!(journal.registry().n(), 1);
+        assert_eq!(journal.registry().role_counts().null_controls, 1);
+        assert_eq!(journal.registry().pending_reads().len(), 0);
     }
     #[test]
     fn refus_de_preparation_rotation_ne_publie_aucune_reservation() {

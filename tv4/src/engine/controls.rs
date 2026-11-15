@@ -1,5 +1,10 @@
 //! Préparation et sondes natives S14. Les propriétaires Loaded/Shared vivent dans
 //! `with_prepared_batch` ; sa continuation permet les DP et rejeux sans rechargement.
+mod batch;
+mod replay;
+pub use batch::{BatchOutcome, run_batch, run_batch_observed, run_batch_with_work};
+pub use replay::replay_prepared;
+
 use std::collections::BTreeMap;
 use std::sync::Arc;
 
@@ -163,6 +168,9 @@ pub fn with_prepared_batch_with_work<T>(
     continuation: impl FnOnce(&mut PreparedBatch<'_, '_>) -> Result<T, ControlError>,
 ) -> Result<T, ControlError> {
     inputs.options.validate()?;
+    if !(1..=27).contains(&inputs.sources.len()) {
+        return Err(invalid("le panneau exige 1 à 27 configurations distinctes"));
+    }
     if inputs
         .sources
         .iter()

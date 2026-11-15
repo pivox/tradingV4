@@ -340,6 +340,7 @@ pub enum UnavailableReason {
     ObservedMismatch,
     ObservedOutsideSupport,
     MissingPositiveRisk,
+    NoRetainedTrades,
     InsufficientMonths,
     BootstrapZeroDenominator,
 }
@@ -413,6 +414,8 @@ pub struct EngineWork {
     pub probe_steps: u64,
     pub replay_steps: u64,
     pub total_steps: u64,
+    pub planning_cells: u64,
+    pub planning_logical_bytes: u64,
     geometry_probe_steps: u64,
     replication_replay_steps: u64,
     replication_attempts: u32,
@@ -523,4 +526,141 @@ fn bounded_add(
         .checked_add(debit)
         .filter(|next| *next <= limit)
         .ok_or(reason)
+}
+
+/// Réduction possédée d'un journal ; les mois sans trade restent présents.
+#[derive(Clone, Debug, PartialEq)]
+pub struct MonthMoment {
+    pub year: i32,
+    pub month: u8,
+    pub r_sum: f64,
+    pub count: u32,
+}
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum MonthCoverageStatus {
+    Complete,
+    Partial,
+    Excluded,
+}
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct MonthCoverage {
+    pub year: i32,
+    pub month: u8,
+    pub status: MonthCoverageStatus,
+}
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct PairQuotaCheck {
+    pub symbol: String,
+    pub expected: Vec<AnnualQuota>,
+    pub actual: Vec<AnnualQuota>,
+    pub conformant: bool,
+}
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ReplayRejection {
+    OccupiedPair,
+    TraceMismatch,
+    QuotaMismatch,
+}
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct AttemptRejection {
+    pub attempt: u32,
+    pub reason: ReplayRejection,
+}
+#[derive(Clone, Debug, PartialEq)]
+pub struct CellSummary {
+    pub replication: u32,
+    pub accepted_attempt: Option<u32>,
+    pub attempts: u32,
+    pub availability: CellAvailability,
+    pub reason: Option<UnavailableReason>,
+    pub score: Option<f64>,
+    pub months: Vec<MonthMoment>,
+    pub quota_checks: Vec<PairQuotaCheck>,
+    pub quantity_changed: bool,
+    pub replay_trace_hash: String,
+    pub rejections: Vec<AttemptRejection>,
+}
+/// Cardinalité exacte en décimal canonique, sans conserver les tables DP.
+/// `Some("0")` prouve un support vide ; `None` signifie un calcul non terminé ou non atteint.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct PairSupportSummary {
+    pub symbol: String,
+    pub cardinality: Option<String>,
+}
+/// Les aliases partagent physiquement catalogues, supports et cellules ; le DTO sérialise leurs tranches.
+#[derive(Clone, Debug, PartialEq)]
+pub struct ModeSummary {
+    pub mode: ControlMode,
+    pub alias_of: Option<ControlMode>,
+    pub catalogues: std::sync::Arc<Vec<PairCatalogue>>,
+    pub pair_supports: std::sync::Arc<Vec<PairSupportSummary>>,
+    /// Échec conjoint de planification ; les cardinalités antérieures restent disponibles.
+    pub planning_reason: Option<UnavailableReason>,
+    pub cells: std::sync::Arc<Vec<CellSummary>>,
+}
+#[derive(Clone, Debug, PartialEq)]
+pub struct SourceSummary {
+    pub quotas: std::collections::BTreeMap<String, Vec<AnnualQuota>>,
+    pub observed_score: Option<f64>,
+    pub observed_reason: Option<UnavailableReason>,
+    pub observed_months: Vec<MonthMoment>,
+    pub month_coverage: Vec<MonthCoverage>,
+    pub modes: Vec<ModeSummary>,
+    pub planning_work: PlanningWork,
+}
+
+/// Estimation temporelle approximative : tous les fragments mensuels restent inclus.
+/// `point` reste descriptif quand la couverture interdit l'estimation d'incertitude.
+#[derive(Clone, Debug, PartialEq)]
+pub struct BootstrapSummary {
+    pub available: bool,
+    pub reason: Option<UnavailableReason>,
+    pub approximate: bool,
+    pub samples: u32,
+    pub months: u32,
+    pub complete_months: u32,
+    pub point: Option<f64>,
+    pub standard_error: Option<f64>,
+    pub lb90: Option<f64>,
+    pub lb90_positive: Option<bool>,
+}
+#[derive(Clone, Debug, PartialEq)]
+pub struct SourceStatistics {
+    pub score: Option<f64>,
+    pub control_mean: Option<f64>,
+    pub delta: Option<f64>,
+    pub mc_standard_error: Option<f64>,
+    pub constant_controls: bool,
+    pub exceedances: Option<u32>,
+    pub ties: Option<u32>,
+    pub p_value: Option<f64>,
+    pub delta_at_least_010: Option<bool>,
+    pub above_critical: Option<bool>,
+    /// Les modes aliases d'un parent partagent la même estimation physique.
+    pub temporal: Option<std::sync::Arc<BootstrapSummary>>,
+}
+#[derive(Clone, Debug, PartialEq)]
+pub struct PanelStatistics {
+    pub status: PanelStatus,
+    pub n_grid: u32,
+    pub replications: u32,
+    pub smoke: bool,
+    /// Admissibilité numérique seulement ; jamais un verdict G1.
+    pub numeric_admissible: bool,
+    pub resolution: f64,
+    /// Rang base 1, calculé en entiers, même lorsque ce rang dépasse K.
+    pub critical_rank: u64,
+    pub critical_value: Option<f64>,
+    /// Vide si le panneau requis est incomplet ; aucun maximum sur un sous-panneau.
+    pub maxima: Vec<f64>,
+    pub family_score: Option<f64>,
+    pub family_exceedances: Option<u32>,
+    pub family_p_value: Option<f64>,
+    pub sources: Vec<SourceStatistics>,
+}
+#[derive(Clone, Debug, PartialEq)]
+pub struct ModeStatistics {
+    pub mode: ControlMode,
+    pub alias_of: Option<ControlMode>,
+    pub panel: PanelStatistics,
 }
