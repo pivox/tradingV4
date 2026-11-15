@@ -42,6 +42,7 @@ pub use profiles::CostArgs;
 mod portfolio;
 mod profiles;
 mod research;
+mod stats_inputs;
 
 /// Symbole canonique de la fixture (XBTUSD Kraken, docs/03 §4).
 const FIXTURE_SYMBOL: &str = "BTC-USD";
@@ -111,9 +112,20 @@ pub struct RunInputArgs {
         value_parser = clap::value_parser!(u32).range(1..)
     )]
     pub min_trades: u32,
+    /// Décale les achats d'un TF de décision supplémentaire (0 ou 1).
+    #[arg(long, default_value_t = 0, value_parser = clap::value_parser!(u32).range(0..=1))]
+    pub entry_delay_bars: u32,
 }
 
 impl RunInputArgs {
+    /// Règle commune à l'identité préflight et à l'exécution, résolue sur le vrai TF de décision.
+    pub(super) fn sim_rules(&self, decision_tf: Timeframe) -> SimRules {
+        SimRules {
+            extra_entry_delay_bars: self.entry_delay_bars * (decision_tf.ms() / 60_000) as u32,
+            ..SimRules::default()
+        }
+    }
+
     /// Slippage scalaire du chemin hérité : celui de `--slippage-bps`, sinon [`DEFAULT_SLIPPAGE_BPS`].
     pub(super) fn legacy_slippage(&self) -> Result<Slippage, CliError> {
         match self.slippage_bps {
@@ -159,6 +171,8 @@ pub(super) struct PreparedRun {
     pub slippage: Slippage,
     pub capital: f64,
     pub min_trades: u32,
+    pub decision_tf: Timeframe,
+    pub sim_rules: SimRules,
     strategy_id: String,
     params: toml::Value,
 }
@@ -176,7 +190,7 @@ impl PreparedRun {
             fees: self.fees,
             slippage: self.slippage,
             initial_cash: self.capital,
-            sim_rules: SimRules::default(),
+            sim_rules: self.sim_rules,
             instrument: self.instrument,
         }
     }
@@ -203,7 +217,7 @@ pub(super) fn prepare(args: &RunInputArgs) -> Result<PreparedRun, CliError> {
             source,
         })?;
     // Construction d'essai : une stratégie inconnue ou des paramètres invalides échouent avant tout calcul.
-    registry::build(&args.strategy, &params)?;
+    let decision_tf = registry::build(&args.strategy, &params)?.decision_tf();
 
     Ok(PreparedRun {
         candles: input.candles,
@@ -217,6 +231,8 @@ pub(super) fn prepare(args: &RunInputArgs) -> Result<PreparedRun, CliError> {
         slippage: args.legacy_slippage()?,
         capital: args.capital,
         min_trades: args.min_trades,
+        decision_tf,
+        sim_rules: args.sim_rules(decision_tf),
         strategy_id: args.strategy.clone(),
         params,
     })
@@ -308,6 +324,15 @@ pub(super) fn run(args: &BacktestArgs) -> Result<(), CliError> {
         trades_csv: hash::blake3_prefixed(&trades_bytes),
     };
 
+    let stats_inputs = stats_inputs::cell(
+        &metrics,
+        &result,
+        &prepared.candles,
+        &open_times,
+        prepared.decision_tf,
+        [&metrics_bytes, &trades_bytes, &equity_bytes],
+    )?;
+
     let end_ms = metrics.window.last_open_time_ms + MINUTE_MS;
     let run_id = report::run_id(
         &metrics.config_hash,
@@ -319,6 +344,8 @@ pub(super) fn run(args: &BacktestArgs) -> Result<(), CliError> {
         .out
         .clone()
         .unwrap_or_else(|| args.inputs.root.join("runs").join(&run_id));
+
+    stats_inputs::cleanup(&out)?;
 
     // Un dossier de sortie existant (même `run_id` sous un autre commit) ne doit pas garder l'ancien
     // manifeste, qui marque un run complet, pendant que les autres fichiers sont réécrits : une
@@ -359,6 +386,7 @@ pub(super) fn run(args: &BacktestArgs) -> Result<(), CliError> {
             },
         },
     )?;
+    manifest.stats_inputs = Some(stats_inputs::write(&out, &stats_inputs)?);
     manifest.governance = Some(governance);
     debug_assert_eq!(manifest.run_id, run_id);
     report::write_json_atomic(&out, MANIFEST_FILE, &manifest)?;

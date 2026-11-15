@@ -187,6 +187,8 @@ pub struct PortfolioResult {
     pub grid_open_ms: Vec<Ts>,
     /// Equity du portefeuille à la clôture de chaque minute de la grille, avant la clôture forcée.
     pub equity: Vec<f64>,
+    /// Cash après les événements de chaque ouverture, aligné sur `equity` (réservations incluses).
+    pub cash: Vec<f64>,
     /// Journal de trades de tout le portefeuille, dans l'ordre de génération.
     pub trades: Vec<Trade>,
     /// Indice (dans `universe`) de la jambe de chaque trade, aligné sur `trades`.
@@ -1322,6 +1324,7 @@ pub(super) fn play_profile(
     let mut buffers = PlayBuffers {
         grid: Vec::with_capacity(grid_minutes),
         equity: Vec::with_capacity(grid_minutes),
+        cash: Vec::with_capacity(grid_minutes),
         pending: Vec::with_capacity(max_pending),
         emitted: 0,
         accepted: 0,
@@ -1497,6 +1500,7 @@ pub(super) fn play_profile(
         window_last_open_ms,
         grid_open_ms: buffers.grid,
         equity: buffers.equity,
+        cash: buffers.cash,
         trades: outcome.trades,
         trade_legs: outcome.trade_legs,
         cash_final: outcome.cash,
@@ -1545,6 +1549,7 @@ struct Totals {
 struct PlayBuffers {
     grid: Vec<Ts>,
     equity: Vec<f64>,
+    cash: Vec<f64>,
     /// Vue des ordres en attente donnée à la stratégie, réécrite à chaque appel.
     pending: Vec<PendingOrder>,
     emitted: u64,
@@ -1688,6 +1693,7 @@ fn play(
         if recorded {
             buffers.grid.push(t);
             buffers.equity.push(equity_i);
+            buffers.cash.push(book.cash());
         }
         buffers.last_open_ms = Some(t);
         book.check_invariants();

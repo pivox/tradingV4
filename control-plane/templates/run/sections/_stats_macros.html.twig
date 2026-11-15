@@ -1,0 +1,25 @@
+{% macro reasons(reasons) %}
+  {% if reasons is not empty %}<ul class="note">{% for reason in reasons %}<li>{{ reason }}</li>{% endfor %}</ul>{% endif %}
+{% endmacro %}
+
+{% macro metric(metric, unit = '') %}
+  {% if metric.value is null %}<span class="absent-note">Indisponible</span>{% elseif unit == '%' %}{{ metric.value|pct }}{% else %}{{ metric.value|num(3) }}{% if unit %} {{ unit }}{% endif %}{% endif %}
+  {% if metric.reasons is not empty %}<span class="note"> — {{ metric.reasons|join(' ; ') }}</span>{% endif %}
+{% endmacro %}
+
+{% macro reference(reference, label, partition) %}
+  <h3>{{ label }}</h3>
+  <table class="kv"><tbody>
+    <tr><th scope="row">Rendement total du benchmark</th><td>{{ _self.metric(reference.total_return, '%') }}</td></tr>
+    <tr><th scope="row">Sharpe annualisé de l’excédent stratégie − benchmark</th><td>{{ _self.metric(reference.excess_sharpe) }}</td></tr>
+    <tr><th scope="row">Excédent composé sur les mois UTC complets communs</th><td>{{ _self.metric(reference.monthly.point_excess, '%') }}</td></tr>
+    <tr><th scope="row">Borne basse LB95 mensuelle{% if partition != 'dev' %} (hors DEV){% endif %}</th><td>{{ _self.metric(reference.monthly.lb95_excess, '%') }}</td></tr>
+    <tr><th scope="row">Mois retenus / exclus</th><td>{{ reference.monthly.used_months|length }} / {{ reference.monthly.excluded_months|length }}</td></tr>
+    <tr><th scope="row">Couverture quotidienne</th><td>{{ reference.daily.intervals|length }} / {{ reference.daily.expected_intervals }} · {{ reference.daily.coverage|pct }}</td></tr>
+    <tr><th scope="row">Calmar informatif du benchmark</th><td>{{ _self.metric(reference.calmar) }}</td></tr>
+  </tbody></table>
+  <p class="note">Méthode mensuelle : <code>{{ reference.monthly.method }}</code>.</p>
+  {% if reference.monthly.excluded_months is not empty %}<details><summary>Mois exclus et raisons</summary><ul>
+    {% for month in reference.monthly.excluded_months %}<li>{{ month.window.start_ms|datetime }} → {{ month.window.end_ms|datetime }} : {{ month.observed_intervals }}/{{ month.expected_intervals }} ({{ month.coverage|pct }}){{ _self.reasons(month.reasons) }}</li>{% endfor %}
+  </ul></details>{% endif %}
+{% endmacro %}

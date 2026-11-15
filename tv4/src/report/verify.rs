@@ -1787,6 +1787,55 @@ fn describe_csv_diff(a: &[u8], b: &[u8], lines: &mut Vec<String>) {
     }
 }
 
+/// Feuilles possédées et index de layout contrôlés par les mêmes lecteurs que `verify`.
+/// Aucun fichier n'est rouvert après validation.
+pub fn load_stats_leaves(dir: &Path) -> Result<StatsLeaves, VerifyError> {
+    fn profiles(dir: &Path, p: LoadedProfiles, out: &mut StatsLeaves) {
+        out.layout_files.push((dir.join(PROFILES_FILE), p.bytes));
+        for ((_, run), entry) in p
+            .runs
+            .into_iter()
+            .zip(p.value["profiles"].as_array().into_iter().flatten())
+        {
+            // Le lecteur strict vient de contrôler le type et le caractère simple de dir.
+            let sub = entry["dir"].as_str().unwrap_or_default();
+            out.leaves.push((dir.join(sub), run));
+        }
+    }
+    let mut out = StatsLeaves {
+        leaves: Vec::new(),
+        layout_files: Vec::new(),
+    };
+    match Layout::of(dir) {
+        Layout::Run => out
+            .leaves
+            .push((dir.to_path_buf(), load_run("stats", dir)?)),
+        Layout::Profiles => profiles(dir, load_profiles("stats", dir)?, &mut out),
+        Layout::Lines => {
+            let loaded = load_lines("stats", dir)?;
+            out.layout_files.push((dir.join(LINES_FILE), loaded.bytes));
+            for ((_, body), entry) in loaded
+                .lines
+                .into_iter()
+                .zip(loaded.value["lines"].as_array().into_iter().flatten())
+            {
+                let sub = dir.join(entry["dir"].as_str().unwrap_or_default());
+                match body {
+                    LineBody::Run(run) => out.leaves.push((sub, *run)),
+                    LineBody::Profiles(p) => profiles(&sub, *p, &mut out),
+                }
+            }
+        }
+    }
+    Ok(out)
+}
+
+/// Octets des index et feuilles validés, conservés jusqu'à la publication du sidecar.
+pub struct StatsLeaves {
+    pub leaves: Vec<(std::path::PathBuf, VerifiedRun)>,
+    pub layout_files: Vec<(std::path::PathBuf, Vec<u8>)>,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

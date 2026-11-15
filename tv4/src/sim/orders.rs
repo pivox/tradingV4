@@ -75,6 +75,8 @@ pub struct SubmitContext {
 /// Motifs de refus d'une instruction, un compteur chacun dans `SignalRejections` (côté engine).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Rejection {
+    /// Activation ou expiration d’achat non représentable.
+    TimestampOverflow,
     /// La file contient déjà `max_pending` ordres.
     PendingFull,
     /// Entrée alors qu'une position est ouverte ou qu'une entrée est déjà en attente.

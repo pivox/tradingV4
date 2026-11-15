@@ -1,0 +1,4152 @@
+{
+  "schema": "tv4-stats-v1",
+  "options": {
+    "seed": "18446744073709551615",
+    "samples": 10000,
+    "bootstrap_block": 5,
+    "correlation_threshold": 0.7
+  },
+  "source": {
+    "provenance": {
+      "run_id": "27f7c50414e0c23ec84b76986a63ef77dc4055f81381ca3701c88f5193d14b65",
+      "config_hash": "39c7d110d29a9a50302ce2e7fbc4c98c4abfc1dad7bec6b80cc5545a9678c1c1",
+      "dataset_hash": "blake3:2ffed94cda58cfde282bdda249e615cdcbeaa57f91fd1bff35db706a9015ae20",
+      "result_hash": "blake3:02030d35c22cf658bcf3a75f75632758c99ba1152163690a3387c5cf20dbb07f",
+      "initial_cash": 300.0,
+      "window": {
+        "start_ms": 1704085200000,
+        "end_ms": 1707955200000
+      },
+      "profile": null,
+      "line": null,
+      "files": {
+        "metrics.json": "blake3:925b39f351a08f99e5cef1b35b3e6685295bde77df3b5d1f8bf0827b49e64d6a",
+        "trades.csv": "blake3:02030d35c22cf658bcf3a75f75632758c99ba1152163690a3387c5cf20dbb07f",
+        "equity.csv": "blake3:25147568ac7925cb85b489fcdd0928ade2a7693584f8d60e40cdd3297cd4222f"
+      }
+    },
+    "files": {
+      "manifest_json": "blake3:308b884f3b0c852f45e00826624c38e899fbba08fcda22e6e6b247cefc7fb289",
+      "metrics_json": "blake3:925b39f351a08f99e5cef1b35b3e6685295bde77df3b5d1f8bf0827b49e64d6a",
+      "trades_csv": "blake3:02030d35c22cf658bcf3a75f75632758c99ba1152163690a3387c5cf20dbb07f",
+      "equity_csv": "blake3:25147568ac7925cb85b489fcdd0928ade2a7693584f8d60e40cdd3297cd4222f",
+      "stats_inputs_json": "blake3:c4bf9aa3ca1f1c3a8c335a9dfb128cd89fa18441040a8167dd65bdeee6d6e3e0"
+    },
+    "layout_files": [],
+    "historical_governance": {
+      "claim_holdout": null,
+      "config_hash": "39c7d110d29a9a50302ce2e7fbc4c98c4abfc1dad7bec6b80cc5545a9678c1c1",
+      "dataset_hash": "blake3:2ffed94cda58cfde282bdda249e615cdcbeaa57f91fd1bff35db706a9015ae20",
+      "effective_block": null,
+      "frozen_at": null,
+      "frozen_tag": null,
+      "generation": 0,
+      "hypothesis": null,
+      "noise": {
+        "approx_q90": 0.0,
+        "expected": 0.0,
+        "n": 1,
+        "n_eff": null,
+        "q95": 0.7356009037671815,
+        "selection_years": 5.0
+      },
+      "read_id": 1,
+      "schema": "tv4-governance-v1",
+      "source_block": null,
+      "trial_id": 1
+    }
+  },
+  "layout_files": [],
+  "partition": "unclassified",
+  "selection": {
+    "btc": null,
+    "eth": "ETH-USD",
+    "quote": "USD",
+    "reasons": [
+      "BTC absent des marchés admis pour la quote jouée"
+    ]
+  },
+  "bootstrap": {
+    "availability": "complete",
+    "n_trades": 43,
+    "n_r": 43,
+    "r_coverage": 1.0,
+    "mean_r": {
+      "availability": "complete",
+      "value": -1.241413369568051,
+      "reasons": []
+    },
+    "lb90_r": {
+      "availability": "complete",
+      "value": -1.3938560841518344,
+      "reasons": []
+    },
+    "standard_error_r": {
+      "availability": "complete",
+      "value": 0.12028088251069399,
+      "reasons": []
+    }
+  },
+  "concentration": {
+    "availability": "partial",
+    "n_trades": 43,
+    "total_pnl": -97.65862306021009,
+    "best_month": {
+      "id": "2024-02",
+      "pnl": -44.41319708043417,
+      "pnl_without": -53.245425979775916
+    },
+    "best_pair": {
+      "id": "ETH-USD",
+      "pnl": -97.65862306021009,
+      "pnl_without": 0.0
+    },
+    "without_top": [
+      {
+        "count": 1,
+        "removed": [
+          {
+            "symbol": "ETH-USD",
+            "lot_id": 11,
+            "entry_ms": 1705359660000,
+            "exit_ms": 1705391160000,
+            "row": 11
+          }
+        ],
+        "pnl_without": {
+          "availability": "complete",
+          "value": -100.72440751968978,
+          "reasons": []
+        }
+      },
+      {
+        "count": 3,
+        "removed": [
+          {
+            "symbol": "ETH-USD",
+            "lot_id": 11,
+            "entry_ms": 1705359660000,
+            "exit_ms": 1705391160000,
+            "row": 11
+          },
+          {
+            "symbol": "ETH-USD",
+            "lot_id": 8,
+            "entry_ms": 1705158960000,
+            "exit_ms": 1705189560000,
+            "row": 8
+          },
+          {
+            "symbol": "ETH-USD",
+            "lot_id": 7,
+            "entry_ms": 1705104960000,
+            "exit_ms": 1705127460000,
+            "row": 7
+          }
+        ],
+        "pnl_without": {
+          "availability": "complete",
+          "value": -101.18988789140386,
+          "reasons": []
+        }
+      },
+      {
+        "count": 5,
+        "removed": [
+          {
+            "symbol": "ETH-USD",
+            "lot_id": 11,
+            "entry_ms": 1705359660000,
+            "exit_ms": 1705391160000,
+            "row": 11
+          },
+          {
+            "symbol": "ETH-USD",
+            "lot_id": 8,
+            "entry_ms": 1705158960000,
+            "exit_ms": 1705189560000,
+            "row": 8
+          },
+          {
+            "symbol": "ETH-USD",
+            "lot_id": 7,
+            "entry_ms": 1705104960000,
+            "exit_ms": 1705127460000,
+            "row": 7
+          },
+          {
+            "symbol": "ETH-USD",
+            "lot_id": 9,
+            "entry_ms": 1705217460000,
+            "exit_ms": 1705239960000,
+            "row": 9
+          },
+          {
+            "symbol": "ETH-USD",
+            "lot_id": 29,
+            "entry_ms": 1707093960000,
+            "exit_ms": 1707120960000,
+            "row": 29
+          }
+        ],
+        "pnl_without": {
+          "availability": "complete",
+          "value": -99.93552623547095,
+          "reasons": []
+        }
+      },
+      {
+        "count": 10,
+        "removed": [
+          {
+            "symbol": "ETH-USD",
+            "lot_id": 11,
+            "entry_ms": 1705359660000,
+            "exit_ms": 1705391160000,
+            "row": 11
+          },
+          {
+            "symbol": "ETH-USD",
+            "lot_id": 8,
+            "entry_ms": 1705158960000,
+            "exit_ms": 1705189560000,
+            "row": 8
+          },
+          {
+            "symbol": "ETH-USD",
+            "lot_id": 7,
+            "entry_ms": 1705104960000,
+            "exit_ms": 1705127460000,
+            "row": 7
+          },
+          {
+            "symbol": "ETH-USD",
+            "lot_id": 9,
+            "entry_ms": 1705217460000,
+            "exit_ms": 1705239960000,
+            "row": 9
+          },
+          {
+            "symbol": "ETH-USD",
+            "lot_id": 29,
+            "entry_ms": 1707093960000,
+            "exit_ms": 1707120960000,
+            "row": 29
+          },
+          {
+            "symbol": "ETH-USD",
+            "lot_id": 21,
+            "entry_ms": 1706438760000,
+            "exit_ms": 1706462160000,
+            "row": 21
+          },
+          {
+            "symbol": "ETH-USD",
+            "lot_id": 31,
+            "entry_ms": 1707203760000,
+            "exit_ms": 1707221760000,
+            "row": 31
+          },
+          {
+            "symbol": "ETH-USD",
+            "lot_id": 20,
+            "entry_ms": 1706250660000,
+            "exit_ms": 1706269560000,
+            "row": 20
+          },
+          {
+            "symbol": "ETH-USD",
+            "lot_id": 34,
+            "entry_ms": 1707449520000,
+            "exit_ms": 1707466560000,
+            "row": 34
+          },
+          {
+            "symbol": "ETH-USD",
+            "lot_id": 26,
+            "entry_ms": 1707020160000,
+            "exit_ms": 1707034560000,
+            "row": 26
+          }
+        ],
+        "pnl_without": {
+          "availability": "complete",
+          "value": -95.14897798972729,
+          "reasons": []
+        }
+      }
+    ],
+    "top3_share": {
+      "availability": "unavailable",
+      "value": null,
+      "reasons": [
+        "trois trades et PnL net total strictement positif requis"
+      ]
+    },
+    "best_month_positive_share": {
+      "availability": "unavailable",
+      "value": null,
+      "reasons": [
+        "aucun mois au PnL strictement positif"
+      ]
+    }
+  },
+  "monte_carlo": {
+    "availability": "complete",
+    "n_trades": 43,
+    "n_r": 43,
+    "n_removed": 8,
+    "requested_block_trades": 20,
+    "n_blocks": 2,
+    "block_sizes": [
+      20,
+      23
+    ],
+    "block_durations_ms": [
+      2186100000,
+      1683900000
+    ],
+    "source_duration_ms": 3870000000,
+    "cadence_trades_per_year": 350.64,
+    "sizing": "compounding",
+    "horizon_one_year_ms": 31557600000,
+    "drawdown_grid": "tous points fournis, dont clôtures quotidiennes et réalisations/blocs ; grille conservatrice",
+    "dd_initial_p95_2y": {
+      "availability": "complete",
+      "value": 0.9989847476319467,
+      "reasons": []
+    },
+    "dd_peak_p95_2y": {
+      "availability": "complete",
+      "value": 0.9989847476319467,
+      "reasons": []
+    },
+    "return_p5_2y": {
+      "availability": "complete",
+      "value": -0.9989847476319467,
+      "reasons": []
+    },
+    "removal_expectancy_median_r": {
+      "availability": "complete",
+      "value": -1.2377264283277862,
+      "reasons": []
+    },
+    "probability_dd20_1y": {
+      "availability": "complete",
+      "value": 1.0,
+      "reasons": []
+    }
+  },
+  "regimes": {
+    "labels": [
+      {
+        "trade": {
+          "symbol": "ETH-USD",
+          "lot_id": 0,
+          "entry_ms": 1704219360000,
+          "exit_ms": 1704228360000,
+          "row": 0
+        },
+        "close_ms": null,
+        "trend": null,
+        "volatility": null,
+        "volatility30": {
+          "availability": "unavailable",
+          "value": null,
+          "reasons": [
+            "clôture BTC attendue au dernier minuit UTC absente"
+          ]
+        },
+        "expanding_median": {
+          "availability": "unavailable",
+          "value": null,
+          "reasons": [
+            "clôture BTC attendue au dernier minuit UTC absente"
+          ]
+        },
+        "reasons": [
+          "clôture BTC attendue au dernier minuit UTC absente"
+        ]
+      },
+      {
+        "trade": {
+          "symbol": "ETH-USD",
+          "lot_id": 1,
+          "entry_ms": 1704264360000,
+          "exit_ms": 1704284160000,
+          "row": 1
+        },
+        "close_ms": null,
+        "trend": null,
+        "volatility": null,
+        "volatility30": {
+          "availability": "unavailable",
+          "value": null,
+          "reasons": [
+            "clôture BTC attendue au dernier minuit UTC absente"
+          ]
+        },
+        "expanding_median": {
+          "availability": "unavailable",
+          "value": null,
+          "reasons": [
+            "clôture BTC attendue au dernier minuit UTC absente"
+          ]
+        },
+        "reasons": [
+          "clôture BTC attendue au dernier minuit UTC absente"
+        ]
+      },
+      {
+        "trade": {
+          "symbol": "ETH-USD",
+          "lot_id": 2,
+          "entry_ms": 1704355260000,
+          "exit_ms": 1704362220000,
+          "row": 2
+        },
+        "close_ms": null,
+        "trend": null,
+        "volatility": null,
+        "volatility30": {
+          "availability": "unavailable",
+          "value": null,
+          "reasons": [
+            "clôture BTC attendue au dernier minuit UTC absente"
+          ]
+        },
+        "expanding_median": {
+          "availability": "unavailable",
+          "value": null,
+          "reasons": [
+            "clôture BTC attendue au dernier minuit UTC absente"
+          ]
+        },
+        "reasons": [
+          "clôture BTC attendue au dernier minuit UTC absente"
+        ]
+      },
+      {
+        "trade": {
+          "symbol": "ETH-USD",
+          "lot_id": 3,
+          "entry_ms": 1704563160000,
+          "exit_ms": 1704574860000,
+          "row": 3
+        },
+        "close_ms": null,
+        "trend": null,
+        "volatility": null,
+        "volatility30": {
+          "availability": "unavailable",
+          "value": null,
+          "reasons": [
+            "clôture BTC attendue au dernier minuit UTC absente"
+          ]
+        },
+        "expanding_median": {
+          "availability": "unavailable",
+          "value": null,
+          "reasons": [
+            "clôture BTC attendue au dernier minuit UTC absente"
+          ]
+        },
+        "reasons": [
+          "clôture BTC attendue au dernier minuit UTC absente"
+        ]
+      },
+      {
+        "trade": {
+          "symbol": "ETH-USD",
+          "lot_id": 4,
+          "entry_ms": 1704818760000,
+          "exit_ms": 1704827760000,
+          "row": 4
+        },
+        "close_ms": null,
+        "trend": null,
+        "volatility": null,
+        "volatility30": {
+          "availability": "unavailable",
+          "value": null,
+          "reasons": [
+            "clôture BTC attendue au dernier minuit UTC absente"
+          ]
+        },
+        "expanding_median": {
+          "availability": "unavailable",
+          "value": null,
+          "reasons": [
+            "clôture BTC attendue au dernier minuit UTC absente"
+          ]
+        },
+        "reasons": [
+          "clôture BTC attendue au dernier minuit UTC absente"
+        ]
+      },
+      {
+        "trade": {
+          "symbol": "ETH-USD",
+          "lot_id": 5,
+          "entry_ms": 1704870960000,
+          "exit_ms": 1704878340000,
+          "row": 5
+        },
+        "close_ms": null,
+        "trend": null,
+        "volatility": null,
+        "volatility30": {
+          "availability": "unavailable",
+          "value": null,
+          "reasons": [
+            "clôture BTC attendue au dernier minuit UTC absente"
+          ]
+        },
+        "expanding_median": {
+          "availability": "unavailable",
+          "value": null,
+          "reasons": [
+            "clôture BTC attendue au dernier minuit UTC absente"
+          ]
+        },
+        "reasons": [
+          "clôture BTC attendue au dernier minuit UTC absente"
+        ]
+      },
+      {
+        "trade": {
+          "symbol": "ETH-USD",
+          "lot_id": 6,
+          "entry_ms": 1704923160000,
+          "exit_ms": 1704939360000,
+          "row": 6
+        },
+        "close_ms": null,
+        "trend": null,
+        "volatility": null,
+        "volatility30": {
+          "availability": "unavailable",
+          "value": null,
+          "reasons": [
+            "clôture BTC attendue au dernier minuit UTC absente"
+          ]
+        },
+        "expanding_median": {
+          "availability": "unavailable",
+          "value": null,
+          "reasons": [
+            "clôture BTC attendue au dernier minuit UTC absente"
+          ]
+        },
+        "reasons": [
+          "clôture BTC attendue au dernier minuit UTC absente"
+        ]
+      },
+      {
+        "trade": {
+          "symbol": "ETH-USD",
+          "lot_id": 7,
+          "entry_ms": 1705104960000,
+          "exit_ms": 1705127460000,
+          "row": 7
+        },
+        "close_ms": null,
+        "trend": null,
+        "volatility": null,
+        "volatility30": {
+          "availability": "unavailable",
+          "value": null,
+          "reasons": [
+            "clôture BTC attendue au dernier minuit UTC absente"
+          ]
+        },
+        "expanding_median": {
+          "availability": "unavailable",
+          "value": null,
+          "reasons": [
+            "clôture BTC attendue au dernier minuit UTC absente"
+          ]
+        },
+        "reasons": [
+          "clôture BTC attendue au dernier minuit UTC absente"
+        ]
+      },
+      {
+        "trade": {
+          "symbol": "ETH-USD",
+          "lot_id": 8,
+          "entry_ms": 1705158960000,
+          "exit_ms": 1705189560000,
+          "row": 8
+        },
+        "close_ms": null,
+        "trend": null,
+        "volatility": null,
+        "volatility30": {
+          "availability": "unavailable",
+          "value": null,
+          "reasons": [
+            "clôture BTC attendue au dernier minuit UTC absente"
+          ]
+        },
+        "expanding_median": {
+          "availability": "unavailable",
+          "value": null,
+          "reasons": [
+            "clôture BTC attendue au dernier minuit UTC absente"
+          ]
+        },
+        "reasons": [
+          "clôture BTC attendue au dernier minuit UTC absente"
+        ]
+      },
+      {
+        "trade": {
+          "symbol": "ETH-USD",
+          "lot_id": 9,
+          "entry_ms": 1705217460000,
+          "exit_ms": 1705239960000,
+          "row": 9
+        },
+        "close_ms": null,
+        "trend": null,
+        "volatility": null,
+        "volatility30": {
+          "availability": "unavailable",
+          "value": null,
+          "reasons": [
+            "clôture BTC attendue au dernier minuit UTC absente"
+          ]
+        },
+        "expanding_median": {
+          "availability": "unavailable",
+          "value": null,
+          "reasons": [
+            "clôture BTC attendue au dernier minuit UTC absente"
+          ]
+        },
+        "reasons": [
+          "clôture BTC attendue au dernier minuit UTC absente"
+        ]
+      },
+      {
+        "trade": {
+          "symbol": "ETH-USD",
+          "lot_id": 10,
+          "entry_ms": 1705306560000,
+          "exit_ms": 1705310100000,
+          "row": 10
+        },
+        "close_ms": null,
+        "trend": null,
+        "volatility": null,
+        "volatility30": {
+          "availability": "unavailable",
+          "value": null,
+          "reasons": [
+            "clôture BTC attendue au dernier minuit UTC absente"
+          ]
+        },
+        "expanding_median": {
+          "availability": "unavailable",
+          "value": null,
+          "reasons": [
+            "clôture BTC attendue au dernier minuit UTC absente"
+          ]
+        },
+        "reasons": [
+          "clôture BTC attendue au dernier minuit UTC absente"
+        ]
+      },
+      {
+        "trade": {
+          "symbol": "ETH-USD",
+          "lot_id": 11,
+          "entry_ms": 1705359660000,
+          "exit_ms": 1705391160000,
+          "row": 11
+        },
+        "close_ms": null,
+        "trend": null,
+        "volatility": null,
+        "volatility30": {
+          "availability": "unavailable",
+          "value": null,
+          "reasons": [
+            "clôture BTC attendue au dernier minuit UTC absente"
+          ]
+        },
+        "expanding_median": {
+          "availability": "unavailable",
+          "value": null,
+          "reasons": [
+            "clôture BTC attendue au dernier minuit UTC absente"
+          ]
+        },
+        "reasons": [
+          "clôture BTC attendue au dernier minuit UTC absente"
+        ]
+      },
+      {
+        "trade": {
+          "symbol": "ETH-USD",
+          "lot_id": 12,
+          "entry_ms": 1705548660000,
+          "exit_ms": 1705559460000,
+          "row": 12
+        },
+        "close_ms": null,
+        "trend": null,
+        "volatility": null,
+        "volatility30": {
+          "availability": "unavailable",
+          "value": null,
+          "reasons": [
+            "clôture BTC attendue au dernier minuit UTC absente"
+          ]
+        },
+        "expanding_median": {
+          "availability": "unavailable",
+          "value": null,
+          "reasons": [
+            "clôture BTC attendue au dernier minuit UTC absente"
+          ]
+        },
+        "reasons": [
+          "clôture BTC attendue au dernier minuit UTC absente"
+        ]
+      },
+      {
+        "trade": {
+          "symbol": "ETH-USD",
+          "lot_id": 13,
+          "entry_ms": 1705680060000,
+          "exit_ms": 1705690860000,
+          "row": 13
+        },
+        "close_ms": null,
+        "trend": null,
+        "volatility": null,
+        "volatility30": {
+          "availability": "unavailable",
+          "value": null,
+          "reasons": [
+            "clôture BTC attendue au dernier minuit UTC absente"
+          ]
+        },
+        "expanding_median": {
+          "availability": "unavailable",
+          "value": null,
+          "reasons": [
+            "clôture BTC attendue au dernier minuit UTC absente"
+          ]
+        },
+        "reasons": [
+          "clôture BTC attendue au dernier minuit UTC absente"
+        ]
+      },
+      {
+        "trade": {
+          "symbol": "ETH-USD",
+          "lot_id": 14,
+          "entry_ms": 1705779060000,
+          "exit_ms": 1705797060000,
+          "row": 14
+        },
+        "close_ms": null,
+        "trend": null,
+        "volatility": null,
+        "volatility30": {
+          "availability": "unavailable",
+          "value": null,
+          "reasons": [
+            "clôture BTC attendue au dernier minuit UTC absente"
+          ]
+        },
+        "expanding_median": {
+          "availability": "unavailable",
+          "value": null,
+          "reasons": [
+            "clôture BTC attendue au dernier minuit UTC absente"
+          ]
+        },
+        "reasons": [
+          "clôture BTC attendue au dernier minuit UTC absente"
+        ]
+      },
+      {
+        "trade": {
+          "symbol": "ETH-USD",
+          "lot_id": 15,
+          "entry_ms": 1705928460000,
+          "exit_ms": 1705944660000,
+          "row": 15
+        },
+        "close_ms": null,
+        "trend": null,
+        "volatility": null,
+        "volatility30": {
+          "availability": "unavailable",
+          "value": null,
+          "reasons": [
+            "clôture BTC attendue au dernier minuit UTC absente"
+          ]
+        },
+        "expanding_median": {
+          "availability": "unavailable",
+          "value": null,
+          "reasons": [
+            "clôture BTC attendue au dernier minuit UTC absente"
+          ]
+        },
+        "reasons": [
+          "clôture BTC attendue au dernier minuit UTC absente"
+        ]
+      },
+      {
+        "trade": {
+          "symbol": "ETH-USD",
+          "lot_id": 16,
+          "entry_ms": 1706012160000,
+          "exit_ms": 1706024760000,
+          "row": 16
+        },
+        "close_ms": null,
+        "trend": null,
+        "volatility": null,
+        "volatility30": {
+          "availability": "unavailable",
+          "value": null,
+          "reasons": [
+            "clôture BTC attendue au dernier minuit UTC absente"
+          ]
+        },
+        "expanding_median": {
+          "availability": "unavailable",
+          "value": null,
+          "reasons": [
+            "clôture BTC attendue au dernier minuit UTC absente"
+          ]
+        },
+        "reasons": [
+          "clôture BTC attendue au dernier minuit UTC absente"
+        ]
+      },
+      {
+        "trade": {
+          "symbol": "ETH-USD",
+          "lot_id": 17,
+          "entry_ms": 1706067060000,
+          "exit_ms": 1706073360000,
+          "row": 17
+        },
+        "close_ms": null,
+        "trend": null,
+        "volatility": null,
+        "volatility30": {
+          "availability": "unavailable",
+          "value": null,
+          "reasons": [
+            "clôture BTC attendue au dernier minuit UTC absente"
+          ]
+        },
+        "expanding_median": {
+          "availability": "unavailable",
+          "value": null,
+          "reasons": [
+            "clôture BTC attendue au dernier minuit UTC absente"
+          ]
+        },
+        "reasons": [
+          "clôture BTC attendue au dernier minuit UTC absente"
+        ]
+      },
+      {
+        "trade": {
+          "symbol": "ETH-USD",
+          "lot_id": 18,
+          "entry_ms": 1706090460000,
+          "exit_ms": 1706094720000,
+          "row": 18
+        },
+        "close_ms": null,
+        "trend": null,
+        "volatility": null,
+        "volatility30": {
+          "availability": "unavailable",
+          "value": null,
+          "reasons": [
+            "clôture BTC attendue au dernier minuit UTC absente"
+          ]
+        },
+        "expanding_median": {
+          "availability": "unavailable",
+          "value": null,
+          "reasons": [
+            "clôture BTC attendue au dernier minuit UTC absente"
+          ]
+        },
+        "reasons": [
+          "clôture BTC attendue au dernier minuit UTC absente"
+        ]
+      },
+      {
+        "trade": {
+          "symbol": "ETH-USD",
+          "lot_id": 19,
+          "entry_ms": 1706214660000,
+          "exit_ms": 1706217540000,
+          "row": 19
+        },
+        "close_ms": null,
+        "trend": null,
+        "volatility": null,
+        "volatility30": {
+          "availability": "unavailable",
+          "value": null,
+          "reasons": [
+            "clôture BTC attendue au dernier minuit UTC absente"
+          ]
+        },
+        "expanding_median": {
+          "availability": "unavailable",
+          "value": null,
+          "reasons": [
+            "clôture BTC attendue au dernier minuit UTC absente"
+          ]
+        },
+        "reasons": [
+          "clôture BTC attendue au dernier minuit UTC absente"
+        ]
+      },
+      {
+        "trade": {
+          "symbol": "ETH-USD",
+          "lot_id": 20,
+          "entry_ms": 1706250660000,
+          "exit_ms": 1706269560000,
+          "row": 20
+        },
+        "close_ms": null,
+        "trend": null,
+        "volatility": null,
+        "volatility30": {
+          "availability": "unavailable",
+          "value": null,
+          "reasons": [
+            "clôture BTC attendue au dernier minuit UTC absente"
+          ]
+        },
+        "expanding_median": {
+          "availability": "unavailable",
+          "value": null,
+          "reasons": [
+            "clôture BTC attendue au dernier minuit UTC absente"
+          ]
+        },
+        "reasons": [
+          "clôture BTC attendue au dernier minuit UTC absente"
+        ]
+      },
+      {
+        "trade": {
+          "symbol": "ETH-USD",
+          "lot_id": 21,
+          "entry_ms": 1706438760000,
+          "exit_ms": 1706462160000,
+          "row": 21
+        },
+        "close_ms": null,
+        "trend": null,
+        "volatility": null,
+        "volatility30": {
+          "availability": "unavailable",
+          "value": null,
+          "reasons": [
+            "clôture BTC attendue au dernier minuit UTC absente"
+          ]
+        },
+        "expanding_median": {
+          "availability": "unavailable",
+          "value": null,
+          "reasons": [
+            "clôture BTC attendue au dernier minuit UTC absente"
+          ]
+        },
+        "reasons": [
+          "clôture BTC attendue au dernier minuit UTC absente"
+        ]
+      },
+      {
+        "trade": {
+          "symbol": "ETH-USD",
+          "lot_id": 22,
+          "entry_ms": 1706529660000,
+          "exit_ms": 1706545860000,
+          "row": 22
+        },
+        "close_ms": null,
+        "trend": null,
+        "volatility": null,
+        "volatility30": {
+          "availability": "unavailable",
+          "value": null,
+          "reasons": [
+            "clôture BTC attendue au dernier minuit UTC absente"
+          ]
+        },
+        "expanding_median": {
+          "availability": "unavailable",
+          "value": null,
+          "reasons": [
+            "clôture BTC attendue au dernier minuit UTC absente"
+          ]
+        },
+        "reasons": [
+          "clôture BTC attendue au dernier minuit UTC absente"
+        ]
+      },
+      {
+        "trade": {
+          "symbol": "ETH-USD",
+          "lot_id": 23,
+          "entry_ms": 1706708760000,
+          "exit_ms": 1706722260000,
+          "row": 23
+        },
+        "close_ms": null,
+        "trend": null,
+        "volatility": null,
+        "volatility30": {
+          "availability": "unavailable",
+          "value": null,
+          "reasons": [
+            "clôture BTC attendue au dernier minuit UTC absente"
+          ]
+        },
+        "expanding_median": {
+          "availability": "unavailable",
+          "value": null,
+          "reasons": [
+            "clôture BTC attendue au dernier minuit UTC absente"
+          ]
+        },
+        "reasons": [
+          "clôture BTC attendue au dernier minuit UTC absente"
+        ]
+      },
+      {
+        "trade": {
+          "symbol": "ETH-USD",
+          "lot_id": 24,
+          "entry_ms": 1706848260000,
+          "exit_ms": 1706852760000,
+          "row": 24
+        },
+        "close_ms": null,
+        "trend": null,
+        "volatility": null,
+        "volatility30": {
+          "availability": "unavailable",
+          "value": null,
+          "reasons": [
+            "clôture BTC attendue au dernier minuit UTC absente"
+          ]
+        },
+        "expanding_median": {
+          "availability": "unavailable",
+          "value": null,
+          "reasons": [
+            "clôture BTC attendue au dernier minuit UTC absente"
+          ]
+        },
+        "reasons": [
+          "clôture BTC attendue au dernier minuit UTC absente"
+        ]
+      },
+      {
+        "trade": {
+          "symbol": "ETH-USD",
+          "lot_id": 25,
+          "entry_ms": 1706919360000,
+          "exit_ms": 1706924700000,
+          "row": 25
+        },
+        "close_ms": null,
+        "trend": null,
+        "volatility": null,
+        "volatility30": {
+          "availability": "unavailable",
+          "value": null,
+          "reasons": [
+            "clôture BTC attendue au dernier minuit UTC absente"
+          ]
+        },
+        "expanding_median": {
+          "availability": "unavailable",
+          "value": null,
+          "reasons": [
+            "clôture BTC attendue au dernier minuit UTC absente"
+          ]
+        },
+        "reasons": [
+          "clôture BTC attendue au dernier minuit UTC absente"
+        ]
+      },
+      {
+        "trade": {
+          "symbol": "ETH-USD",
+          "lot_id": 26,
+          "entry_ms": 1707020160000,
+          "exit_ms": 1707034560000,
+          "row": 26
+        },
+        "close_ms": null,
+        "trend": null,
+        "volatility": null,
+        "volatility30": {
+          "availability": "unavailable",
+          "value": null,
+          "reasons": [
+            "clôture BTC attendue au dernier minuit UTC absente"
+          ]
+        },
+        "expanding_median": {
+          "availability": "unavailable",
+          "value": null,
+          "reasons": [
+            "clôture BTC attendue au dernier minuit UTC absente"
+          ]
+        },
+        "reasons": [
+          "clôture BTC attendue au dernier minuit UTC absente"
+        ]
+      },
+      {
+        "trade": {
+          "symbol": "ETH-USD",
+          "lot_id": 27,
+          "entry_ms": 1707068760000,
+          "exit_ms": 1707076860000,
+          "row": 27
+        },
+        "close_ms": null,
+        "trend": null,
+        "volatility": null,
+        "volatility30": {
+          "availability": "unavailable",
+          "value": null,
+          "reasons": [
+            "clôture BTC attendue au dernier minuit UTC absente"
+          ]
+        },
+        "expanding_median": {
+          "availability": "unavailable",
+          "value": null,
+          "reasons": [
+            "clôture BTC attendue au dernier minuit UTC absente"
+          ]
+        },
+        "reasons": [
+          "clôture BTC attendue au dernier minuit UTC absente"
+        ]
+      },
+      {
+        "trade": {
+          "symbol": "ETH-USD",
+          "lot_id": 28,
+          "entry_ms": 1707078660000,
+          "exit_ms": 1707083160000,
+          "row": 28
+        },
+        "close_ms": null,
+        "trend": null,
+        "volatility": null,
+        "volatility30": {
+          "availability": "unavailable",
+          "value": null,
+          "reasons": [
+            "clôture BTC attendue au dernier minuit UTC absente"
+          ]
+        },
+        "expanding_median": {
+          "availability": "unavailable",
+          "value": null,
+          "reasons": [
+            "clôture BTC attendue au dernier minuit UTC absente"
+          ]
+        },
+        "reasons": [
+          "clôture BTC attendue au dernier minuit UTC absente"
+        ]
+      },
+      {
+        "trade": {
+          "symbol": "ETH-USD",
+          "lot_id": 29,
+          "entry_ms": 1707093960000,
+          "exit_ms": 1707120960000,
+          "row": 29
+        },
+        "close_ms": null,
+        "trend": null,
+        "volatility": null,
+        "volatility30": {
+          "availability": "unavailable",
+          "value": null,
+          "reasons": [
+            "clôture BTC attendue au dernier minuit UTC absente"
+          ]
+        },
+        "expanding_median": {
+          "availability": "unavailable",
+          "value": null,
+          "reasons": [
+            "clôture BTC attendue au dernier minuit UTC absente"
+          ]
+        },
+        "reasons": [
+          "clôture BTC attendue au dernier minuit UTC absente"
+        ]
+      },
+      {
+        "trade": {
+          "symbol": "ETH-USD",
+          "lot_id": 30,
+          "entry_ms": 1707151560000,
+          "exit_ms": 1707154260000,
+          "row": 30
+        },
+        "close_ms": null,
+        "trend": null,
+        "volatility": null,
+        "volatility30": {
+          "availability": "unavailable",
+          "value": null,
+          "reasons": [
+            "clôture BTC attendue au dernier minuit UTC absente"
+          ]
+        },
+        "expanding_median": {
+          "availability": "unavailable",
+          "value": null,
+          "reasons": [
+            "clôture BTC attendue au dernier minuit UTC absente"
+          ]
+        },
+        "reasons": [
+          "clôture BTC attendue au dernier minuit UTC absente"
+        ]
+      },
+      {
+        "trade": {
+          "symbol": "ETH-USD",
+          "lot_id": 31,
+          "entry_ms": 1707203760000,
+          "exit_ms": 1707221760000,
+          "row": 31
+        },
+        "close_ms": null,
+        "trend": null,
+        "volatility": null,
+        "volatility30": {
+          "availability": "unavailable",
+          "value": null,
+          "reasons": [
+            "clôture BTC attendue au dernier minuit UTC absente"
+          ]
+        },
+        "expanding_median": {
+          "availability": "unavailable",
+          "value": null,
+          "reasons": [
+            "clôture BTC attendue au dernier minuit UTC absente"
+          ]
+        },
+        "reasons": [
+          "clôture BTC attendue au dernier minuit UTC absente"
+        ]
+      },
+      {
+        "trade": {
+          "symbol": "ETH-USD",
+          "lot_id": 32,
+          "entry_ms": 1707226260000,
+          "exit_ms": 1707245160000,
+          "row": 32
+        },
+        "close_ms": null,
+        "trend": null,
+        "volatility": null,
+        "volatility30": {
+          "availability": "unavailable",
+          "value": null,
+          "reasons": [
+            "clôture BTC attendue au dernier minuit UTC absente"
+          ]
+        },
+        "expanding_median": {
+          "availability": "unavailable",
+          "value": null,
+          "reasons": [
+            "clôture BTC attendue au dernier minuit UTC absente"
+          ]
+        },
+        "reasons": [
+          "clôture BTC attendue au dernier minuit UTC absente"
+        ]
+      },
+      {
+        "trade": {
+          "symbol": "ETH-USD",
+          "lot_id": 33,
+          "entry_ms": 1707300120000,
+          "exit_ms": 1707302040000,
+          "row": 33
+        },
+        "close_ms": null,
+        "trend": null,
+        "volatility": null,
+        "volatility30": {
+          "availability": "unavailable",
+          "value": null,
+          "reasons": [
+            "clôture BTC attendue au dernier minuit UTC absente"
+          ]
+        },
+        "expanding_median": {
+          "availability": "unavailable",
+          "value": null,
+          "reasons": [
+            "clôture BTC attendue au dernier minuit UTC absente"
+          ]
+        },
+        "reasons": [
+          "clôture BTC attendue au dernier minuit UTC absente"
+        ]
+      },
+      {
+        "trade": {
+          "symbol": "ETH-USD",
+          "lot_id": 34,
+          "entry_ms": 1707449520000,
+          "exit_ms": 1707466560000,
+          "row": 34
+        },
+        "close_ms": null,
+        "trend": null,
+        "volatility": null,
+        "volatility30": {
+          "availability": "unavailable",
+          "value": null,
+          "reasons": [
+            "clôture BTC attendue au dernier minuit UTC absente"
+          ]
+        },
+        "expanding_median": {
+          "availability": "unavailable",
+          "value": null,
+          "reasons": [
+            "clôture BTC attendue au dernier minuit UTC absente"
+          ]
+        },
+        "reasons": [
+          "clôture BTC attendue au dernier minuit UTC absente"
+        ]
+      },
+      {
+        "trade": {
+          "symbol": "ETH-USD",
+          "lot_id": 35,
+          "entry_ms": 1707480060000,
+          "exit_ms": 1707487260000,
+          "row": 35
+        },
+        "close_ms": null,
+        "trend": null,
+        "volatility": null,
+        "volatility30": {
+          "availability": "unavailable",
+          "value": null,
+          "reasons": [
+            "clôture BTC attendue au dernier minuit UTC absente"
+          ]
+        },
+        "expanding_median": {
+          "availability": "unavailable",
+          "value": null,
+          "reasons": [
+            "clôture BTC attendue au dernier minuit UTC absente"
+          ]
+        },
+        "reasons": [
+          "clôture BTC attendue au dernier minuit UTC absente"
+        ]
+      },
+      {
+        "trade": {
+          "symbol": "ETH-USD",
+          "lot_id": 36,
+          "entry_ms": 1707523260000,
+          "exit_ms": 1707536760000,
+          "row": 36
+        },
+        "close_ms": null,
+        "trend": null,
+        "volatility": null,
+        "volatility30": {
+          "availability": "unavailable",
+          "value": null,
+          "reasons": [
+            "clôture BTC attendue au dernier minuit UTC absente"
+          ]
+        },
+        "expanding_median": {
+          "availability": "unavailable",
+          "value": null,
+          "reasons": [
+            "clôture BTC attendue au dernier minuit UTC absente"
+          ]
+        },
+        "reasons": [
+          "clôture BTC attendue au dernier minuit UTC absente"
+        ]
+      },
+      {
+        "trade": {
+          "symbol": "ETH-USD",
+          "lot_id": 37,
+          "entry_ms": 1707607860000,
+          "exit_ms": 1707613260000,
+          "row": 37
+        },
+        "close_ms": null,
+        "trend": null,
+        "volatility": null,
+        "volatility30": {
+          "availability": "unavailable",
+          "value": null,
+          "reasons": [
+            "clôture BTC attendue au dernier minuit UTC absente"
+          ]
+        },
+        "expanding_median": {
+          "availability": "unavailable",
+          "value": null,
+          "reasons": [
+            "clôture BTC attendue au dernier minuit UTC absente"
+          ]
+        },
+        "reasons": [
+          "clôture BTC attendue au dernier minuit UTC absente"
+        ]
+      },
+      {
+        "trade": {
+          "symbol": "ETH-USD",
+          "lot_id": 38,
+          "entry_ms": 1707678960000,
+          "exit_ms": 1707695160000,
+          "row": 38
+        },
+        "close_ms": null,
+        "trend": null,
+        "volatility": null,
+        "volatility30": {
+          "availability": "unavailable",
+          "value": null,
+          "reasons": [
+            "clôture BTC attendue au dernier minuit UTC absente"
+          ]
+        },
+        "expanding_median": {
+          "availability": "unavailable",
+          "value": null,
+          "reasons": [
+            "clôture BTC attendue au dernier minuit UTC absente"
+          ]
+        },
+        "reasons": [
+          "clôture BTC attendue au dernier minuit UTC absente"
+        ]
+      },
+      {
+        "trade": {
+          "symbol": "ETH-USD",
+          "lot_id": 39,
+          "entry_ms": 1707730260000,
+          "exit_ms": 1707745560000,
+          "row": 39
+        },
+        "close_ms": null,
+        "trend": null,
+        "volatility": null,
+        "volatility30": {
+          "availability": "unavailable",
+          "value": null,
+          "reasons": [
+            "clôture BTC attendue au dernier minuit UTC absente"
+          ]
+        },
+        "expanding_median": {
+          "availability": "unavailable",
+          "value": null,
+          "reasons": [
+            "clôture BTC attendue au dernier minuit UTC absente"
+          ]
+        },
+        "reasons": [
+          "clôture BTC attendue au dernier minuit UTC absente"
+        ]
+      },
+      {
+        "trade": {
+          "symbol": "ETH-USD",
+          "lot_id": 40,
+          "entry_ms": 1707771660000,
+          "exit_ms": 1707774780000,
+          "row": 40
+        },
+        "close_ms": null,
+        "trend": null,
+        "volatility": null,
+        "volatility30": {
+          "availability": "unavailable",
+          "value": null,
+          "reasons": [
+            "clôture BTC attendue au dernier minuit UTC absente"
+          ]
+        },
+        "expanding_median": {
+          "availability": "unavailable",
+          "value": null,
+          "reasons": [
+            "clôture BTC attendue au dernier minuit UTC absente"
+          ]
+        },
+        "reasons": [
+          "clôture BTC attendue au dernier minuit UTC absente"
+        ]
+      },
+      {
+        "trade": {
+          "symbol": "ETH-USD",
+          "lot_id": 41,
+          "entry_ms": 1707808560000,
+          "exit_ms": 1707813540000,
+          "row": 41
+        },
+        "close_ms": null,
+        "trend": null,
+        "volatility": null,
+        "volatility30": {
+          "availability": "unavailable",
+          "value": null,
+          "reasons": [
+            "clôture BTC attendue au dernier minuit UTC absente"
+          ]
+        },
+        "expanding_median": {
+          "availability": "unavailable",
+          "value": null,
+          "reasons": [
+            "clôture BTC attendue au dernier minuit UTC absente"
+          ]
+        },
+        "reasons": [
+          "clôture BTC attendue au dernier minuit UTC absente"
+        ]
+      },
+      {
+        "trade": {
+          "symbol": "ETH-USD",
+          "lot_id": 42,
+          "entry_ms": 1707894960000,
+          "exit_ms": 1707901440000,
+          "row": 42
+        },
+        "close_ms": null,
+        "trend": null,
+        "volatility": null,
+        "volatility30": {
+          "availability": "unavailable",
+          "value": null,
+          "reasons": [
+            "clôture BTC attendue au dernier minuit UTC absente"
+          ]
+        },
+        "expanding_median": {
+          "availability": "unavailable",
+          "value": null,
+          "reasons": [
+            "clôture BTC attendue au dernier minuit UTC absente"
+          ]
+        },
+        "reasons": [
+          "clôture BTC attendue au dernier minuit UTC absente"
+        ]
+      }
+    ],
+    "cells": [
+      {
+        "trend": "bull",
+        "volatility": "low",
+        "n": 0,
+        "n_r": 0,
+        "mu_r": {
+          "availability": "unavailable",
+          "value": null,
+          "reasons": [
+            "effectif nul ou R manquant : moyenne non identifiable"
+          ]
+        },
+        "below_expectancy_threshold": null
+      },
+      {
+        "trend": "bull",
+        "volatility": "high",
+        "n": 0,
+        "n_r": 0,
+        "mu_r": {
+          "availability": "unavailable",
+          "value": null,
+          "reasons": [
+            "effectif nul ou R manquant : moyenne non identifiable"
+          ]
+        },
+        "below_expectancy_threshold": null
+      },
+      {
+        "trend": "bear",
+        "volatility": "low",
+        "n": 0,
+        "n_r": 0,
+        "mu_r": {
+          "availability": "unavailable",
+          "value": null,
+          "reasons": [
+            "effectif nul ou R manquant : moyenne non identifiable"
+          ]
+        },
+        "below_expectancy_threshold": null
+      },
+      {
+        "trend": "bear",
+        "volatility": "high",
+        "n": 0,
+        "n_r": 0,
+        "mu_r": {
+          "availability": "unavailable",
+          "value": null,
+          "reasons": [
+            "effectif nul ou R manquant : moyenne non identifiable"
+          ]
+        },
+        "below_expectancy_threshold": null
+      }
+    ],
+    "missing_labels": 43,
+    "missing_r": 0,
+    "volatility_origin_ms": null,
+    "daily": {
+      "intervals": [
+        {
+          "start_ms": 1704153600000,
+          "end_ms": 1704240000000,
+          "value": -0.009865313195333014
+        },
+        {
+          "start_ms": 1704240000000,
+          "end_ms": 1704326400000,
+          "value": -0.007832772106440622
+        },
+        {
+          "start_ms": 1704326400000,
+          "end_ms": 1704412800000,
+          "value": -0.015016188466081104
+        },
+        {
+          "start_ms": 1704412800000,
+          "end_ms": 1704499200000,
+          "value": 0.0
+        },
+        {
+          "start_ms": 1704499200000,
+          "end_ms": 1704585600000,
+          "value": -0.008877000654972211
+        },
+        {
+          "start_ms": 1704585600000,
+          "end_ms": 1704672000000,
+          "value": 0.0
+        },
+        {
+          "start_ms": 1704672000000,
+          "end_ms": 1704758400000,
+          "value": 0.0
+        },
+        {
+          "start_ms": 1704758400000,
+          "end_ms": 1704844800000,
+          "value": -0.01227500962251138
+        },
+        {
+          "start_ms": 1704844800000,
+          "end_ms": 1704931200000,
+          "value": -0.01843868586923114
+        },
+        {
+          "start_ms": 1704931200000,
+          "end_ms": 1705017600000,
+          "value": -0.008110600258505518
+        },
+        {
+          "start_ms": 1705017600000,
+          "end_ms": 1705104000000,
+          "value": 0.0
+        },
+        {
+          "start_ms": 1705104000000,
+          "end_ms": 1705190400000,
+          "value": 0.0016823935449270522
+        },
+        {
+          "start_ms": 1705190400000,
+          "end_ms": 1705276800000,
+          "value": -0.0019962930648473876
+        },
+        {
+          "start_ms": 1705276800000,
+          "end_ms": 1705363200000,
+          "value": -0.010433678749900643
+        },
+        {
+          "start_ms": 1705363200000,
+          "end_ms": 1705449600000,
+          "value": 0.007408460775234049
+        },
+        {
+          "start_ms": 1705449600000,
+          "end_ms": 1705536000000,
+          "value": 0.0
+        },
+        {
+          "start_ms": 1705536000000,
+          "end_ms": 1705622400000,
+          "value": -0.008498915961095532
+        },
+        {
+          "start_ms": 1705622400000,
+          "end_ms": 1705708800000,
+          "value": -0.011631355749633143
+        },
+        {
+          "start_ms": 1705708800000,
+          "end_ms": 1705795200000,
+          "value": 0.0018551991192650163
+        },
+        {
+          "start_ms": 1705795200000,
+          "end_ms": 1705881600000,
+          "value": -0.010536906434561844
+        },
+        {
+          "start_ms": 1705881600000,
+          "end_ms": 1705968000000,
+          "value": -0.009687481074529325
+        },
+        {
+          "start_ms": 1705968000000,
+          "end_ms": 1706054400000,
+          "value": -0.007755327900843989
+        },
+        {
+          "start_ms": 1706054400000,
+          "end_ms": 1706140800000,
+          "value": -0.025105917037418157
+        },
+        {
+          "start_ms": 1706140800000,
+          "end_ms": 1706227200000,
+          "value": -0.015111616888431878
+        },
+        {
+          "start_ms": 1706227200000,
+          "end_ms": 1706313600000,
+          "value": -0.003298388050895107
+        },
+        {
+          "start_ms": 1706313600000,
+          "end_ms": 1706400000000,
+          "value": 0.0
+        },
+        {
+          "start_ms": 1706400000000,
+          "end_ms": 1706486400000,
+          "value": -0.003212399734088489
+        },
+        {
+          "start_ms": 1706486400000,
+          "end_ms": 1706572800000,
+          "value": -0.010294225714277183
+        },
+        {
+          "start_ms": 1706572800000,
+          "end_ms": 1706659200000,
+          "value": 0.0
+        },
+        {
+          "start_ms": 1706659200000,
+          "end_ms": 1706745600000,
+          "value": -0.006992237515258903
+        },
+        {
+          "start_ms": 1706745600000,
+          "end_ms": 1706832000000,
+          "value": 0.0
+        },
+        {
+          "start_ms": 1706832000000,
+          "end_ms": 1706918400000,
+          "value": -0.011332722997435485
+        },
+        {
+          "start_ms": 1706918400000,
+          "end_ms": 1707004800000,
+          "value": -0.014724401782697072
+        },
+        {
+          "start_ms": 1707004800000,
+          "end_ms": 1707091200000,
+          "value": -0.025176852800991023
+        },
+        {
+          "start_ms": 1707091200000,
+          "end_ms": 1707177600000,
+          "value": -0.017973323356731186
+        },
+        {
+          "start_ms": 1707177600000,
+          "end_ms": 1707264000000,
+          "value": -0.013122750527968852
+        },
+        {
+          "start_ms": 1707264000000,
+          "end_ms": 1707350400000,
+          "value": -0.01350509456885407
+        },
+        {
+          "start_ms": 1707350400000,
+          "end_ms": 1707436800000,
+          "value": 0.0
+        },
+        {
+          "start_ms": 1707436800000,
+          "end_ms": 1707523200000,
+          "value": -0.013251259172392671
+        },
+        {
+          "start_ms": 1707523200000,
+          "end_ms": 1707609600000,
+          "value": -0.014742382814747379
+        },
+        {
+          "start_ms": 1707609600000,
+          "end_ms": 1707696000000,
+          "value": -0.01689358530166951
+        },
+        {
+          "start_ms": 1707696000000,
+          "end_ms": 1707782400000,
+          "value": -0.027375640257153444
+        },
+        {
+          "start_ms": 1707782400000,
+          "end_ms": 1707868800000,
+          "value": -0.013855641518567774
+        },
+        {
+          "start_ms": 1707868800000,
+          "end_ms": 1707955200000,
+          "value": -0.014714819266898438
+        }
+      ],
+      "expected_intervals": 44,
+      "missing_intervals": [],
+      "coverage": 1.0
+    },
+    "bear": {
+      "n_entries": 0,
+      "mu_r": {
+        "availability": "unavailable",
+        "value": null,
+        "reasons": [
+          "effectif nul ou R manquant : moyenne non identifiable"
+        ]
+      },
+      "n_intervals": 0,
+      "intervals": [],
+      "duration_years": 0.0,
+      "missing_regime_intervals": [
+        {
+          "start_ms": 1704153600000,
+          "end_ms": 1704240000000
+        },
+        {
+          "start_ms": 1704240000000,
+          "end_ms": 1704326400000
+        },
+        {
+          "start_ms": 1704326400000,
+          "end_ms": 1704412800000
+        },
+        {
+          "start_ms": 1704412800000,
+          "end_ms": 1704499200000
+        },
+        {
+          "start_ms": 1704499200000,
+          "end_ms": 1704585600000
+        },
+        {
+          "start_ms": 1704585600000,
+          "end_ms": 1704672000000
+        },
+        {
+          "start_ms": 1704672000000,
+          "end_ms": 1704758400000
+        },
+        {
+          "start_ms": 1704758400000,
+          "end_ms": 1704844800000
+        },
+        {
+          "start_ms": 1704844800000,
+          "end_ms": 1704931200000
+        },
+        {
+          "start_ms": 1704931200000,
+          "end_ms": 1705017600000
+        },
+        {
+          "start_ms": 1705017600000,
+          "end_ms": 1705104000000
+        },
+        {
+          "start_ms": 1705104000000,
+          "end_ms": 1705190400000
+        },
+        {
+          "start_ms": 1705190400000,
+          "end_ms": 1705276800000
+        },
+        {
+          "start_ms": 1705276800000,
+          "end_ms": 1705363200000
+        },
+        {
+          "start_ms": 1705363200000,
+          "end_ms": 1705449600000
+        },
+        {
+          "start_ms": 1705449600000,
+          "end_ms": 1705536000000
+        },
+        {
+          "start_ms": 1705536000000,
+          "end_ms": 1705622400000
+        },
+        {
+          "start_ms": 1705622400000,
+          "end_ms": 1705708800000
+        },
+        {
+          "start_ms": 1705708800000,
+          "end_ms": 1705795200000
+        },
+        {
+          "start_ms": 1705795200000,
+          "end_ms": 1705881600000
+        },
+        {
+          "start_ms": 1705881600000,
+          "end_ms": 1705968000000
+        },
+        {
+          "start_ms": 1705968000000,
+          "end_ms": 1706054400000
+        },
+        {
+          "start_ms": 1706054400000,
+          "end_ms": 1706140800000
+        },
+        {
+          "start_ms": 1706140800000,
+          "end_ms": 1706227200000
+        },
+        {
+          "start_ms": 1706227200000,
+          "end_ms": 1706313600000
+        },
+        {
+          "start_ms": 1706313600000,
+          "end_ms": 1706400000000
+        },
+        {
+          "start_ms": 1706400000000,
+          "end_ms": 1706486400000
+        },
+        {
+          "start_ms": 1706486400000,
+          "end_ms": 1706572800000
+        },
+        {
+          "start_ms": 1706572800000,
+          "end_ms": 1706659200000
+        },
+        {
+          "start_ms": 1706659200000,
+          "end_ms": 1706745600000
+        },
+        {
+          "start_ms": 1706745600000,
+          "end_ms": 1706832000000
+        },
+        {
+          "start_ms": 1706832000000,
+          "end_ms": 1706918400000
+        },
+        {
+          "start_ms": 1706918400000,
+          "end_ms": 1707004800000
+        },
+        {
+          "start_ms": 1707004800000,
+          "end_ms": 1707091200000
+        },
+        {
+          "start_ms": 1707091200000,
+          "end_ms": 1707177600000
+        },
+        {
+          "start_ms": 1707177600000,
+          "end_ms": 1707264000000
+        },
+        {
+          "start_ms": 1707264000000,
+          "end_ms": 1707350400000
+        },
+        {
+          "start_ms": 1707350400000,
+          "end_ms": 1707436800000
+        },
+        {
+          "start_ms": 1707436800000,
+          "end_ms": 1707523200000
+        },
+        {
+          "start_ms": 1707523200000,
+          "end_ms": 1707609600000
+        },
+        {
+          "start_ms": 1707609600000,
+          "end_ms": 1707696000000
+        },
+        {
+          "start_ms": 1707696000000,
+          "end_ms": 1707782400000
+        },
+        {
+          "start_ms": 1707782400000,
+          "end_ms": 1707868800000
+        },
+        {
+          "start_ms": 1707868800000,
+          "end_ms": 1707955200000
+        }
+      ],
+      "missing_bear_intervals": [],
+      "annualized_return": {
+        "availability": "unavailable",
+        "value": null,
+        "reasons": [
+          "périmètre bear global inconnu : régime gauche ou marquage bear manquant (dates publiées)"
+        ]
+      },
+      "qualification": null,
+      "qualification_reasons": [
+        "rendement bear ou expectancy bear insuffisamment observé"
+      ]
+    }
+  },
+  "benchmarks": {
+    "cash_convention": "protocol_v1_rate_0.017_simple_prorata_left_after_events",
+    "pair_aggregate_convention": "descriptive_equal_weight_pair_trajectories_no_shared_allocation_claim",
+    "cash_reference_quote": {
+      "availability": "complete",
+      "value": 0.46828027222351615,
+      "reasons": []
+    },
+    "cash_reference_return": {
+      "availability": "complete",
+      "value": 0.0015609342407450538,
+      "reasons": []
+    },
+    "strategy_total_return": {
+      "availability": "complete",
+      "value": -0.3255287435340337,
+      "reasons": []
+    },
+    "strategy_daily": {
+      "intervals": [
+        {
+          "start_ms": 1704153600000,
+          "end_ms": 1704240000000,
+          "value": -0.009865313195333014
+        },
+        {
+          "start_ms": 1704240000000,
+          "end_ms": 1704326400000,
+          "value": -0.007832772106440622
+        },
+        {
+          "start_ms": 1704326400000,
+          "end_ms": 1704412800000,
+          "value": -0.015016188466081104
+        },
+        {
+          "start_ms": 1704412800000,
+          "end_ms": 1704499200000,
+          "value": 0.0
+        },
+        {
+          "start_ms": 1704499200000,
+          "end_ms": 1704585600000,
+          "value": -0.008877000654972211
+        },
+        {
+          "start_ms": 1704585600000,
+          "end_ms": 1704672000000,
+          "value": 0.0
+        },
+        {
+          "start_ms": 1704672000000,
+          "end_ms": 1704758400000,
+          "value": 0.0
+        },
+        {
+          "start_ms": 1704758400000,
+          "end_ms": 1704844800000,
+          "value": -0.01227500962251138
+        },
+        {
+          "start_ms": 1704844800000,
+          "end_ms": 1704931200000,
+          "value": -0.01843868586923114
+        },
+        {
+          "start_ms": 1704931200000,
+          "end_ms": 1705017600000,
+          "value": -0.008110600258505518
+        },
+        {
+          "start_ms": 1705017600000,
+          "end_ms": 1705104000000,
+          "value": 0.0
+        },
+        {
+          "start_ms": 1705104000000,
+          "end_ms": 1705190400000,
+          "value": 0.0016823935449270522
+        },
+        {
+          "start_ms": 1705190400000,
+          "end_ms": 1705276800000,
+          "value": -0.0019962930648473876
+        },
+        {
+          "start_ms": 1705276800000,
+          "end_ms": 1705363200000,
+          "value": -0.010433678749900643
+        },
+        {
+          "start_ms": 1705363200000,
+          "end_ms": 1705449600000,
+          "value": 0.007408460775234049
+        },
+        {
+          "start_ms": 1705449600000,
+          "end_ms": 1705536000000,
+          "value": 0.0
+        },
+        {
+          "start_ms": 1705536000000,
+          "end_ms": 1705622400000,
+          "value": -0.008498915961095532
+        },
+        {
+          "start_ms": 1705622400000,
+          "end_ms": 1705708800000,
+          "value": -0.011631355749633143
+        },
+        {
+          "start_ms": 1705708800000,
+          "end_ms": 1705795200000,
+          "value": 0.0018551991192650163
+        },
+        {
+          "start_ms": 1705795200000,
+          "end_ms": 1705881600000,
+          "value": -0.010536906434561844
+        },
+        {
+          "start_ms": 1705881600000,
+          "end_ms": 1705968000000,
+          "value": -0.009687481074529325
+        },
+        {
+          "start_ms": 1705968000000,
+          "end_ms": 1706054400000,
+          "value": -0.007755327900843989
+        },
+        {
+          "start_ms": 1706054400000,
+          "end_ms": 1706140800000,
+          "value": -0.025105917037418157
+        },
+        {
+          "start_ms": 1706140800000,
+          "end_ms": 1706227200000,
+          "value": -0.015111616888431878
+        },
+        {
+          "start_ms": 1706227200000,
+          "end_ms": 1706313600000,
+          "value": -0.003298388050895107
+        },
+        {
+          "start_ms": 1706313600000,
+          "end_ms": 1706400000000,
+          "value": 0.0
+        },
+        {
+          "start_ms": 1706400000000,
+          "end_ms": 1706486400000,
+          "value": -0.003212399734088489
+        },
+        {
+          "start_ms": 1706486400000,
+          "end_ms": 1706572800000,
+          "value": -0.010294225714277183
+        },
+        {
+          "start_ms": 1706572800000,
+          "end_ms": 1706659200000,
+          "value": 0.0
+        },
+        {
+          "start_ms": 1706659200000,
+          "end_ms": 1706745600000,
+          "value": -0.006992237515258903
+        },
+        {
+          "start_ms": 1706745600000,
+          "end_ms": 1706832000000,
+          "value": 0.0
+        },
+        {
+          "start_ms": 1706832000000,
+          "end_ms": 1706918400000,
+          "value": -0.011332722997435485
+        },
+        {
+          "start_ms": 1706918400000,
+          "end_ms": 1707004800000,
+          "value": -0.014724401782697072
+        },
+        {
+          "start_ms": 1707004800000,
+          "end_ms": 1707091200000,
+          "value": -0.025176852800991023
+        },
+        {
+          "start_ms": 1707091200000,
+          "end_ms": 1707177600000,
+          "value": -0.017973323356731186
+        },
+        {
+          "start_ms": 1707177600000,
+          "end_ms": 1707264000000,
+          "value": -0.013122750527968852
+        },
+        {
+          "start_ms": 1707264000000,
+          "end_ms": 1707350400000,
+          "value": -0.01350509456885407
+        },
+        {
+          "start_ms": 1707350400000,
+          "end_ms": 1707436800000,
+          "value": 0.0
+        },
+        {
+          "start_ms": 1707436800000,
+          "end_ms": 1707523200000,
+          "value": -0.013251259172392671
+        },
+        {
+          "start_ms": 1707523200000,
+          "end_ms": 1707609600000,
+          "value": -0.014742382814747379
+        },
+        {
+          "start_ms": 1707609600000,
+          "end_ms": 1707696000000,
+          "value": -0.01689358530166951
+        },
+        {
+          "start_ms": 1707696000000,
+          "end_ms": 1707782400000,
+          "value": -0.027375640257153444
+        },
+        {
+          "start_ms": 1707782400000,
+          "end_ms": 1707868800000,
+          "value": -0.013855641518567774
+        },
+        {
+          "start_ms": 1707868800000,
+          "end_ms": 1707955200000,
+          "value": -0.014714819266898438
+        }
+      ],
+      "expected_intervals": 44,
+      "missing_intervals": [],
+      "coverage": 1.0
+    },
+    "strategy_calmar": {
+      "availability": "unavailable",
+      "value": null,
+      "reasons": [
+        "Calmar : 36 mois calendaires et grille quotidienne complète requis"
+      ]
+    },
+    "btc": {
+      "id": "btc_buy_and_hold",
+      "trajectory": [],
+      "total_return": {
+        "availability": "unavailable",
+        "value": null,
+        "reasons": [
+          "ancre initiale du benchmark absente"
+        ]
+      },
+      "daily": {
+        "intervals": [],
+        "expected_intervals": 44,
+        "missing_intervals": [
+          {
+            "start_ms": 1704153600000,
+            "end_ms": 1704240000000
+          },
+          {
+            "start_ms": 1704240000000,
+            "end_ms": 1704326400000
+          },
+          {
+            "start_ms": 1704326400000,
+            "end_ms": 1704412800000
+          },
+          {
+            "start_ms": 1704412800000,
+            "end_ms": 1704499200000
+          },
+          {
+            "start_ms": 1704499200000,
+            "end_ms": 1704585600000
+          },
+          {
+            "start_ms": 1704585600000,
+            "end_ms": 1704672000000
+          },
+          {
+            "start_ms": 1704672000000,
+            "end_ms": 1704758400000
+          },
+          {
+            "start_ms": 1704758400000,
+            "end_ms": 1704844800000
+          },
+          {
+            "start_ms": 1704844800000,
+            "end_ms": 1704931200000
+          },
+          {
+            "start_ms": 1704931200000,
+            "end_ms": 1705017600000
+          },
+          {
+            "start_ms": 1705017600000,
+            "end_ms": 1705104000000
+          },
+          {
+            "start_ms": 1705104000000,
+            "end_ms": 1705190400000
+          },
+          {
+            "start_ms": 1705190400000,
+            "end_ms": 1705276800000
+          },
+          {
+            "start_ms": 1705276800000,
+            "end_ms": 1705363200000
+          },
+          {
+            "start_ms": 1705363200000,
+            "end_ms": 1705449600000
+          },
+          {
+            "start_ms": 1705449600000,
+            "end_ms": 1705536000000
+          },
+          {
+            "start_ms": 1705536000000,
+            "end_ms": 1705622400000
+          },
+          {
+            "start_ms": 1705622400000,
+            "end_ms": 1705708800000
+          },
+          {
+            "start_ms": 1705708800000,
+            "end_ms": 1705795200000
+          },
+          {
+            "start_ms": 1705795200000,
+            "end_ms": 1705881600000
+          },
+          {
+            "start_ms": 1705881600000,
+            "end_ms": 1705968000000
+          },
+          {
+            "start_ms": 1705968000000,
+            "end_ms": 1706054400000
+          },
+          {
+            "start_ms": 1706054400000,
+            "end_ms": 1706140800000
+          },
+          {
+            "start_ms": 1706140800000,
+            "end_ms": 1706227200000
+          },
+          {
+            "start_ms": 1706227200000,
+            "end_ms": 1706313600000
+          },
+          {
+            "start_ms": 1706313600000,
+            "end_ms": 1706400000000
+          },
+          {
+            "start_ms": 1706400000000,
+            "end_ms": 1706486400000
+          },
+          {
+            "start_ms": 1706486400000,
+            "end_ms": 1706572800000
+          },
+          {
+            "start_ms": 1706572800000,
+            "end_ms": 1706659200000
+          },
+          {
+            "start_ms": 1706659200000,
+            "end_ms": 1706745600000
+          },
+          {
+            "start_ms": 1706745600000,
+            "end_ms": 1706832000000
+          },
+          {
+            "start_ms": 1706832000000,
+            "end_ms": 1706918400000
+          },
+          {
+            "start_ms": 1706918400000,
+            "end_ms": 1707004800000
+          },
+          {
+            "start_ms": 1707004800000,
+            "end_ms": 1707091200000
+          },
+          {
+            "start_ms": 1707091200000,
+            "end_ms": 1707177600000
+          },
+          {
+            "start_ms": 1707177600000,
+            "end_ms": 1707264000000
+          },
+          {
+            "start_ms": 1707264000000,
+            "end_ms": 1707350400000
+          },
+          {
+            "start_ms": 1707350400000,
+            "end_ms": 1707436800000
+          },
+          {
+            "start_ms": 1707436800000,
+            "end_ms": 1707523200000
+          },
+          {
+            "start_ms": 1707523200000,
+            "end_ms": 1707609600000
+          },
+          {
+            "start_ms": 1707609600000,
+            "end_ms": 1707696000000
+          },
+          {
+            "start_ms": 1707696000000,
+            "end_ms": 1707782400000
+          },
+          {
+            "start_ms": 1707782400000,
+            "end_ms": 1707868800000
+          },
+          {
+            "start_ms": 1707868800000,
+            "end_ms": 1707955200000
+          }
+        ],
+        "coverage": 0.0
+      },
+      "excess_sharpe": {
+        "availability": "unavailable",
+        "value": null,
+        "reasons": [
+          "Sharpe : grille quotidienne complète identique et deux rendements requis"
+        ]
+      },
+      "monthly": {
+        "method": "utc_complete_month_srs_with_replacement_paired_v1",
+        "used_months": [],
+        "excluded_months": [
+          {
+            "window": {
+              "start_ms": 1704067200000,
+              "end_ms": 1706745600000
+            },
+            "expected_intervals": 31,
+            "observed_intervals": 0,
+            "coverage": 0.0,
+            "reasons": [
+              "mois UTC partiel ou observations quotidiennes/ancres manquantes"
+            ]
+          },
+          {
+            "window": {
+              "start_ms": 1706745600000,
+              "end_ms": 1709251200000
+            },
+            "expected_intervals": 29,
+            "observed_intervals": 0,
+            "coverage": 0.0,
+            "reasons": [
+              "mois UTC partiel ou observations quotidiennes/ancres manquantes"
+            ]
+          }
+        ],
+        "point_excess": {
+          "availability": "unavailable",
+          "value": null,
+          "reasons": [
+            "aucun mois UTC complet commun entièrement observé"
+          ]
+        },
+        "lb95_excess": {
+          "availability": "unavailable",
+          "value": null,
+          "reasons": [
+            "bootstrap mensuel réservé à DEV ; point seulement sur bloc protégé"
+          ]
+        }
+      },
+      "calmar": {
+        "availability": "unavailable",
+        "value": null,
+        "reasons": [
+          "Calmar : 36 mois calendaires et grille quotidienne complète requis"
+        ]
+      }
+    },
+    "basket_50_50": {
+      "id": "initial_50_50_btc_eth",
+      "trajectory": [],
+      "total_return": {
+        "availability": "unavailable",
+        "value": null,
+        "reasons": [
+          "ancre initiale du benchmark absente"
+        ]
+      },
+      "daily": {
+        "intervals": [],
+        "expected_intervals": 44,
+        "missing_intervals": [
+          {
+            "start_ms": 1704153600000,
+            "end_ms": 1704240000000
+          },
+          {
+            "start_ms": 1704240000000,
+            "end_ms": 1704326400000
+          },
+          {
+            "start_ms": 1704326400000,
+            "end_ms": 1704412800000
+          },
+          {
+            "start_ms": 1704412800000,
+            "end_ms": 1704499200000
+          },
+          {
+            "start_ms": 1704499200000,
+            "end_ms": 1704585600000
+          },
+          {
+            "start_ms": 1704585600000,
+            "end_ms": 1704672000000
+          },
+          {
+            "start_ms": 1704672000000,
+            "end_ms": 1704758400000
+          },
+          {
+            "start_ms": 1704758400000,
+            "end_ms": 1704844800000
+          },
+          {
+            "start_ms": 1704844800000,
+            "end_ms": 1704931200000
+          },
+          {
+            "start_ms": 1704931200000,
+            "end_ms": 1705017600000
+          },
+          {
+            "start_ms": 1705017600000,
+            "end_ms": 1705104000000
+          },
+          {
+            "start_ms": 1705104000000,
+            "end_ms": 1705190400000
+          },
+          {
+            "start_ms": 1705190400000,
+            "end_ms": 1705276800000
+          },
+          {
+            "start_ms": 1705276800000,
+            "end_ms": 1705363200000
+          },
+          {
+            "start_ms": 1705363200000,
+            "end_ms": 1705449600000
+          },
+          {
+            "start_ms": 1705449600000,
+            "end_ms": 1705536000000
+          },
+          {
+            "start_ms": 1705536000000,
+            "end_ms": 1705622400000
+          },
+          {
+            "start_ms": 1705622400000,
+            "end_ms": 1705708800000
+          },
+          {
+            "start_ms": 1705708800000,
+            "end_ms": 1705795200000
+          },
+          {
+            "start_ms": 1705795200000,
+            "end_ms": 1705881600000
+          },
+          {
+            "start_ms": 1705881600000,
+            "end_ms": 1705968000000
+          },
+          {
+            "start_ms": 1705968000000,
+            "end_ms": 1706054400000
+          },
+          {
+            "start_ms": 1706054400000,
+            "end_ms": 1706140800000
+          },
+          {
+            "start_ms": 1706140800000,
+            "end_ms": 1706227200000
+          },
+          {
+            "start_ms": 1706227200000,
+            "end_ms": 1706313600000
+          },
+          {
+            "start_ms": 1706313600000,
+            "end_ms": 1706400000000
+          },
+          {
+            "start_ms": 1706400000000,
+            "end_ms": 1706486400000
+          },
+          {
+            "start_ms": 1706486400000,
+            "end_ms": 1706572800000
+          },
+          {
+            "start_ms": 1706572800000,
+            "end_ms": 1706659200000
+          },
+          {
+            "start_ms": 1706659200000,
+            "end_ms": 1706745600000
+          },
+          {
+            "start_ms": 1706745600000,
+            "end_ms": 1706832000000
+          },
+          {
+            "start_ms": 1706832000000,
+            "end_ms": 1706918400000
+          },
+          {
+            "start_ms": 1706918400000,
+            "end_ms": 1707004800000
+          },
+          {
+            "start_ms": 1707004800000,
+            "end_ms": 1707091200000
+          },
+          {
+            "start_ms": 1707091200000,
+            "end_ms": 1707177600000
+          },
+          {
+            "start_ms": 1707177600000,
+            "end_ms": 1707264000000
+          },
+          {
+            "start_ms": 1707264000000,
+            "end_ms": 1707350400000
+          },
+          {
+            "start_ms": 1707350400000,
+            "end_ms": 1707436800000
+          },
+          {
+            "start_ms": 1707436800000,
+            "end_ms": 1707523200000
+          },
+          {
+            "start_ms": 1707523200000,
+            "end_ms": 1707609600000
+          },
+          {
+            "start_ms": 1707609600000,
+            "end_ms": 1707696000000
+          },
+          {
+            "start_ms": 1707696000000,
+            "end_ms": 1707782400000
+          },
+          {
+            "start_ms": 1707782400000,
+            "end_ms": 1707868800000
+          },
+          {
+            "start_ms": 1707868800000,
+            "end_ms": 1707955200000
+          }
+        ],
+        "coverage": 0.0
+      },
+      "excess_sharpe": {
+        "availability": "unavailable",
+        "value": null,
+        "reasons": [
+          "Sharpe : grille quotidienne complète identique et deux rendements requis"
+        ]
+      },
+      "monthly": {
+        "method": "utc_complete_month_srs_with_replacement_paired_v1",
+        "used_months": [],
+        "excluded_months": [
+          {
+            "window": {
+              "start_ms": 1704067200000,
+              "end_ms": 1706745600000
+            },
+            "expected_intervals": 31,
+            "observed_intervals": 0,
+            "coverage": 0.0,
+            "reasons": [
+              "mois UTC partiel ou observations quotidiennes/ancres manquantes"
+            ]
+          },
+          {
+            "window": {
+              "start_ms": 1706745600000,
+              "end_ms": 1709251200000
+            },
+            "expected_intervals": 29,
+            "observed_intervals": 0,
+            "coverage": 0.0,
+            "reasons": [
+              "mois UTC partiel ou observations quotidiennes/ancres manquantes"
+            ]
+          }
+        ],
+        "point_excess": {
+          "availability": "unavailable",
+          "value": null,
+          "reasons": [
+            "aucun mois UTC complet commun entièrement observé"
+          ]
+        },
+        "lb95_excess": {
+          "availability": "unavailable",
+          "value": null,
+          "reasons": [
+            "bootstrap mensuel réservé à DEV ; point seulement sur bloc protégé"
+          ]
+        }
+      },
+      "calmar": {
+        "availability": "unavailable",
+        "value": null,
+        "reasons": [
+          "Calmar : 36 mois calendaires et grille quotidienne complète requis"
+        ]
+      }
+    },
+    "pairs": [
+      {
+        "symbol": "ETH-USD",
+        "exposure_fraction": 0.13930232558139535,
+        "benchmark": {
+          "id": "exposure:ETH-USD",
+          "trajectory": [
+            {
+              "at_ms": 1704085200000,
+              "close": 1.0
+            },
+            {
+              "at_ms": 1704153600000,
+              "close": 0.9997469034628644
+            },
+            {
+              "at_ms": 1704240000000,
+              "close": 0.9988381680644913
+            },
+            {
+              "at_ms": 1704326400000,
+              "close": 0.998065739143708
+            },
+            {
+              "at_ms": 1704412800000,
+              "close": 1.0015872125653216
+            },
+            {
+              "at_ms": 1704499200000,
+              "close": 1.0060021774482018
+            },
+            {
+              "at_ms": 1704585600000,
+              "close": 1.0052873583118396
+            },
+            {
+              "at_ms": 1704672000000,
+              "close": 1.0115614625706648
+            },
+            {
+              "at_ms": 1704758400000,
+              "close": 1.009958872252809
+            },
+            {
+              "at_ms": 1704844800000,
+              "close": 1.0055058379803683
+            },
+            {
+              "at_ms": 1704931200000,
+              "close": 1.0020811535178418
+            },
+            {
+              "at_ms": 1705017600000,
+              "close": 1.0013807222578865
+            },
+            {
+              "at_ms": 1705104000000,
+              "close": 1.006513809051617
+            },
+            {
+              "at_ms": 1705190400000,
+              "close": 1.008263274638753
+            },
+            {
+              "at_ms": 1705276800000,
+              "close": 1.009156932010074
+            },
+            {
+              "at_ms": 1705363200000,
+              "close": 1.0084326754568123
+            },
+            {
+              "at_ms": 1705449600000,
+              "close": 1.0138787950839059
+            },
+            {
+              "at_ms": 1705536000000,
+              "close": 1.0175711750572987
+            },
+            {
+              "at_ms": 1705622400000,
+              "close": 1.0179205043036164
+            },
+            {
+              "at_ms": 1705708800000,
+              "close": 1.015795375675357
+            },
+            {
+              "at_ms": 1705795200000,
+              "close": 1.014971086685817
+            },
+            {
+              "at_ms": 1705881600000,
+              "close": 1.0103293610924526
+            },
+            {
+              "at_ms": 1705968000000,
+              "close": 1.0129586247166618
+            },
+            {
+              "at_ms": 1706054400000,
+              "close": 1.010082149047211
+            },
+            {
+              "at_ms": 1706140800000,
+              "close": 1.0054649686557646
+            },
+            {
+              "at_ms": 1706227200000,
+              "close": 1.0030837181617285
+            },
+            {
+              "at_ms": 1706313600000,
+              "close": 1.004085945894255
+            },
+            {
+              "at_ms": 1706400000000,
+              "close": 1.0069832284740066
+            },
+            {
+              "at_ms": 1706486400000,
+              "close": 1.00606919140906
+            },
+            {
+              "at_ms": 1706572800000,
+              "close": 1.0054798334248558
+            },
+            {
+              "at_ms": 1706659200000,
+              "close": 1.0032572640443216
+            },
+            {
+              "at_ms": 1706745600000,
+              "close": 1.0052549914313953
+            },
+            {
+              "at_ms": 1706832000000,
+              "close": 1.0006506135668143
+            },
+            {
+              "at_ms": 1706918400000,
+              "close": 1.00239468048578
+            },
+            {
+              "at_ms": 1707004800000,
+              "close": 0.9976153670745804
+            },
+            {
+              "at_ms": 1707091200000,
+              "close": 0.9984936690954205
+            },
+            {
+              "at_ms": 1707177600000,
+              "close": 0.996951459710281
+            },
+            {
+              "at_ms": 1707264000000,
+              "close": 0.9986646223695272
+            },
+            {
+              "at_ms": 1707350400000,
+              "close": 0.9993690874181802
+            },
+            {
+              "at_ms": 1707436800000,
+              "close": 0.9985464309572136
+            },
+            {
+              "at_ms": 1707523200000,
+              "close": 0.9995457435647621
+            },
+            {
+              "at_ms": 1707609600000,
+              "close": 0.9993399479816568
+            },
+            {
+              "at_ms": 1707696000000,
+              "close": 1.0008162229884567
+            },
+            {
+              "at_ms": 1707782400000,
+              "close": 0.9980014364002507
+            },
+            {
+              "at_ms": 1707868800000,
+              "close": 0.9961082166464902
+            },
+            {
+              "at_ms": 1707955200000,
+              "close": 0.9931309733248292
+            }
+          ],
+          "total_return": {
+            "availability": "complete",
+            "value": -0.006869026675170753,
+            "reasons": []
+          },
+          "daily": {
+            "intervals": [
+              {
+                "start_ms": 1704153600000,
+                "end_ms": 1704240000000,
+                "value": -0.0009089654543820158
+              },
+              {
+                "start_ms": 1704240000000,
+                "end_ms": 1704326400000,
+                "value": -0.000773327397250112
+              },
+              {
+                "start_ms": 1704326400000,
+                "end_ms": 1704412800000,
+                "value": 0.0035282980704605116
+              },
+              {
+                "start_ms": 1704412800000,
+                "end_ms": 1704499200000,
+                "value": 0.0044079684998896695
+              },
+              {
+                "start_ms": 1704499200000,
+                "end_ms": 1704585600000,
+                "value": -0.0007105542635855722
+              },
+              {
+                "start_ms": 1704585600000,
+                "end_ms": 1704672000000,
+                "value": 0.0062411052988482485
+              },
+              {
+                "start_ms": 1704672000000,
+                "end_ms": 1704758400000,
+                "value": -0.0015842737956655029
+              },
+              {
+                "start_ms": 1704758400000,
+                "end_ms": 1704844800000,
+                "value": -0.0044091243661316115
+              },
+              {
+                "start_ms": 1704844800000,
+                "end_ms": 1704931200000,
+                "value": -0.0034059319530210797
+              },
+              {
+                "start_ms": 1704931200000,
+                "end_ms": 1705017600000,
+                "value": -0.0006989765823819383
+              },
+              {
+                "start_ms": 1705017600000,
+                "end_ms": 1705104000000,
+                "value": 0.005126009198735737
+              },
+              {
+                "start_ms": 1705104000000,
+                "end_ms": 1705190400000,
+                "value": 0.0017381436512871051
+              },
+              {
+                "start_ms": 1705190400000,
+                "end_ms": 1705276800000,
+                "value": 0.0008863333553839059
+              },
+              {
+                "start_ms": 1705276800000,
+                "end_ms": 1705363200000,
+                "value": -0.000717684762685078
+              },
+              {
+                "start_ms": 1705363200000,
+                "end_ms": 1705449600000,
+                "value": 0.005400578302985348
+              },
+              {
+                "start_ms": 1705449600000,
+                "end_ms": 1705536000000,
+                "value": 0.003641835682229866
+              },
+              {
+                "start_ms": 1705536000000,
+                "end_ms": 1705622400000,
+                "value": 0.00034329711265468354
+              },
+              {
+                "start_ms": 1705622400000,
+                "end_ms": 1705708800000,
+                "value": -0.0020877157098954102
+              },
+              {
+                "start_ms": 1705708800000,
+                "end_ms": 1705795200000,
+                "value": -0.0008114714924666311
+              },
+              {
+                "start_ms": 1705795200000,
+                "end_ms": 1705881600000,
+                "value": -0.004573258937376257
+              },
+              {
+                "start_ms": 1705881600000,
+                "end_ms": 1705968000000,
+                "value": 0.0026023826738699185
+              },
+              {
+                "start_ms": 1705968000000,
+                "end_ms": 1706054400000,
+                "value": -0.0028396773562744393
+              },
+              {
+                "start_ms": 1706054400000,
+                "end_ms": 1706140800000,
+                "value": -0.0045710939410240625
+              },
+              {
+                "start_ms": 1706140800000,
+                "end_ms": 1706227200000,
+                "value": -0.0023683077663260166
+              },
+              {
+                "start_ms": 1706227200000,
+                "end_ms": 1706313600000,
+                "value": 0.0009991466458685316
+              },
+              {
+                "start_ms": 1706313600000,
+                "end_ms": 1706400000000,
+                "value": 0.002885492613056373
+              },
+              {
+                "start_ms": 1706400000000,
+                "end_ms": 1706486400000,
+                "value": -0.0009076983996363364
+              },
+              {
+                "start_ms": 1706486400000,
+                "end_ms": 1706572800000,
+                "value": -0.0005858026358791513
+              },
+              {
+                "start_ms": 1706572800000,
+                "end_ms": 1706659200000,
+                "value": -0.00221045644740947
+              },
+              {
+                "start_ms": 1706659200000,
+                "end_ms": 1706745600000,
+                "value": 0.0019912413880966984
+              },
+              {
+                "start_ms": 1706745600000,
+                "end_ms": 1706832000000,
+                "value": -0.0045803083832737235
+              },
+              {
+                "start_ms": 1706832000000,
+                "end_ms": 1706918400000,
+                "value": 0.0017429329431468688
+              },
+              {
+                "start_ms": 1706918400000,
+                "end_ms": 1707004800000,
+                "value": -0.004767895824111301
+              },
+              {
+                "start_ms": 1707004800000,
+                "end_ms": 1707091200000,
+                "value": 0.0008804014551375694
+              },
+              {
+                "start_ms": 1707091200000,
+                "end_ms": 1707177600000,
+                "value": -0.001544535967400451
+              },
+              {
+                "start_ms": 1707177600000,
+                "end_ms": 1707264000000,
+                "value": 0.0017184012747661903
+              },
+              {
+                "start_ms": 1707264000000,
+                "end_ms": 1707350400000,
+                "value": 0.0007054070334258089
+              },
+              {
+                "start_ms": 1707350400000,
+                "end_ms": 1707436800000,
+                "value": -0.0008231758129439992
+              },
+              {
+                "start_ms": 1707436800000,
+                "end_ms": 1707523200000,
+                "value": 0.0010007672919030153
+              },
+              {
+                "start_ms": 1707523200000,
+                "end_ms": 1707609600000,
+                "value": -0.0002058891095582105
+              },
+              {
+                "start_ms": 1707609600000,
+                "end_ms": 1707696000000,
+                "value": 0.001477250068689262
+              },
+              {
+                "start_ms": 1707696000000,
+                "end_ms": 1707782400000,
+                "value": -0.0028124909684227317
+              },
+              {
+                "start_ms": 1707782400000,
+                "end_ms": 1707868800000,
+                "value": -0.0018970110509953786
+              },
+              {
+                "start_ms": 1707868800000,
+                "end_ms": 1707955200000,
+                "value": -0.0029888753770992427
+              }
+            ],
+            "expected_intervals": 44,
+            "missing_intervals": [],
+            "coverage": 1.0
+          },
+          "excess_sharpe": {
+            "availability": "complete",
+            "value": -23.24137251179547,
+            "reasons": []
+          },
+          "monthly": {
+            "method": "utc_complete_month_srs_with_replacement_paired_v1",
+            "used_months": [],
+            "excluded_months": [
+              {
+                "window": {
+                  "start_ms": 1704067200000,
+                  "end_ms": 1706745600000
+                },
+                "expected_intervals": 31,
+                "observed_intervals": 30,
+                "coverage": 0.967741935483871,
+                "reasons": [
+                  "mois UTC partiel ou observations quotidiennes/ancres manquantes"
+                ]
+              },
+              {
+                "window": {
+                  "start_ms": 1706745600000,
+                  "end_ms": 1709251200000
+                },
+                "expected_intervals": 29,
+                "observed_intervals": 14,
+                "coverage": 0.4827586206896552,
+                "reasons": [
+                  "mois UTC partiel ou observations quotidiennes/ancres manquantes"
+                ]
+              }
+            ],
+            "point_excess": {
+              "availability": "unavailable",
+              "value": null,
+              "reasons": [
+                "aucun mois UTC complet commun entièrement observé"
+              ]
+            },
+            "lb95_excess": {
+              "availability": "unavailable",
+              "value": null,
+              "reasons": [
+                "bootstrap mensuel réservé à DEV ; point seulement sur bloc protégé"
+              ]
+            }
+          },
+          "calmar": {
+            "availability": "unavailable",
+            "value": null,
+            "reasons": [
+              "Calmar : 36 mois calendaires et grille quotidienne complète requis"
+            ]
+          }
+        }
+      }
+    ],
+    "equal_weight_pairs": {
+      "id": "descriptive_equal_weight_pairs",
+      "trajectory": [
+        {
+          "at_ms": 1704085200000,
+          "close": 1.0
+        },
+        {
+          "at_ms": 1704153600000,
+          "close": 0.9997469034628644
+        },
+        {
+          "at_ms": 1704240000000,
+          "close": 0.9988381680644913
+        },
+        {
+          "at_ms": 1704326400000,
+          "close": 0.998065739143708
+        },
+        {
+          "at_ms": 1704412800000,
+          "close": 1.0015872125653216
+        },
+        {
+          "at_ms": 1704499200000,
+          "close": 1.0060021774482018
+        },
+        {
+          "at_ms": 1704585600000,
+          "close": 1.0052873583118396
+        },
+        {
+          "at_ms": 1704672000000,
+          "close": 1.0115614625706648
+        },
+        {
+          "at_ms": 1704758400000,
+          "close": 1.009958872252809
+        },
+        {
+          "at_ms": 1704844800000,
+          "close": 1.0055058379803683
+        },
+        {
+          "at_ms": 1704931200000,
+          "close": 1.0020811535178418
+        },
+        {
+          "at_ms": 1705017600000,
+          "close": 1.0013807222578865
+        },
+        {
+          "at_ms": 1705104000000,
+          "close": 1.006513809051617
+        },
+        {
+          "at_ms": 1705190400000,
+          "close": 1.008263274638753
+        },
+        {
+          "at_ms": 1705276800000,
+          "close": 1.009156932010074
+        },
+        {
+          "at_ms": 1705363200000,
+          "close": 1.0084326754568123
+        },
+        {
+          "at_ms": 1705449600000,
+          "close": 1.0138787950839059
+        },
+        {
+          "at_ms": 1705536000000,
+          "close": 1.0175711750572987
+        },
+        {
+          "at_ms": 1705622400000,
+          "close": 1.0179205043036164
+        },
+        {
+          "at_ms": 1705708800000,
+          "close": 1.015795375675357
+        },
+        {
+          "at_ms": 1705795200000,
+          "close": 1.014971086685817
+        },
+        {
+          "at_ms": 1705881600000,
+          "close": 1.0103293610924526
+        },
+        {
+          "at_ms": 1705968000000,
+          "close": 1.0129586247166618
+        },
+        {
+          "at_ms": 1706054400000,
+          "close": 1.010082149047211
+        },
+        {
+          "at_ms": 1706140800000,
+          "close": 1.0054649686557646
+        },
+        {
+          "at_ms": 1706227200000,
+          "close": 1.0030837181617285
+        },
+        {
+          "at_ms": 1706313600000,
+          "close": 1.004085945894255
+        },
+        {
+          "at_ms": 1706400000000,
+          "close": 1.0069832284740066
+        },
+        {
+          "at_ms": 1706486400000,
+          "close": 1.00606919140906
+        },
+        {
+          "at_ms": 1706572800000,
+          "close": 1.0054798334248558
+        },
+        {
+          "at_ms": 1706659200000,
+          "close": 1.0032572640443216
+        },
+        {
+          "at_ms": 1706745600000,
+          "close": 1.0052549914313953
+        },
+        {
+          "at_ms": 1706832000000,
+          "close": 1.0006506135668143
+        },
+        {
+          "at_ms": 1706918400000,
+          "close": 1.00239468048578
+        },
+        {
+          "at_ms": 1707004800000,
+          "close": 0.9976153670745804
+        },
+        {
+          "at_ms": 1707091200000,
+          "close": 0.9984936690954205
+        },
+        {
+          "at_ms": 1707177600000,
+          "close": 0.996951459710281
+        },
+        {
+          "at_ms": 1707264000000,
+          "close": 0.9986646223695272
+        },
+        {
+          "at_ms": 1707350400000,
+          "close": 0.9993690874181802
+        },
+        {
+          "at_ms": 1707436800000,
+          "close": 0.9985464309572136
+        },
+        {
+          "at_ms": 1707523200000,
+          "close": 0.9995457435647621
+        },
+        {
+          "at_ms": 1707609600000,
+          "close": 0.9993399479816568
+        },
+        {
+          "at_ms": 1707696000000,
+          "close": 1.0008162229884567
+        },
+        {
+          "at_ms": 1707782400000,
+          "close": 0.9980014364002507
+        },
+        {
+          "at_ms": 1707868800000,
+          "close": 0.9961082166464902
+        },
+        {
+          "at_ms": 1707955200000,
+          "close": 0.9931309733248292
+        }
+      ],
+      "total_return": {
+        "availability": "complete",
+        "value": -0.006869026675170753,
+        "reasons": []
+      },
+      "daily": {
+        "intervals": [
+          {
+            "start_ms": 1704153600000,
+            "end_ms": 1704240000000,
+            "value": -0.0009089654543820158
+          },
+          {
+            "start_ms": 1704240000000,
+            "end_ms": 1704326400000,
+            "value": -0.000773327397250112
+          },
+          {
+            "start_ms": 1704326400000,
+            "end_ms": 1704412800000,
+            "value": 0.0035282980704605116
+          },
+          {
+            "start_ms": 1704412800000,
+            "end_ms": 1704499200000,
+            "value": 0.0044079684998896695
+          },
+          {
+            "start_ms": 1704499200000,
+            "end_ms": 1704585600000,
+            "value": -0.0007105542635855722
+          },
+          {
+            "start_ms": 1704585600000,
+            "end_ms": 1704672000000,
+            "value": 0.0062411052988482485
+          },
+          {
+            "start_ms": 1704672000000,
+            "end_ms": 1704758400000,
+            "value": -0.0015842737956655029
+          },
+          {
+            "start_ms": 1704758400000,
+            "end_ms": 1704844800000,
+            "value": -0.0044091243661316115
+          },
+          {
+            "start_ms": 1704844800000,
+            "end_ms": 1704931200000,
+            "value": -0.0034059319530210797
+          },
+          {
+            "start_ms": 1704931200000,
+            "end_ms": 1705017600000,
+            "value": -0.0006989765823819383
+          },
+          {
+            "start_ms": 1705017600000,
+            "end_ms": 1705104000000,
+            "value": 0.005126009198735737
+          },
+          {
+            "start_ms": 1705104000000,
+            "end_ms": 1705190400000,
+            "value": 0.0017381436512871051
+          },
+          {
+            "start_ms": 1705190400000,
+            "end_ms": 1705276800000,
+            "value": 0.0008863333553839059
+          },
+          {
+            "start_ms": 1705276800000,
+            "end_ms": 1705363200000,
+            "value": -0.000717684762685078
+          },
+          {
+            "start_ms": 1705363200000,
+            "end_ms": 1705449600000,
+            "value": 0.005400578302985348
+          },
+          {
+            "start_ms": 1705449600000,
+            "end_ms": 1705536000000,
+            "value": 0.003641835682229866
+          },
+          {
+            "start_ms": 1705536000000,
+            "end_ms": 1705622400000,
+            "value": 0.00034329711265468354
+          },
+          {
+            "start_ms": 1705622400000,
+            "end_ms": 1705708800000,
+            "value": -0.0020877157098954102
+          },
+          {
+            "start_ms": 1705708800000,
+            "end_ms": 1705795200000,
+            "value": -0.0008114714924666311
+          },
+          {
+            "start_ms": 1705795200000,
+            "end_ms": 1705881600000,
+            "value": -0.004573258937376257
+          },
+          {
+            "start_ms": 1705881600000,
+            "end_ms": 1705968000000,
+            "value": 0.0026023826738699185
+          },
+          {
+            "start_ms": 1705968000000,
+            "end_ms": 1706054400000,
+            "value": -0.0028396773562744393
+          },
+          {
+            "start_ms": 1706054400000,
+            "end_ms": 1706140800000,
+            "value": -0.0045710939410240625
+          },
+          {
+            "start_ms": 1706140800000,
+            "end_ms": 1706227200000,
+            "value": -0.0023683077663260166
+          },
+          {
+            "start_ms": 1706227200000,
+            "end_ms": 1706313600000,
+            "value": 0.0009991466458685316
+          },
+          {
+            "start_ms": 1706313600000,
+            "end_ms": 1706400000000,
+            "value": 0.002885492613056373
+          },
+          {
+            "start_ms": 1706400000000,
+            "end_ms": 1706486400000,
+            "value": -0.0009076983996363364
+          },
+          {
+            "start_ms": 1706486400000,
+            "end_ms": 1706572800000,
+            "value": -0.0005858026358791513
+          },
+          {
+            "start_ms": 1706572800000,
+            "end_ms": 1706659200000,
+            "value": -0.00221045644740947
+          },
+          {
+            "start_ms": 1706659200000,
+            "end_ms": 1706745600000,
+            "value": 0.0019912413880966984
+          },
+          {
+            "start_ms": 1706745600000,
+            "end_ms": 1706832000000,
+            "value": -0.0045803083832737235
+          },
+          {
+            "start_ms": 1706832000000,
+            "end_ms": 1706918400000,
+            "value": 0.0017429329431468688
+          },
+          {
+            "start_ms": 1706918400000,
+            "end_ms": 1707004800000,
+            "value": -0.004767895824111301
+          },
+          {
+            "start_ms": 1707004800000,
+            "end_ms": 1707091200000,
+            "value": 0.0008804014551375694
+          },
+          {
+            "start_ms": 1707091200000,
+            "end_ms": 1707177600000,
+            "value": -0.001544535967400451
+          },
+          {
+            "start_ms": 1707177600000,
+            "end_ms": 1707264000000,
+            "value": 0.0017184012747661903
+          },
+          {
+            "start_ms": 1707264000000,
+            "end_ms": 1707350400000,
+            "value": 0.0007054070334258089
+          },
+          {
+            "start_ms": 1707350400000,
+            "end_ms": 1707436800000,
+            "value": -0.0008231758129439992
+          },
+          {
+            "start_ms": 1707436800000,
+            "end_ms": 1707523200000,
+            "value": 0.0010007672919030153
+          },
+          {
+            "start_ms": 1707523200000,
+            "end_ms": 1707609600000,
+            "value": -0.0002058891095582105
+          },
+          {
+            "start_ms": 1707609600000,
+            "end_ms": 1707696000000,
+            "value": 0.001477250068689262
+          },
+          {
+            "start_ms": 1707696000000,
+            "end_ms": 1707782400000,
+            "value": -0.0028124909684227317
+          },
+          {
+            "start_ms": 1707782400000,
+            "end_ms": 1707868800000,
+            "value": -0.0018970110509953786
+          },
+          {
+            "start_ms": 1707868800000,
+            "end_ms": 1707955200000,
+            "value": -0.0029888753770992427
+          }
+        ],
+        "expected_intervals": 44,
+        "missing_intervals": [],
+        "coverage": 1.0
+      },
+      "excess_sharpe": {
+        "availability": "complete",
+        "value": -23.24137251179547,
+        "reasons": []
+      },
+      "monthly": {
+        "method": "utc_complete_month_srs_with_replacement_paired_v1",
+        "used_months": [],
+        "excluded_months": [
+          {
+            "window": {
+              "start_ms": 1704067200000,
+              "end_ms": 1706745600000
+            },
+            "expected_intervals": 31,
+            "observed_intervals": 30,
+            "coverage": 0.967741935483871,
+            "reasons": [
+              "mois UTC partiel ou observations quotidiennes/ancres manquantes"
+            ]
+          },
+          {
+            "window": {
+              "start_ms": 1706745600000,
+              "end_ms": 1709251200000
+            },
+            "expected_intervals": 29,
+            "observed_intervals": 14,
+            "coverage": 0.4827586206896552,
+            "reasons": [
+              "mois UTC partiel ou observations quotidiennes/ancres manquantes"
+            ]
+          }
+        ],
+        "point_excess": {
+          "availability": "unavailable",
+          "value": null,
+          "reasons": [
+            "aucun mois UTC complet commun entièrement observé"
+          ]
+        },
+        "lb95_excess": {
+          "availability": "unavailable",
+          "value": null,
+          "reasons": [
+            "bootstrap mensuel réservé à DEV ; point seulement sur bloc protégé"
+          ]
+        }
+      },
+      "calmar": {
+        "availability": "unavailable",
+        "value": null,
+        "reasons": [
+          "Calmar : 36 mois calendaires et grille quotidienne complète requis"
+        ]
+      }
+    }
+  },
+  "delayed_entries": {
+    "availability": "unavailable",
+    "value": null,
+    "reasons": [
+      "aucun rejeu causal fourni : utiliser --delayed-run sur un backtest explicite"
+    ]
+  },
+  "delayed_source": null,
+  "registry": {
+    "availability": "complete",
+    "value": {
+      "registry_hash": "blake3:ec422baf6126e9eb11afbf0bb878c15d6cd674237373ea106fccc4bb8086b891",
+      "last_event_id": 20,
+      "declared_n": 5,
+      "registered_hashes": [
+        "2de65a42ed3e5ca4b643fb88b70573f0a1d0292a0ac05470c43fd03a933b1cfa",
+        "34b43a18b308e164c5db1b52cf33b1012659a3b2c3b60fe2ce4e7fe47b7860f9",
+        "39c7d110d29a9a50302ce2e7fbc4c98c4abfc1dad7bec6b80cc5545a9678c1c1",
+        "f104bc558f569408fc8f7aff3e9757087e22dfc9d2df44f679fe021f260c00c7",
+        "f1174d62a6fff73197fbb9a7c000b110333b097cd33a7246bf18bd6255b40007"
+      ]
+    },
+    "reasons": []
+  },
+  "current_noise": {
+    "n": 5,
+    "n_eff": null,
+    "selection_years": 5.0,
+    "expected": 0.5333442514171212,
+    "approx_q90": 0.8023560088723958,
+    "q95": 1.036944866333301
+  },
+  "corpus": {
+    "members": [
+      {
+        "source": {
+          "provenance": {
+            "run_id": "27f7c50414e0c23ec84b76986a63ef77dc4055f81381ca3701c88f5193d14b65",
+            "config_hash": "39c7d110d29a9a50302ce2e7fbc4c98c4abfc1dad7bec6b80cc5545a9678c1c1",
+            "dataset_hash": "blake3:2ffed94cda58cfde282bdda249e615cdcbeaa57f91fd1bff35db706a9015ae20",
+            "result_hash": "blake3:02030d35c22cf658bcf3a75f75632758c99ba1152163690a3387c5cf20dbb07f",
+            "initial_cash": 300.0,
+            "window": {
+              "start_ms": 1704085200000,
+              "end_ms": 1707955200000
+            },
+            "profile": null,
+            "line": null,
+            "files": {
+              "metrics.json": "blake3:925b39f351a08f99e5cef1b35b3e6685295bde77df3b5d1f8bf0827b49e64d6a",
+              "trades.csv": "blake3:02030d35c22cf658bcf3a75f75632758c99ba1152163690a3387c5cf20dbb07f",
+              "equity.csv": "blake3:25147568ac7925cb85b489fcdd0928ade2a7693584f8d60e40cdd3297cd4222f"
+            }
+          },
+          "files": {
+            "manifest_json": "blake3:308b884f3b0c852f45e00826624c38e899fbba08fcda22e6e6b247cefc7fb289",
+            "metrics_json": "blake3:925b39f351a08f99e5cef1b35b3e6685295bde77df3b5d1f8bf0827b49e64d6a",
+            "trades_csv": "blake3:02030d35c22cf658bcf3a75f75632758c99ba1152163690a3387c5cf20dbb07f",
+            "equity_csv": "blake3:25147568ac7925cb85b489fcdd0928ade2a7693584f8d60e40cdd3297cd4222f",
+            "stats_inputs_json": "blake3:c4bf9aa3ca1f1c3a8c335a9dfb128cd89fa18441040a8167dd65bdeee6d6e3e0"
+          },
+          "layout_files": [],
+          "historical_governance": {
+            "claim_holdout": null,
+            "config_hash": "39c7d110d29a9a50302ce2e7fbc4c98c4abfc1dad7bec6b80cc5545a9678c1c1",
+            "dataset_hash": "blake3:2ffed94cda58cfde282bdda249e615cdcbeaa57f91fd1bff35db706a9015ae20",
+            "effective_block": null,
+            "frozen_at": null,
+            "frozen_tag": null,
+            "generation": 0,
+            "hypothesis": null,
+            "noise": {
+              "approx_q90": 0.0,
+              "expected": 0.0,
+              "n": 1,
+              "n_eff": null,
+              "q95": 0.7356009037671815,
+              "selection_years": 5.0
+            },
+            "read_id": 1,
+            "schema": "tv4-governance-v1",
+            "source_block": null,
+            "trial_id": 1
+          }
+        },
+        "registry_member": true,
+        "daily": {
+          "intervals": [
+            {
+              "start_ms": 1704153600000,
+              "end_ms": 1704240000000,
+              "value": -0.009865313195333014
+            },
+            {
+              "start_ms": 1704240000000,
+              "end_ms": 1704326400000,
+              "value": -0.007832772106440622
+            },
+            {
+              "start_ms": 1704326400000,
+              "end_ms": 1704412800000,
+              "value": -0.015016188466081104
+            },
+            {
+              "start_ms": 1704412800000,
+              "end_ms": 1704499200000,
+              "value": 0.0
+            },
+            {
+              "start_ms": 1704499200000,
+              "end_ms": 1704585600000,
+              "value": -0.008877000654972211
+            },
+            {
+              "start_ms": 1704585600000,
+              "end_ms": 1704672000000,
+              "value": 0.0
+            },
+            {
+              "start_ms": 1704672000000,
+              "end_ms": 1704758400000,
+              "value": 0.0
+            },
+            {
+              "start_ms": 1704758400000,
+              "end_ms": 1704844800000,
+              "value": -0.01227500962251138
+            },
+            {
+              "start_ms": 1704844800000,
+              "end_ms": 1704931200000,
+              "value": -0.01843868586923114
+            },
+            {
+              "start_ms": 1704931200000,
+              "end_ms": 1705017600000,
+              "value": -0.008110600258505518
+            },
+            {
+              "start_ms": 1705017600000,
+              "end_ms": 1705104000000,
+              "value": 0.0
+            },
+            {
+              "start_ms": 1705104000000,
+              "end_ms": 1705190400000,
+              "value": 0.0016823935449270522
+            },
+            {
+              "start_ms": 1705190400000,
+              "end_ms": 1705276800000,
+              "value": -0.0019962930648473876
+            },
+            {
+              "start_ms": 1705276800000,
+              "end_ms": 1705363200000,
+              "value": -0.010433678749900643
+            },
+            {
+              "start_ms": 1705363200000,
+              "end_ms": 1705449600000,
+              "value": 0.007408460775234049
+            },
+            {
+              "start_ms": 1705449600000,
+              "end_ms": 1705536000000,
+              "value": 0.0
+            },
+            {
+              "start_ms": 1705536000000,
+              "end_ms": 1705622400000,
+              "value": -0.008498915961095532
+            },
+            {
+              "start_ms": 1705622400000,
+              "end_ms": 1705708800000,
+              "value": -0.011631355749633143
+            },
+            {
+              "start_ms": 1705708800000,
+              "end_ms": 1705795200000,
+              "value": 0.0018551991192650163
+            },
+            {
+              "start_ms": 1705795200000,
+              "end_ms": 1705881600000,
+              "value": -0.010536906434561844
+            },
+            {
+              "start_ms": 1705881600000,
+              "end_ms": 1705968000000,
+              "value": -0.009687481074529325
+            },
+            {
+              "start_ms": 1705968000000,
+              "end_ms": 1706054400000,
+              "value": -0.007755327900843989
+            },
+            {
+              "start_ms": 1706054400000,
+              "end_ms": 1706140800000,
+              "value": -0.025105917037418157
+            },
+            {
+              "start_ms": 1706140800000,
+              "end_ms": 1706227200000,
+              "value": -0.015111616888431878
+            },
+            {
+              "start_ms": 1706227200000,
+              "end_ms": 1706313600000,
+              "value": -0.003298388050895107
+            },
+            {
+              "start_ms": 1706313600000,
+              "end_ms": 1706400000000,
+              "value": 0.0
+            },
+            {
+              "start_ms": 1706400000000,
+              "end_ms": 1706486400000,
+              "value": -0.003212399734088489
+            },
+            {
+              "start_ms": 1706486400000,
+              "end_ms": 1706572800000,
+              "value": -0.010294225714277183
+            },
+            {
+              "start_ms": 1706572800000,
+              "end_ms": 1706659200000,
+              "value": 0.0
+            },
+            {
+              "start_ms": 1706659200000,
+              "end_ms": 1706745600000,
+              "value": -0.006992237515258903
+            },
+            {
+              "start_ms": 1706745600000,
+              "end_ms": 1706832000000,
+              "value": 0.0
+            },
+            {
+              "start_ms": 1706832000000,
+              "end_ms": 1706918400000,
+              "value": -0.011332722997435485
+            },
+            {
+              "start_ms": 1706918400000,
+              "end_ms": 1707004800000,
+              "value": -0.014724401782697072
+            },
+            {
+              "start_ms": 1707004800000,
+              "end_ms": 1707091200000,
+              "value": -0.025176852800991023
+            },
+            {
+              "start_ms": 1707091200000,
+              "end_ms": 1707177600000,
+              "value": -0.017973323356731186
+            },
+            {
+              "start_ms": 1707177600000,
+              "end_ms": 1707264000000,
+              "value": -0.013122750527968852
+            },
+            {
+              "start_ms": 1707264000000,
+              "end_ms": 1707350400000,
+              "value": -0.01350509456885407
+            },
+            {
+              "start_ms": 1707350400000,
+              "end_ms": 1707436800000,
+              "value": 0.0
+            },
+            {
+              "start_ms": 1707436800000,
+              "end_ms": 1707523200000,
+              "value": -0.013251259172392671
+            },
+            {
+              "start_ms": 1707523200000,
+              "end_ms": 1707609600000,
+              "value": -0.014742382814747379
+            },
+            {
+              "start_ms": 1707609600000,
+              "end_ms": 1707696000000,
+              "value": -0.01689358530166951
+            },
+            {
+              "start_ms": 1707696000000,
+              "end_ms": 1707782400000,
+              "value": -0.027375640257153444
+            },
+            {
+              "start_ms": 1707782400000,
+              "end_ms": 1707868800000,
+              "value": -0.013855641518567774
+            },
+            {
+              "start_ms": 1707868800000,
+              "end_ms": 1707955200000,
+              "value": -0.014714819266898438
+            }
+          ],
+          "expected_intervals": 44,
+          "missing_intervals": [],
+          "coverage": 1.0
+        }
+      }
+    ],
+    "observed_configs": 1,
+    "complete_daily_configs": 1,
+    "declared_verified_n": 5,
+    "coverage": 0.2,
+    "reasons": [],
+    "clustering": {
+      "availability": "complete",
+      "value": {
+        "method": "pearson_strict_connected_components_v1",
+        "correlation_threshold": 0.7,
+        "observed_configs": 1,
+        "declared_verified_n": 5,
+        "coverage": 0.2,
+        "clusters": [
+          [
+            "39c7d110d29a9a50302ce2e7fbc4c98c4abfc1dad7bec6b80cc5545a9678c1c1"
+          ]
+        ],
+        "panel_n_eff": 1,
+        "global_n_eff": {
+          "availability": "unavailable",
+          "value": null,
+          "reasons": [
+            "N global non vérifié ou panel incomplet : nombre de clusters du panel seulement"
+          ]
+        }
+      },
+      "reasons": []
+    }
+  },
+  "methods": [
+    "s13-v1_splitmix64_separate_streams_type7",
+    "bootstrap_circular_trade_blocks",
+    "monte_carlo_circular_temporal_blocks_min20_marked",
+    "regimes_causal_sma200_vol30_expanding_median",
+    "benchmarks_initial_weights_cash_simple_prorata",
+    "pearson_strict_connected_components_v1"
+  ]
+}

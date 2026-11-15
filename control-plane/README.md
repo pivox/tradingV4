@@ -69,3 +69,24 @@ composer cs       # PHP_CodeSniffer, standard PSR-12
 
 - Un seul utilisateur, accès par VPN seul, login et TOTP à l'intérieur du VPN, aucune notification sortante (`docs/05-ihm.md` §7).
 - Jamais de secret dans le dépôt : aucun fichier `.env` (y compris celui que Symfony génère par défaut), aucune clé API.
+
+### Statistiques S13
+
+Un run peut porter un `stats.json` (`tv4-stats-v1`) produit par `tv4 stats` avec
+une graine explicite. Le lecteur garde les anciens runs sans sidecar ; un sidecar
+présent mais invalide entraîne une erreur explicite (code 1), sans publication du
+rapport. Il valide tous les champs, séries, statuts, bornes et cardinalités,
+recoupe les identités et les empreintes déclarées avec les fichiers source déjà
+lus, et ne recalcule aucune statistique ni empreinte BLAKE3. Les références à des
+paquets historiques externes sont admises sans accès à leur chemin. La graine u64
+reste une chaîne décimale, y compris `18446744073709551615`.
+
+Le rapport affiche Bootstrap, Monte Carlo, Régimes, Concentration, Benchmarks et
+Clustering. Les absences gardent leur raison ; Calmar et références à exposition
+égale sont informatifs. Le nombre de groupes du panel reste distinct de N_eff
+global si le corpus complet n'est pas vérifié. Le contexte de bruit conserve N
+déclaré et la convention T = 5 ans du protocole. Les comparaisons de vrais rejeux
+décalés indiquent leurs effectifs, R, ratio et contexte d'éligibilité DEV, sans
+verdict G2. Les dossiers de profils et de lignes rendent chaque section une fois
+sur leur fiche de référence (baseline, full, ou full/baseline), avec un périmètre
+explicite. Les fixtures `tests/fixtures/stats-rust/` proviennent du binaire Rust.

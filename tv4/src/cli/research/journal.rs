@@ -29,6 +29,7 @@ pub(crate) struct Journal {
     lock: File,
     registry: Registry,
     empty: bool,
+    loaded_bytes: Vec<u8>,
     poisoned: bool,
 }
 impl Journal {
@@ -65,6 +66,7 @@ impl Journal {
             lock,
             registry: Registry::default(),
             empty: true,
+            loaded_bytes: Vec::new(),
             poisoned: false,
         };
         let path = safe_path(root, "research/trials.csv")?;
@@ -75,8 +77,14 @@ impl Journal {
         };
         journal.empty = bytes.is_empty();
         journal.registry = Registry::from_csv(&bytes)?;
+        journal.loaded_bytes = bytes;
         Ok(journal)
     }
+    /// Octets exacts ayant produit la projection sous le même verrou.
+    pub(crate) fn loaded_bytes(&self) -> &[u8] {
+        &self.loaded_bytes
+    }
+
     pub(crate) fn registry(&self) -> &Registry {
         &self.registry
     }
@@ -108,6 +116,7 @@ impl Journal {
         File::open(&parent)
             .and_then(|file| file.sync_all())
             .map_err(|e| io(&parent, e))?;
+        self.loaded_bytes.extend_from_slice(&bytes);
         self.registry = next;
         self.empty = false;
         self.poisoned = false;
@@ -308,6 +317,13 @@ mod tests {
                 .starts_with(&prefix)
         );
         assert!(journal.registry().pending_reads().is_empty());
+        assert_eq!(
+            journal.loaded_bytes(),
+            fs::read(dir.path().join("research/trials.csv")).expect("bytes")
+        );
+        let copied = Registry::from_csv(journal.loaded_bytes()).expect("copie cohérente");
+        assert_eq!(copied.n(), journal.registry().n());
+        assert_eq!(copied.events(), journal.registry().events());
     }
     #[test]
     fn append_invalide_ne_modifie_ni_csv_ni_projection() {

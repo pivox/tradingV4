@@ -40,6 +40,7 @@ pub use ingest_okx::{
 };
 pub use instruments::{FetchArgs, InstrumentsAction};
 pub use research::{ResearchAction, ResearchError};
+pub use stats::StatsArgs;
 pub use universe::{
     UniverseAction, UniverseBuildArgs, UniverseOkxSubsetArgs, UniverseSurvivorshipArgs,
     UniverseVerifyArgs,
@@ -55,6 +56,7 @@ mod ingest;
 mod ingest_okx;
 mod instruments;
 pub(crate) mod research;
+mod stats;
 mod universe;
 mod verify;
 
@@ -180,6 +182,9 @@ pub enum CliError {
     /// `tv4 bench` : une mesure est incohérente avec le run (bug du moteur ou de l'enveloppe).
     #[error("bench incohérent : {detail}")]
     BenchInconsistent { detail: String },
+
+    #[error("stats : {0}")]
+    Stats(String),
 
     /// Ni `--fixture` ni `--dataset` (ou les deux) : clap l'interdit, cette erreur évite une panique.
     #[error("indiquer --fixture ou --dataset (un seul des deux)")]
@@ -353,6 +358,8 @@ pub enum Command {
     Verify(VerifyArgs),
     /// Mesure le coût de la boucle par 1m et le coût moyen par appel de `on_bar` (S8).
     Bench(BenchArgs),
+    /// Calcule les post-traitements sur les seuls artefacts déjà admis (S13).
+    Stats(StatsArgs),
     /// Instruments de l'exchange : lecture des minimums du compte OKX (S9).
     Instruments {
         /// Opération demandée.
@@ -412,6 +419,7 @@ pub fn run(command: &Command) -> Result<(), CliError> {
         Command::CompareSources(args) => compare_sources::run(args),
         Command::Verify(args) => verify::run(args),
         Command::Bench(args) => bench::run(args),
+        Command::Stats(args) => stats::run(args),
         Command::Instruments { action } => match action {
             InstrumentsAction::Fetch(args) => instruments::fetch(args),
         },

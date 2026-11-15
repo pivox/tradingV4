@@ -39,9 +39,7 @@ use crate::model::Slippage;
 use crate::model::costs::{CostMeasures, CostProfileName, CostsFile, MAX_COST_SEED};
 use crate::report::manifest::{ManifestS9Inputs, Timings};
 use crate::report::metrics_s9::{CostsInputs, MetricsS9Inputs};
-use crate::report::profiles::{
-    ProfileInput, ProfilesInput, ProfilesReport, RenderedProfile, render_profile,
-};
+use crate::report::profiles::{ProfileInput, ProfilesInput, ProfilesReport, render_profile};
 use crate::report::{self, EngineInfo, ManifestS9, ManifestS10Inputs, profiles_id};
 
 use super::portfolio::{PortfolioArgs, PreparedPortfolio, market_of, prepare};
@@ -110,7 +108,8 @@ fn render(
     prepared: &PreparedPortfolio,
     costs: CostsInputs<'_>,
     args: &BacktestArgs,
-) -> Result<RenderedProfile, CliError> {
+    cache: &mut super::stats_inputs::MarketCache,
+) -> Result<super::stats_inputs::CapturedProfile, CliError> {
     let markets = run
         .result
         .universe
@@ -123,7 +122,14 @@ fn render(
         okx_pairs: prepared.instruments.okx_pairs.clone(),
         markets,
     };
-    Ok(render_profile(run, inputs, costs, args.equity_step)?)
+    let rendered = render_profile(run, inputs, costs, args.equity_step)?;
+    Ok(super::stats_inputs::portfolio(
+        rendered,
+        &run.result,
+        &prepared.series,
+        prepared.decision_tf,
+        cache,
+    )?)
 }
 
 /// Ce qu'il faut pour écrire le manifeste de chaque profil.
@@ -146,7 +152,7 @@ struct ManifestContext<'a> {
 fn write_profile(
     out: &Path,
     name: &str,
-    rendered: &RenderedProfile,
+    rendered: &super::stats_inputs::CapturedProfile,
     context: &ManifestContext<'_>,
     t0: Instant,
     engine: &mut Option<EngineInfo>,
@@ -185,6 +191,7 @@ fn write_profile(
             profiles_id: context.profiles_id.to_string(),
         },
     )?;
+    manifest.stats_inputs = Some(rendered.write_inputs(&dir)?);
     manifest.governance = Some(context.session.context(&rendered.metrics.config_hash)?);
     report::write_json_atomic(&dir, MANIFEST_FILE, &manifest)?;
     Ok(())
@@ -269,9 +276,10 @@ pub(super) fn run(args: &BacktestArgs) -> Result<(), CliError> {
         measures_label: measures_label.as_deref(),
     };
     let [run_baseline, run_adverse, run_maker] = &result.runs;
-    let baseline = render(run_baseline, &prepared, costs_inputs, args)?;
-    let adverse = render(run_adverse, &prepared, costs_inputs, args)?;
-    let maker = render(run_maker, &prepared, costs_inputs, args)?;
+    let mut cache = super::stats_inputs::MarketCache::default();
+    let baseline = render(run_baseline, &prepared, costs_inputs, args, &mut cache)?;
+    let adverse = render(run_adverse, &prepared, costs_inputs, args, &mut cache)?;
+    let maker = render(run_maker, &prepared, costs_inputs, args, &mut cache)?;
 
     let completed = [&baseline, &adverse, &maker]
         .into_iter()
@@ -318,6 +326,8 @@ pub(super) fn run(args: &BacktestArgs) -> Result<(), CliError> {
         .out
         .clone()
         .unwrap_or_else(|| args.inputs.root.join("runs").join(&id));
+
+    super::stats_inputs::cleanup(&out)?;
 
     // `profiles.json` d'une exécution précédente est retiré avant le premier profil : si l'écriture d'un
     // profil échoue, le dossier n'a pas de `profiles.json`, et `tv4 verify` le refuse. Le rapport HTML

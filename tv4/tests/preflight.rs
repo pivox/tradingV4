@@ -40,7 +40,10 @@ fn cellule_sans_bougies_et_resultat_executé_portent_le_meme_hash() {
         fees: fees(),
         slippage: Slippage::ZERO,
         initial_cash: 300.0,
-        sim_rules: rules(),
+        sim_rules: tv4::sim::SimRules {
+            extra_entry_delay_bars: 1,
+            ..rules()
+        },
         instrument: instrument(0.0),
     };
     let strategy = strategies(1).remove(0);
@@ -62,7 +65,8 @@ fn cellule_sans_bougies_et_resultat_executé_portent_le_meme_hash() {
 fn portefeuille_herit_e_et_profils_partagent_les_constructeurs_de_hash() {
     let symbols = names(&["BTC-USD", "ETH-USD"]);
     let instruments = vec![instrument(0.0); 2];
-    let config = config(&symbols, &instruments, 300.0);
+    let mut config = config(&symbols, &instruments, 300.0);
+    config.sim_rules.extra_entry_delay_bars = 1;
     let data = series(&symbols, portfolio_common::T0);
     let set = strategies(2);
     let expected = preflight::portfolio(&set, &config, None, None).unwrap();
@@ -104,7 +108,8 @@ fn portefeuille_herit_e_et_profils_partagent_les_constructeurs_de_hash() {
 fn recherche_et_ses_profils_sont_identifiables_avant_chargement_des_series() {
     let symbols = names(&["BTC-USD", "ETH-USD"]);
     let instruments = vec![instrument(0.0); 2];
-    let config = config(&symbols, &instruments, 300.0);
+    let mut config = config(&symbols, &instruments, 300.0);
+    config.sim_rules.extra_entry_delay_bars = 1;
     let start = days_from_civil(2026, 7, 1) * 86_400_000;
     let data = series(&symbols, start);
     let universe = UniverseSpec::Fixed {
@@ -176,7 +181,8 @@ fn recherche_et_ses_profils_sont_identifiables_avant_chargement_des_series() {
 fn une_configuration_incoherente_est_refusee_sans_series() {
     let symbols = names(&["BTC-USD"]);
     let instruments = [instrument(0.0)];
-    let config = config(&symbols, &instruments, 300.0);
+    let mut config = config(&symbols, &instruments, 300.0);
+    config.sim_rules.extra_entry_delay_bars = 1;
     assert!(preflight::portfolio(&[], &config, None, None).is_err());
     let file = CostsFile::load(&common::costs_c1_path()).unwrap();
     let mut invalid = config.clone();

@@ -229,6 +229,14 @@ jobs:
           test -e smoke-univers/univers-sans/universe.json
           test -e smoke-univers/survivance-sans.json
 
+      # S13 : mêmes artefacts et même instantané du registre pour les deux processus.
+      # La graine u64 maximale reste une chaîne exacte jusque dans le rapport PHP.
+      - name: Statistiques de fumée, deux processus et sources préservées
+        run: |
+          python3 .github/scripts/s13-smoke-stats.py \
+            --binary ./target/debug/tv4 --research-root "$RUNNER_TEMP/tv4-smoke-study" \
+            runs/fumee-a runs/portefeuille-a runs/profils-a runs/recherche-simple runs/recherche-a
+
       - name: Publier les runs de fumée
         uses: actions/upload-artifact@v4
         with:
@@ -451,6 +459,19 @@ jobs:
               echo "::error::le rapport ${fichier} a perdu sa provenance S12"
               statut=1
             fi
+          done
+          exit "$statut"
+
+      - name: Contrôler les sections statistiques S13 des rapports
+        run: |
+          statut=0
+          for fichier in rapport-fumee.html rapport-portefeuille.html rapport-profils.html rapport-recherche.html rapport-lignes.html; do
+            for section in bootstrap monte-carlo regimes concentration benchmarks clustering; do
+              if ! grep -qF "id=\"stats-${section}-titre\"" "$fichier"; then
+                echo "::error::le rapport ${fichier} ne porte pas la section statistique ${section}"
+                statut=1
+              fi
+            done
           done
           exit "$statut"
 

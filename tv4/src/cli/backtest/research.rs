@@ -267,6 +267,8 @@ struct Settings {
     quote_gap_ms: Ts,
     strategy_id: String,
     params: toml::Value,
+    decision_tf: Timeframe,
+    sim_rules: SimRules,
 }
 
 /// Une ligne à jouer.
@@ -420,7 +422,7 @@ fn prepare_metadata(args: &BacktestArgs) -> Result<Plan, CliError> {
     }
 
     let fees = crate::model::FeeSchedule::load_grid(inputs.fees, &inputs.fees_file)?;
-    let params = load_params(inputs)?;
+    let (params, decision_tf) = load_params(inputs)?;
     let warmup_start_ms = parse_rfc3339_utc(&manifest.window[0])?;
     let exchange = manifest.exchange;
     let settings = Settings {
@@ -433,6 +435,8 @@ fn prepare_metadata(args: &BacktestArgs) -> Result<Plan, CliError> {
         sizing: numeric.sizing,
         min_order_bump: numeric.min_order_bump,
         quote_gap_ms: numeric.quote_gap_ms,
+        decision_tf,
+        sim_rules: inputs.sim_rules(decision_tf),
         strategy_id: inputs.strategy.clone(),
         params,
     };
@@ -578,7 +582,7 @@ impl Plan {
 struct Rendered {
     spec_index: usize,
     /// Un rendu pour un run seul, trois (baseline, adverse, maker) avec `--costs`.
-    files: Vec<RenderedProfile>,
+    files: Vec<super::stats_inputs::CapturedProfile>,
     instruments_file: Option<String>,
     run_ms: u64,
 }
@@ -610,7 +614,7 @@ fn config_for_line<'a>(
         fees: settings.fees,
         slippage,
         initial_cash: settings.capital,
-        sim_rules: SimRules::default(),
+        sim_rules: settings.sim_rules,
         instruments: &instruments.rules,
         instruments_hash: instruments.hash.as_deref(),
         max_positions: settings.max_positions,
@@ -717,7 +721,13 @@ fn play_line(
             )?;
             return Ok(Rendered {
                 spec_index,
-                files: vec![rendered],
+                files: vec![super::stats_inputs::portfolio(
+                    rendered,
+                    &result,
+                    series,
+                    settings.decision_tf,
+                    &mut super::stats_inputs::MarketCache::default(),
+                )?],
                 instruments_file: instruments.file_as_given.clone(),
                 run_ms,
             });
@@ -753,6 +763,7 @@ fn play_line(
                 measures_label: costs.measures_label.as_deref(),
             };
             let mut rendered = Vec::with_capacity(3);
+            let mut cache = super::stats_inputs::MarketCache::default();
             for run in &result.runs {
                 let markets = run
                     .result
@@ -760,7 +771,7 @@ fn play_line(
                     .iter()
                     .map(|symbol| market_of(series, symbol))
                     .collect();
-                rendered.push(render_profile_research(
+                let profile = render_profile_research(
                     run,
                     MetricsS9Inputs {
                         dataset: plan.dataset_info(&spec.legs, series),
@@ -771,6 +782,13 @@ fn play_line(
                     inputs,
                     &research_inputs,
                     args.equity_step,
+                )?;
+                rendered.push(super::stats_inputs::portfolio(
+                    profile,
+                    &run.result,
+                    series,
+                    settings.decision_tf,
+                    &mut cache,
                 )?);
             }
             (rendered, run_ms)
@@ -895,6 +913,7 @@ fn write_single(
         context.base_inputs(run, &rendered.instruments_file, rendered.run_ms),
         context.plan.manifest_research_inputs(line),
     )?;
+    manifest.stats_inputs = Some(run.write_inputs(dir)?);
     manifest.governance = Some(context.session.context(&run.metrics.config_hash)?);
     report::write_json_atomic(dir, MANIFEST_FILE, &manifest)?;
     Ok(run.metrics.run_id())
@@ -968,6 +987,7 @@ fn write_profiles(
             },
             context.plan.manifest_research_inputs(line),
         )?;
+        manifest.stats_inputs = Some(profile.write_inputs(&sub)?);
         manifest.governance = Some(context.session.context(&profile.metrics.config_hash)?);
         report::write_json_atomic(&sub, MANIFEST_FILE, &manifest)?;
     }
@@ -1221,6 +1241,7 @@ pub(super) fn run(args: &BacktestArgs) -> Result<(), CliError> {
         load_ms,
         t0,
     };
+    super::stats_inputs::cleanup(&out)?;
     if two_lines {
         // `lines.json` d'une exécution précédente est retiré avant la première ligne : un dossier
         // interrompu n'en a pas, et `tv4 verify` le refuse.

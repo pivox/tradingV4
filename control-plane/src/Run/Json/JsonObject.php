@@ -39,6 +39,12 @@ final readonly class JsonObject
         return new self($decoded, $file, '');
     }
 
+    /** Valeur possédée du document, pour comparer une déclaration sans rouvrir le fichier. */
+    public function value(string $path): mixed
+    {
+        return $this->required($path);
+    }
+
     public function file(): string
     {
         return $this->file;

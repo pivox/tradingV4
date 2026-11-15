@@ -1,5 +1,9 @@
 //! Image possédée d'un run contrôlé par la politique unique de `verify`.
 //! Aucun prix ni marquage n'est déduit de la courbe CSV échantillonnée.
+mod delay;
+pub mod output;
+pub use delay::{DelayedEntryStats, EntryDelaySample, compare_delayed_entries};
+
 use super::stats_inputs::StatsProvenance;
 pub use super::verify::VerifiedRun;
 use super::verify::{self, VerifyError};

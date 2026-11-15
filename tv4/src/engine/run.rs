@@ -40,6 +40,8 @@ pub struct CellResult {
     pub trades: Vec<Trade>,
     /// Une valeur par bougie de `[start, n)`, mesurée à l'étape 3, avant la clôture forcée.
     pub equity: Vec<f64>,
+    /// Cash après les événements de chaque ouverture, aligné sur `equity` (réservations incluses).
+    pub cash: Vec<f64>,
     pub cash_final: f64,
     pub qty_final: f64,
     /// Après clôture forcée : égale à `cash_final`.
@@ -286,6 +288,7 @@ fn run_prepared(
         signals: Vec::with_capacity(2 * SIGNALS_FLOOR.max(max_pending)),
         pending: Vec::with_capacity(max_pending),
         equity: Vec::with_capacity(window),
+        cash: Vec::with_capacity(window),
         emitted: 0,
         accepted: 0,
         funnel: EngineFunnel::default(),
@@ -354,6 +357,7 @@ fn run_prepared(
         window_last_open_ms: last.open_time_ms,
         trades: out.trades,
         equity: buffers.equity,
+        cash: buffers.cash,
         cash_final: out.cash,
         qty_final: out.qty,
         equity_final: out.cash,
@@ -407,6 +411,7 @@ struct LoopBuffers {
     /// Vue des ordres en attente donnée à la stratégie, réécrite à chaque appel.
     pending: Vec<PendingOrder>,
     equity: Vec<f64>,
+    cash: Vec<f64>,
     emitted: u64,
     accepted: u64,
     /// Entonnoir par classe de signal ; ses rejets sont sommés après la boucle.
@@ -486,6 +491,7 @@ fn run_loop(
         // 2. Equity à la clôture de la bougie.
         let equity_i = sim.equity_at(candle.close);
         buffers.equity.push(equity_i);
+        buffers.cash.push(sim.cash());
         // 3. Stratégie, appelée seulement quand un de ses timeframes vient de clôturer une bougie.
         let mask = views.mtf.just_closed(i) & views.declared_mask;
         if mask == 0 {

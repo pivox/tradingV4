@@ -21,7 +21,7 @@
   {% include 'run/sections/_portes.html.twig' %}
   {% include 'run/sections/_equity.html.twig' %}
   {% include 'run/sections/_plis.html.twig' %}
-  {% include 'run/sections/_distribution.html.twig' %}
+  {% include 'run/sections/_distribution.html.twig' %}{% if run.stats is not null %}{% include 'run/sections/_stats.html.twig' with {'stats': run.stats.data} %}{% endif %}
   {% include 'run/sections/_pourquoi_pas_de_trade.html.twig' %}
   {% if metrics.isPortfolio -%}
     {% include 'run/sections/_univers.html.twig' %}

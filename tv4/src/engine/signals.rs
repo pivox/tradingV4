@@ -78,6 +78,8 @@ pub struct SignalRejections {
     pub invalid_size: u64,
     pub invalid_price: u64,
     pub invalid_ttl: u64,
+    #[serde(skip_serializing_if = "is_zero")]
+    pub timestamp_overflow: u64,
     pub invalid_slot: u64,
     pub place_limit_risk_pct: u64,
     pub slot_already_open: u64,
@@ -86,6 +88,10 @@ pub struct SignalRejections {
     pub below_minimum: u64,
     pub move_stop_without_position: u64,
     pub cancel_unknown_slot: u64,
+}
+
+fn is_zero(value: &u64) -> bool {
+    *value == 0
 }
 
 impl SignalRejections {
@@ -100,6 +106,7 @@ impl SignalRejections {
             Rejection::InvalidRiskSizing => &mut self.invalid_risk_sizing,
             Rejection::InvalidSize => &mut self.invalid_size,
             Rejection::InvalidPrice => &mut self.invalid_price,
+            Rejection::TimestampOverflow => &mut self.timestamp_overflow,
             Rejection::InvalidTtl => &mut self.invalid_ttl,
             Rejection::InvalidSlot => &mut self.invalid_slot,
             Rejection::PlaceLimitRiskPct => &mut self.place_limit_risk_pct,
@@ -124,6 +131,7 @@ impl SignalRejections {
         self.invalid_size += other.invalid_size;
         self.invalid_price += other.invalid_price;
         self.invalid_ttl += other.invalid_ttl;
+        self.timestamp_overflow += other.timestamp_overflow;
         self.invalid_slot += other.invalid_slot;
         self.place_limit_risk_pct += other.place_limit_risk_pct;
         self.slot_already_open += other.slot_already_open;
@@ -144,6 +152,7 @@ impl SignalRejections {
             + self.invalid_risk_sizing
             + self.invalid_size
             + self.invalid_price
+            + self.timestamp_overflow
             + self.invalid_ttl
             + self.invalid_slot
             + self.place_limit_risk_pct

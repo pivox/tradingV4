@@ -36,6 +36,16 @@ fn backtest(dir: &Path) {
     );
 }
 
+/// Isole explicitement le contrat historique sans paquet avant les mutations de sources.
+fn legacy_backtest(dir: &Path) {
+    backtest(dir);
+    let path = dir.join("manifest.json");
+    let mut manifest: serde_json::Value =
+        serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+    manifest.as_object_mut().unwrap().remove("stats_inputs");
+    fs::write(path, serde_json::to_vec(&manifest).unwrap()).unwrap();
+}
+
 /// Les helpers de rapports utilisent des hashes abrégés ; ce lecteur exige le format public complet.
 /// L'identité synthétique est remplacée avant génération des manifestes, sans toucher les helpers.
 fn complete_dataset_hashes(rendered: &mut [tv4::report::profiles::RenderedProfile]) {
@@ -50,7 +60,7 @@ fn complete_dataset_hashes(rendered: &mut [tv4::report::profiles::RenderedProfil
 #[test]
 fn ancien_run_et_image_possedee_resistent_a_une_mutation_du_disque() {
     let dir = tempfile::tempdir().unwrap();
-    backtest(dir.path());
+    legacy_backtest(dir.path());
     let run = read_run(dir.path()).unwrap();
     let before = snapshot(&run).unwrap();
     assert!(!before.trades.is_empty());
@@ -265,7 +275,7 @@ fn manifeste_reference_le_paquet_une_fois_et_verify_le_controle() {
 fn paquet_externe_identites_cardinalites_et_marques_sont_recoupes() {
     use tv4::research::stats::*;
     let dir = tempfile::tempdir().unwrap();
-    backtest(dir.path());
+    legacy_backtest(dir.path());
     let run = read_run(dir.path()).unwrap();
     let source = packet(&run);
     for case in 0..15 {
@@ -356,7 +366,7 @@ fn s11_purge_univers_joue_et_cloture_forcee_a_la_fin_globale() {
 #[test]
 fn liquidation_terminal_global_meme_si_timestamp_economique_anterieur() {
     let dir = tempfile::tempdir().unwrap();
-    backtest(dir.path());
+    legacy_backtest(dir.path());
     let original = fs::read(dir.path().join("trades.csv")).unwrap();
     let mut reader = csv::Reader::from_reader(original.as_slice());
     let mut rows: Vec<Vec<String>> = reader
@@ -549,7 +559,7 @@ fn verify_refuse_reference_et_paquet_rehache_incoherents() {
 #[test]
 fn un_parametre_tf_arbitraire_ne_devient_pas_le_timeframe_de_decision() {
     let dir = tempfile::tempdir().unwrap();
-    backtest(dir.path());
+    legacy_backtest(dir.path());
     let path = dir.path().join("metrics.json");
     let mut metrics: serde_json::Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
     metrics["config"]["strategy"]["id"] = "strategy_with_filter_tf".into();
