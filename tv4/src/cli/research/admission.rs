@@ -24,11 +24,9 @@ use std::{
 };
 
 /// Spécifications internes : les familles réservées ne viennent jamais d'une fiche libre.
-#[allow(dead_code, reason = "entrée préparée pour la CLI controls du lot 11")]
 pub(crate) struct ControlSpecs {
     configs: Vec<ConfigSpec>,
 }
-#[allow(dead_code, reason = "entrée préparée pour la CLI controls du lot 11")]
 impl ControlSpecs {
     pub(crate) fn new(parents: Vec<ConfigSpec>) -> Result<Self, ResearchError> {
         for parent in &parents {

@@ -992,22 +992,6 @@ impl LoadedUniverse {
     }
 }
 
-/// Lit un fichier du dossier et vérifie son BLAKE3 contre `expected`.
-fn read_verified_text(dir: &Path, name: &str, expected: &str) -> Result<String, StoreError> {
-    let path = dir.join(name);
-    let bytes = fs::read(&path).map_err(|source| io_error(&path, source))?;
-    let actual = blake3_prefixed(&bytes);
-    if actual != expected {
-        return Err(StoreError::UniverseHashMismatch {
-            path: path.display().to_string(),
-            field: "file_hash",
-            expected: expected.to_string(),
-            actual,
-        });
-    }
-    String::from_utf8(bytes).map_err(|_| bad(&path.display().to_string(), "UTF-8 attendu"))
-}
-
 /// Relit un dossier d'univers en vérifiant tout : schéma, `report_hash`, `rules_hash`, `file_hash` de
 /// chaque CSV (trimestres et dates `--at`) et du fichier d'instruments, forme canonique des CSV,
 /// cohérence des entrées (bornes du trimestre, nombre de membres, `quality_hashes`), listes triées.
@@ -1019,9 +1003,31 @@ pub fn load(dir: &Path) -> Result<LoadedUniverse, StoreError> {
 /// de trimestres ; ni le fichier d'instruments ni les `eligible_<date>.csv` (que [`write_universe`]
 /// réécrit) ne sont lus ni vérifiés, et `instruments_text` reste vide. Réservé à `write_universe`.
 fn load_impl(dir: &Path, frozen_only: bool) -> Result<LoadedUniverse, StoreError> {
+    load_with_reader(dir, frozen_only, &mut |name| {
+        let path = dir.join(name);
+        fs::read(&path).map_err(|source| io_error(&path, source))
+    })
+}
+/// Même validation que `load`, depuis des octets possédés par l'appelant, sans accès disque implicite.
+pub fn load_from_bytes(
+    dir: &Path,
+    files: &BTreeMap<String, Vec<u8>>,
+) -> Result<LoadedUniverse, StoreError> {
+    load_with_reader(dir, false, &mut |name| {
+        files
+            .get(name)
+            .cloned()
+            .ok_or_else(|| bad(name, "fichier univers absent des octets fournis"))
+    })
+}
+fn load_with_reader(
+    dir: &Path,
+    frozen_only: bool,
+    read: &mut dyn FnMut(&str) -> Result<Vec<u8>, StoreError>,
+) -> Result<LoadedUniverse, StoreError> {
     let json_path = dir.join(UNIVERSE_FILE);
     let shown = json_path.display().to_string();
-    let bytes = fs::read(&json_path).map_err(|source| io_error(&json_path, source))?;
+    let bytes = read(UNIVERSE_FILE)?;
     let file: UniverseFile =
         serde_json::from_slice(&bytes).map_err(|source| json_error(&shown, source))?;
     if file.schema != UNIVERSE_SCHEMA {
@@ -1052,6 +1058,20 @@ fn load_impl(dir: &Path, frozen_only: bool) -> Result<LoadedUniverse, StoreError
     }
     parse_rfc3339_utc(&file.source.coverage_end)?;
 
+    let mut text = |name: &str, expected: &str| -> Result<String, StoreError> {
+        let path = dir.join(name);
+        let bytes = read(name)?;
+        let actual = crate::model::hash::blake3_prefixed(&bytes);
+        if actual != expected {
+            return Err(StoreError::UniverseHashMismatch {
+                path: path.display().to_string(),
+                field: "file_hash",
+                expected: expected.into(),
+                actual,
+            });
+        }
+        String::from_utf8(bytes).map_err(|_| bad(&path.display().to_string(), "UTF-8 attendu"))
+    };
     let mut quarters: Vec<LoadedQuarter> = Vec::with_capacity(file.quarters.len());
     let mut schedule_quarters = Vec::with_capacity(file.quarters.len());
     for entry in &file.quarters {
@@ -1084,7 +1104,7 @@ fn load_impl(dir: &Path, frozen_only: bool) -> Result<LoadedUniverse, StoreError
             ));
         }
         check_hash(&shown, "file_hash", &entry.file_hash)?;
-        let text = read_verified_text(dir, &entry.file, &entry.file_hash)?;
+        let text = text(&entry.file, &entry.file_hash)?;
         let rows = parse_csv(&entry.file, &text)?;
         check_quarter_content(&shown, &file.rules, &entry.quarter, &rows)?;
         let members = u32::try_from(rows.len()).unwrap_or(u32::MAX);
@@ -1143,7 +1163,7 @@ fn load_impl(dir: &Path, frozen_only: bool) -> Result<LoadedUniverse, StoreError
         if frozen_only {
             continue;
         }
-        let text = read_verified_text(dir, &entry.file, &entry.file_hash)?;
+        let text = text(&entry.file, &entry.file_hash)?;
         let rows = parse_csv(&entry.file, &text)?;
         if u32::try_from(rows.len()).ok() != Some(entry.eligible) {
             return Err(bad(
@@ -1195,7 +1215,7 @@ fn load_impl(dir: &Path, frozen_only: bool) -> Result<LoadedUniverse, StoreError
     let instruments_text = if frozen_only {
         String::new()
     } else {
-        read_verified_text(dir, &file.instruments.file, &file.instruments.file_hash)?
+        text(&file.instruments.file, &file.instruments.file_hash)?
     };
 
     Ok(LoadedUniverse {

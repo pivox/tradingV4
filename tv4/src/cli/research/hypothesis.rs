@@ -60,7 +60,7 @@ struct CandidateFile {
 }
 
 /// Pas de shell, ni de remplacement Git d'objets : les arguments d'objet proviennent d'un H-NNN strict.
-pub(super) fn git(root: &Path, args: &[&str], reason: &str) -> Result<Vec<u8>, ResearchError> {
+pub(crate) fn git(root: &Path, args: &[&str], reason: &str) -> Result<Vec<u8>, ResearchError> {
     let output = Command::new("git")
         .arg("--no-replace-objects")
         .arg("-C")
@@ -98,7 +98,12 @@ fn read_current(root: &Path, rel: &str, label: &str) -> Result<Vec<u8>, Research
         Err(error) => Err(io(&path, error)),
     }
 }
-fn blob(root: &Path, commit: &str, rel: &str, reason: &str) -> Result<Vec<u8>, ResearchError> {
+pub(crate) fn blob(
+    root: &Path,
+    commit: &str,
+    rel: &str,
+    reason: &str,
+) -> Result<Vec<u8>, ResearchError> {
     git(root, &["show", &format!("{commit}:{rel}")], reason)
 }
 

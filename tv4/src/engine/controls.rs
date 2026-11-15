@@ -141,6 +141,51 @@ pub struct PreparedBatch<'p, 'a> {
     pub observer: &'p mut dyn PhaseObserver,
 }
 
+/// Préflight pur de la géométrie, identique avant admission et pendant le batch.
+#[derive(Clone, Debug)]
+pub struct GeometryPreflight {
+    pub descriptor: serde_json::Value,
+    pub geometry_hash: String,
+    pub has_btc_filter: bool,
+    pub decision_tf: Timeframe,
+}
+pub fn preflight_geometry(
+    strategies: &[Box<dyn Strategy>],
+) -> Result<GeometryPreflight, ControlError> {
+    let decision_tf = super::research::decision_tf_of(strategies)?;
+    let mut descriptor = None;
+    let mut has_btc_filter = None;
+    for strategy in strategies {
+        let geometry = strategy.control_geometry()?;
+        let caps = geometry.capabilities();
+        if !caps.single_lot
+            || caps.partial_exits
+            || caps.quantity_dependent
+            || !caps.reconstructible
+        {
+            return Err(invalid("géométrie non compatible avec single_lot"));
+        }
+        let value = geometry.descriptor();
+        if descriptor
+            .as_ref()
+            .is_some_and(|previous| *previous != value)
+            || has_btc_filter.is_some_and(|previous| previous != caps.has_btc_filter)
+        {
+            return Err(invalid("géométries différentes entre jambes"));
+        }
+        descriptor = Some(value);
+        has_btc_filter = Some(caps.has_btc_filter);
+    }
+    let descriptor = descriptor.ok_or_else(|| invalid("géométrie absente"))?;
+    let geometry_hash = crate::model::hash::hash_json(&descriptor).map_err(EngineError::from)?;
+    Ok(GeometryPreflight {
+        descriptor,
+        geometry_hash,
+        has_btc_filter: has_btc_filter.unwrap_or(false),
+        decision_tf,
+    })
+}
+
 fn invalid(message: &str) -> ControlError {
     ControlError::InvalidInput(message.into())
 }
@@ -185,6 +230,7 @@ pub fn with_prepared_batch_with_work<T>(
     let mut sets = Vec::with_capacity(inputs.sources.len());
     let mut checks = Vec::with_capacity(inputs.sources.len());
     let mut descriptors = Vec::with_capacity(inputs.sources.len());
+    let mut geometry_hashes = Vec::with_capacity(inputs.sources.len());
     let mut tfs = Vec::with_capacity(inputs.sources.len());
     for source in &inputs.sources {
         check_homogeneous(first, source)?;
@@ -196,31 +242,12 @@ pub fn with_prepared_batch_with_work<T>(
         if source.costs.is_some() {
             super::profiles::check_cost_config(&source.config)?;
         }
-        let tf = super::research::decision_tf_of(&strategies)?;
-        let mut descriptor = None;
-        for strategy in &strategies {
-            let geometry = strategy.control_geometry()?;
-            let caps = geometry.capabilities();
-            if !caps.single_lot
-                || caps.partial_exits
-                || caps.quantity_dependent
-                || !caps.reconstructible
-            {
-                return Err(invalid("géométrie non compatible avec single_lot"));
-            }
-            let value = geometry.descriptor();
-            if descriptor
-                .as_ref()
-                .is_some_and(|previous| *previous != value)
-            {
-                return Err(invalid("géométries différentes entre jambes"));
-            }
-            descriptor = Some(value);
-        }
-        descriptors.push(descriptor.ok_or_else(|| invalid("géométrie absente"))?);
+        let geometry = preflight_geometry(&strategies)?;
+        descriptors.push(geometry.descriptor);
+        geometry_hashes.push(geometry.geometry_hash);
         checks.push(checked);
         sets.push(strategies);
-        tfs.push(tf);
+        tfs.push(geometry.decision_tf);
     }
     observer.phase_started(ControlPhase::Preparation);
     let prepared = (|| -> Result<_, ControlError> {
@@ -267,8 +294,7 @@ pub fn with_prepared_batch_with_work<T>(
                 modes: Vec::new(),
                 observed_trace: Vec::new(),
                 parent_config_hash: String::new(),
-                geometry_hash: crate::model::hash::hash_json(&descriptors[index])
-                    .map_err(EngineError::from)?,
+                geometry_hash: geometry_hashes[index].clone(),
                 runtime,
                 shared: &shared[group],
                 checked: &checks[owners[group]],

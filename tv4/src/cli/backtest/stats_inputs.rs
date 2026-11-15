@@ -337,6 +337,14 @@ pub(super) fn cleanup(dir: &Path) -> Result<(), ReportError> {
 fn clean_tree(dir: &Path, depth: u8, markers: bool) -> Result<(), ReportError> {
     let files: &[&str] = if markers {
         &[
+            "controls-index.json",
+            "controls-index.json.stage",
+            "controls-index.json.tmp",
+            "controls-index.json.stage.tmp",
+            "controls-manifest.json",
+            "controls-manifest.json.stage",
+            "controls-manifest.json.tmp",
+            "controls-manifest.json.stage.tmp",
             "manifest.json",
             "manifest.json.tmp",
             "profiles.json",
@@ -344,6 +352,14 @@ fn clean_tree(dir: &Path, depth: u8, markers: bool) -> Result<(), ReportError> {
         ]
     } else {
         &[
+            "controls.json",
+            "controls.json.tmp",
+            "controls.json.stage",
+            "controls.json.stage.tmp",
+            "controls-measurements.json",
+            "controls-measurements.json.tmp",
+            "controls-measurements.json.stage",
+            "controls-measurements.json.stage.tmp",
             STATS_INPUTS_FILE,
             "stats.json",
             "report.html",

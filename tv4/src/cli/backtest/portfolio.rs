@@ -29,9 +29,9 @@ use crate::engine::{
     PortfolioInputs,
 };
 use crate::marketdata::okx::instruments::{InstrumentsError, InstrumentsFile};
-use crate::model::{ExchangeId, FeeSchedule, InstrumentRules, Slippage, Timeframe, Ts, hash};
+use crate::model::{ExchangeId, FeeSchedule, InstrumentRules, Slippage, Timeframe, Ts};
 use crate::report::executability::{LegMarket, OkxPair};
-use crate::report::manifest::{ManifestS9Inputs, OutputFiles, Timings};
+use crate::report::manifest::{ManifestS9Inputs, Timings};
 use crate::report::metrics_s9::{
     DatasetInfo, InstrumentsInfo, MetricsS9Inputs, SeriesInfo, UpcomingChangeInfo,
 };
@@ -168,7 +168,7 @@ pub(super) fn okx_inst_id(symbol: &str, quote: &str) -> String {
 }
 
 /// Règles d'instrument des jambes et ce que le rapport en dit.
-pub(super) struct Instruments {
+pub(crate) struct Instruments {
     pub rules: Vec<InstrumentRules>,
     pub info: InstrumentsInfo,
     /// Une entrée par jambe si les règles viennent d'un fichier OKX.
@@ -243,6 +243,15 @@ pub(super) fn okx_instruments(
         },
         other => CliError::Instruments(other),
     })?;
+    okx_instruments_owned(file, path, universe, quote)
+}
+/// Même conversion depuis un fichier déjà possédé et validé.
+pub(crate) fn okx_instruments_owned(
+    file: InstrumentsFile,
+    path: &Path,
+    universe: &[String],
+    quote: &str,
+) -> Result<Instruments, CliError> {
     let mut rules = Vec::with_capacity(universe.len());
     let mut pairs = Vec::with_capacity(universe.len());
     for symbol in universe {
@@ -496,7 +505,7 @@ pub(super) fn prepare(
 
 /// Colonnes d'une paire pour le calcul de G0 ; une série absente donne des colonnes vides (le moteur a
 /// déjà refusé un symbole absent du dataset).
-pub(super) fn market_of<'a>(series: &'a [(String, Columns)], symbol: &str) -> LegMarket<'a> {
+pub(crate) fn market_of<'a>(series: &'a [(String, Columns)], symbol: &str) -> LegMarket<'a> {
     match series.iter().find(|(name, _)| name == symbol) {
         Some((_, columns)) => LegMarket {
             open_time_ms: columns.open_time_ms(),
@@ -511,6 +520,35 @@ pub(super) fn market_of<'a>(series: &'a [(String, Columns)], symbol: &str) -> Le
             volume: &[],
         },
     }
+}
+
+/// Rendu pur partagé avec la validation Observed S14.
+pub(crate) fn render_portfolio(
+    result: &crate::engine::PortfolioResult,
+    inputs: MetricsS9Inputs<'_>,
+    equity_step: crate::model::Timeframe,
+) -> Result<crate::report::profiles::RenderedProfile, CliError> {
+    let metrics = MetricsS9::new(result, inputs)?;
+    let symbols: Vec<&str> = result.universe.iter().map(String::as_str).collect();
+    let metrics_bytes = report::json_bytes(&metrics)?;
+    let trades_bytes = report::writers::trades_csv_legs(
+        &result.trades,
+        &result.trade_legs,
+        &symbols,
+        metrics.span_ms(),
+    )?;
+    let equity_bytes = report::equity::equity_csv(
+        &result.grid_open_ms,
+        &result.equity,
+        result.initial_cash,
+        equity_step,
+    )?;
+    Ok(crate::report::profiles::RenderedProfile {
+        metrics,
+        metrics_bytes,
+        trades_bytes,
+        equity_bytes,
+    })
 }
 
 /// `tv4 backtest --symbols ...` : prépare le run, rejoue le portefeuille, écrit `metrics.json`,
@@ -546,7 +584,7 @@ pub(super) fn run(args: &BacktestArgs) -> Result<(), CliError> {
         .iter()
         .map(|symbol| market_of(&prepared.series, symbol))
         .collect();
-    let metrics = MetricsS9::new(
+    let rendered = render_portfolio(
         &result,
         MetricsS9Inputs {
             dataset: prepared.dataset.clone(),
@@ -554,7 +592,9 @@ pub(super) fn run(args: &BacktestArgs) -> Result<(), CliError> {
             okx_pairs: prepared.instruments.okx_pairs.clone(),
             markets,
         },
+        args.equity_step,
     )?;
+    let metrics = &rendered.metrics;
     let governance = session.context(&metrics.config_hash)?;
     session.finish(&[trial_result(
         &metrics.config_hash,
@@ -562,33 +602,9 @@ pub(super) fn run(args: &BacktestArgs) -> Result<(), CliError> {
         metrics.n_trades,
         metrics.profit_factor,
     )?])?;
-    let symbols: Vec<&str> = result.universe.iter().map(String::as_str).collect();
-    let metrics_bytes = report::json_bytes(&metrics)?;
-    let trades_bytes = report::writers::trades_csv_legs(
-        &result.trades,
-        &result.trade_legs,
-        &symbols,
-        metrics.span_ms(),
-    )?;
-    let equity_bytes = report::equity::equity_csv(
-        &result.grid_open_ms,
-        &result.equity,
-        result.initial_cash,
-        args.equity_step,
-    )?;
-    let files = OutputFiles {
-        equity_csv: hash::blake3_prefixed(&equity_bytes),
-        metrics_json: hash::blake3_prefixed(&metrics_bytes),
-        trades_csv: hash::blake3_prefixed(&trades_bytes),
-    };
-
+    let files = rendered.files();
     let captured = super::stats_inputs::portfolio(
-        report::profiles::RenderedProfile {
-            metrics,
-            metrics_bytes,
-            trades_bytes,
-            equity_bytes,
-        },
+        rendered,
         &result,
         &prepared.series,
         prepared.decision_tf,

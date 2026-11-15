@@ -39,7 +39,7 @@ use crate::strategy::{Strategy, registry};
 use portfolio::PortfolioArgs;
 pub use profiles::CostArgs;
 
-mod portfolio;
+pub(crate) mod portfolio;
 mod profiles;
 mod research;
 mod stats_inputs;
