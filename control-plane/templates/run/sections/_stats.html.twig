@@ -1,0 +1,94 @@
+{% import 'run/sections/_stats_macros.html.twig' as s %}
+<section id="stats-bootstrap" class="section" aria-labelledby="stats-bootstrap-titre">
+  <h2 id="stats-bootstrap-titre">Bootstrap</h2>
+  <p><strong>Périmètre des statistiques :</strong> fiche de référence{% if lines is defined %}, ligne full{% endif %}{% if profiles is defined %}, profil baseline{% endif %} ; run <code class="hash">{{ stats.source.provenance.run_id }}</code> ; bloc {{ {'dev':'DEV','validation':'VALIDATION','holdout':'HOLDOUT','forward':'FORWARD','unclassified':'non classé'}[stats.partition] }}.</p>
+  <p>{{ stats.bootstrap.n_trades }} trades conservés (n), {{ stats.bootstrap.n_r }} R définis (n_R) ; couverture {{ stats.bootstrap.r_coverage|pct }}.</p>
+  <table class="kv"><tbody>
+    <tr><th scope="row">Moyenne nette</th><td>{{ s.metric(stats.bootstrap.mean_r, 'R') }}</td></tr>
+    <tr><th scope="row">Borne basse unilatérale LB90</th><td>{{ s.metric(stats.bootstrap.lb90_r, 'R') }}</td></tr>
+    <tr><th scope="row">Erreur standard (SE)</th><td>{{ s.metric(stats.bootstrap.standard_error_r, 'R') }}</td></tr>
+  </tbody></table>
+  <p class="note">Bootstrap circulaire : {{ stats.options.samples }} tirages, blocs de {{ stats.options.bootstrap_block }} trades. Graine décimale : <code>{{ stats.options.seed }}</code>. Les R nets absents restent absents.</p>
+</section>
+
+<section id="stats-monte-carlo" class="section" aria-labelledby="stats-monte-carlo-titre">
+  <h2 id="stats-monte-carlo-titre">Monte Carlo</h2>
+  <table class="kv"><tbody>
+    <tr><th scope="row">DD / capital initial, p95 à deux ans</th><td>{{ s.metric(stats.monte_carlo.dd_initial_p95_2y, '%') }}</td></tr>
+    <tr><th scope="row">DD / sommet, p95 à deux ans</th><td>{{ s.metric(stats.monte_carlo.dd_peak_p95_2y, '%') }}</td></tr>
+    <tr><th scope="row">Rendement p5 à deux ans</th><td>{{ s.metric(stats.monte_carlo.return_p5_2y, '%') }}</td></tr>
+    <tr><th scope="row">Médiane d’expectancy après retrait aléatoire de 20 % des trades</th><td>{{ s.metric(stats.monte_carlo.removal_expectancy_median_r, 'R') }}</td></tr>
+    <tr><th scope="row">Probabilité d’atteindre le stop de 20 % du capital initial sur un an</th><td>{{ s.metric(stats.monte_carlo.probability_dd20_1y, '%') }}</td></tr>
+  </tbody></table>
+  <p class="note">{{ stats.monte_carlo.n_trades }} trades, {{ stats.monte_carlo.n_r }} R définis, {{ stats.monte_carlo.n_removed }} retirés ; {{ stats.monte_carlo.n_blocks }} blocs réels (tailles : {{ stats.monte_carlo.block_sizes|join(', ') }}), cible {{ stats.monte_carlo.requested_block_trades }} trades. Durée source : {{ stats.monte_carlo.source_duration_ms|duration }} ; cadence {{ stats.monte_carlo.cadence_trades_per_year|num(2) }} trades/an ; sizing {{ stats.monte_carlo.sizing == 'research' ? 'risque fixe de recherche' : 'capitalisé' }}. {{ stats.monte_carlo.drawdown_grid }}.</p>
+  <h3>Rejeu avec retard réel</h3>
+  {% set delay = stats.delayed_entries.value %}
+  {% if delay is null %}<p class="absent-note">Indisponible.</p>{{ s.reasons(stats.delayed_entries.reasons) }}{% else %}
+    <p>Retard d’entrée : {{ delay.delay_minutes }} min. Comparaison de deux simulations explicites.</p>
+    <table class="data"><thead><tr><th scope="col">Simulation</th><th scope="col">n</th><th scope="col">n_R</th><th scope="col">Moyenne nette</th></tr></thead><tbody>
+      <tr><th scope="row">Originale</th><td>{{ delay.original.n }}</td><td>{{ delay.original.n_r }}</td><td>{{ s.metric(delay.original.mean_r_net, 'R') }}</td></tr>
+      <tr><th scope="row">Décalée</th><td>{{ delay.delayed.n }}</td><td>{{ delay.delayed.n_r }}</td><td>{{ s.metric(delay.delayed.mean_r_net, 'R') }}</td></tr>
+    </tbody></table>
+    <p>Ratio décalée / originale : {{ s.metric(delay.delayed_to_original_ratio) }}</p>
+    <p class="note">Éligibilité DEV à G2 : {{ delay.eligible_dev_g2 ? 'oui' : 'non' }}. Cette information de contexte ne constitue aucun verdict de porte.</p>{{ s.reasons(delay.eligibility_reasons) }}
+  {% endif %}
+</section>
+
+<section id="stats-regimes" class="section" aria-labelledby="stats-regimes-titre">
+  <h2 id="stats-regimes-titre">Régimes</h2>
+  <p class="note">BTC, SMA200 et volatilité 30 jours : étiquettes causales à l’entrée. Origine de la volatilité : {{ stats.regimes.volatility_origin_ms|datetime }}. {{ stats.regimes.missing_labels }} trades conservés sans étiquette complète, {{ stats.regimes.missing_r }} sans R ; {{ stats.regimes.daily.intervals|length }}/{{ stats.regimes.daily.expected_intervals }} jours observés ({{ stats.regimes.daily.coverage|pct }}).</p>
+  <table class="data"><thead><tr><th scope="col">Tendance / volatilité</th><th scope="col">n</th><th scope="col">n_R</th><th scope="col">Moyenne nette</th></tr></thead><tbody>
+    {% for cell in stats.regimes.cells %}<tr><th scope="row">{{ cell.trend == 'bull' ? 'Haussier' : 'Baissier' }} / {{ cell.volatility == 'low' ? 'basse' : 'haute' }}</th><td>{{ cell.n }}</td><td>{{ cell.n_r }}</td><td>{{ s.metric(cell.mu_r, 'R') }}</td></tr>{% endfor %}
+  </tbody></table>
+  <h3>Périodes baissières</h3>
+  <p>{{ stats.regimes.bear.n_entries }} entrées, {{ stats.regimes.bear.n_intervals }} intervalles ; durée {{ stats.regimes.bear.duration_years|num(3) }} années. Moyenne des entrées : {{ s.metric(stats.regimes.bear.mu_r, 'R') }}</p>
+  <p>Rendement annualisé des intervalles : {{ s.metric(stats.regimes.bear.annualized_return, '%') }} ; qualification {{ stats.regimes.bear.qualification is null ? 'indisponible' : {'flat':'neutre','positive':'positive','negative':'négative'}[stats.regimes.bear.qualification] }}.</p>
+  {{ s.reasons(stats.regimes.bear.qualification_reasons) }}
+  <p class="note">Intervalles sans régime : {{ stats.regimes.bear.missing_regime_intervals|length }} ; intervalles baissiers sans marquage : {{ stats.regimes.bear.missing_bear_intervals|length }}. Les quatre cases sont descriptives.</p>
+  {% set reasons = [] %}{% for label in stats.regimes.labels %}{% for reason in label.reasons %}{% if reason not in reasons %}{% set reasons = reasons|merge([reason]) %}{% endif %}{% endfor %}{% endfor %}
+  {{ s.reasons(reasons) }}
+</section>
+
+<section id="stats-concentration" class="section" aria-labelledby="stats-concentration-titre">
+  <h2 id="stats-concentration-titre">Concentration</h2>
+  <p>{{ stats.concentration.n_trades }} trades conservés ; PnL total {{ stats.concentration.total_pnl|money }} {{ stats.selection.quote ?? '' }}.</p>
+  <table class="kv"><tbody>
+    {% for name, group in {'Meilleur mois UTC de sortie':stats.concentration.best_month, 'Meilleure paire':stats.concentration.best_pair} %}<tr><th scope="row">{{ name }}</th><td>{% if group is null %}Indisponible{% else %}{{ group.id }} : {{ group.pnl|money }} ; sans ce groupe {{ group.pnl_without|money }}{% endif %}</td></tr>{% endfor %}
+    {% for removal in stats.concentration.without_top %}<tr><th scope="row">PnL sans les {{ removal.count }} meilleurs trades</th><td>{{ s.metric(removal.pnl_without, stats.selection.quote ?? '') }}</td></tr>{% endfor %}
+    <tr><th scope="row">Part des trois meilleurs trades dans le PnL net</th><td>{{ s.metric(stats.concentration.top3_share, '%') }}</td></tr>
+    <tr><th scope="row">Part du meilleur mois dans les mois positifs</th><td>{{ s.metric(stats.concentration.best_month_positive_share, '%') }}</td></tr>
+  </tbody></table>
+</section>
+
+<section id="stats-benchmarks" class="section" aria-labelledby="stats-benchmarks-titre">
+  <h2 id="stats-benchmarks-titre">Benchmarks</h2>
+  <p>Référence cash à 1,7 % : {{ s.metric(stats.benchmarks.cash_reference_quote, stats.selection.quote ?? '') }} ; contribution rapportée au capital initial {{ s.metric(stats.benchmarks.cash_reference_return, '%') }}.</p>
+  <p>Rendement stratégie : {{ s.metric(stats.benchmarks.strategy_total_return, '%') }} ; Calmar informatif de la stratégie {{ s.metric(stats.benchmarks.strategy_calmar) }}.</p>
+  <p class="note">Calmar informatif : disponible selon le calcul Rust, après au moins 36 mois calendaires et avec une grille complète ; aucune valeur nulle n’est remplacée par zéro. La borne LB95 mensuelle est réservée à DEV. Hors DEV, seul le point sur mois communs est descriptif.</p>
+  {{ s.reasons(stats.selection.reasons) }}
+  {{ s.reference(stats.benchmarks.btc, 'BTC acheté et conservé', stats.partition) }}
+  {{ s.reference(stats.benchmarks.basket_50_50, 'Panier BTC / ETH 50-50', stats.partition) }}
+  {{ s.reference(stats.benchmarks.equal_weight_pairs, 'Agrégat équipondéré des paires', stats.partition) }}
+  {% for pair in stats.benchmarks.pairs %}
+    <p class="note">Paire {{ pair.symbol }} : exposition {{ pair.exposure_fraction|pct }} ; comparaison informative de la stratégie portefeuille au benchmark de cette paire.</p>
+    {{ s.reference(pair.benchmark, pair.symbol ~ ' à exposition égale', stats.partition) }}
+  {% endfor %}
+  <p class="note">{{ stats.benchmarks.cash_convention }}. {{ stats.benchmarks.pair_aggregate_convention }}.</p>
+</section>
+
+<section id="stats-clustering" class="section" aria-labelledby="stats-clustering-titre">
+  <h2 id="stats-clustering-titre">Clustering et contexte des essais</h2>
+  <p>Configurations observées (M) : {{ stats.corpus.observed_configs }} ; séries quotidiennes complètes : {{ stats.corpus.complete_daily_configs }} ; N déclaré vérifié : {{ stats.corpus.declared_verified_n is null ? 'inconnu' : stats.corpus.declared_verified_n }} ; couverture M/N : {{ stats.corpus.coverage|pct }}.</p>
+  {% set clustering = stats.corpus.clustering.value %}
+  {% if clustering is null %}<p class="absent-note">Clustering indisponible.</p>{{ s.reasons(stats.corpus.clustering.reasons) }}{% else %}
+    <p>N_eff du panel : {{ clustering.panel_n_eff }} groupes ; N_eff global : {{ s.metric(clustering.global_n_eff) }}</p>
+    <p class="note">Méthode <code>{{ clustering.method }}</code>, corrélation strictement supérieure à {{ clustering.correlation_threshold|num(3) }} ; couverture du panel complet : {{ clustering.coverage|pct }}. Le nombre de clusters du panel devient une estimation globale uniquement quand M = N est vérifié.</p>
+    <details><summary>Composition des groupes du panel</summary><ol>{% for cluster in clustering.clusters %}<li>{% for hash in cluster %}<code class="hash">{{ hash }}</code>{% if not loop.last %}, {% endif %}{% endfor %}</li>{% endfor %}</ol></details>
+  {% endif %}
+  {{ s.reasons(stats.corpus.reasons) }}{{ s.reasons(stats.registry.reasons) }}
+  {% if stats.current_noise is not null %}
+    <p>Instantané courant du registre : N = {{ stats.current_noise.n }} ; espérance de bruit {{ stats.current_noise.expected|num(3) }}, q90 approximatif {{ stats.current_noise.approx_q90|num(3) }}, q95 {{ stats.current_noise.q95|num(3) }}.</p>
+    <p class="note">Convention du protocole : T = 5 ans de sélection, indépendante de la durée du run. Le seuil de bruit conserve N déclaré ; N_eff reste informatif. L’admission historique demeure visible dans « Essais et lectures ».</p>
+  {% else %}<p class="absent-note">Contexte courant de bruit indisponible.</p>{% endif %}
+  <p class="note">Méthodes et unités publiées par le moteur :</p><ul class="note">{% for method in stats.methods %}<li>{{ method }}</li>{% endfor %}</ul>
+</section>

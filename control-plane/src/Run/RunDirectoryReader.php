@@ -157,6 +157,7 @@ final class RunDirectoryReader
             $metrics,
             $trades,
             $this->equityReader->read($dir . '/' . EquityCsvReader::FILE),
+            (new StatsDirectoryReader())->read($dir, $manifest, $metrics, $trades, $manifestJson, $metricsJson),
         );
     }
 

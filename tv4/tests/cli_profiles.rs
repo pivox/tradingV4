@@ -18,7 +18,13 @@ use serde_json::Value;
 
 const MINUTES: usize = 6_000;
 const PROFILES: [&str; 3] = ["baseline", "adverse", "maker"];
-const RUN_FILES: [&str; 4] = ["metrics.json", "trades.csv", "equity.csv", "manifest.json"];
+const RUN_FILES: [&str; 5] = [
+    "metrics.json",
+    "trades.csv",
+    "equity.csv",
+    "stats-inputs.json",
+    "manifest.json",
+];
 
 /// Dossier de travail : racine du store avec un dataset `duo` (BTC-USD et ETH-USD) et un `params.toml`.
 struct Work {

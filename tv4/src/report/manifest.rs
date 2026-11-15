@@ -136,6 +136,9 @@ pub struct Manifest {
     pub timings: Timings,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub governance: Option<super::governance::GovernanceContext>,
+    /// Paquet conservé de post-traitements, hors des trois artefacts de simulation.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub stats_inputs: Option<super::stats_inputs::StatsInputsRef>,
 }
 
 /// Ce que la CLI fournit en plus des métriques pour écrire le manifeste.
@@ -248,6 +251,7 @@ impl Manifest {
             started_at: timestamp(inputs.started_at_ms)?,
             timings: inputs.timings,
             governance: None,
+            stats_inputs: None,
         })
     }
 }
@@ -289,6 +293,9 @@ pub struct ManifestS9 {
     pub timings: Timings,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub governance: Option<super::governance::GovernanceContext>,
+    /// Paquet conservé de post-traitements, hors des trois artefacts de simulation.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub stats_inputs: Option<super::stats_inputs::StatsInputsRef>,
     /// Nom du profil de coûts (s10) : `baseline`, `adverse` ou `maker`.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub profile: Option<&'static str>,
@@ -373,6 +380,7 @@ impl ManifestS9 {
             started_at: timestamp(inputs.started_at_ms)?,
             timings: inputs.timings,
             governance: None,
+            stats_inputs: None,
             profile: None,
             costs_file: None,
             costs_file_hash: None,

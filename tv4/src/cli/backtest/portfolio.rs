@@ -196,6 +196,8 @@ pub(super) struct PreparedPortfolio {
     pub quote_gap_ms: Ts,
     pub strategy_id: String,
     pub params: toml::Value,
+    pub decision_tf: Timeframe,
+    pub sim_rules: SimRules,
 }
 
 impl PreparedPortfolio {
@@ -208,7 +210,7 @@ impl PreparedPortfolio {
             fees: self.fees,
             slippage,
             initial_cash: self.capital,
-            sim_rules: SimRules::default(),
+            sim_rules: self.sim_rules,
             instruments: &self.instruments.rules,
             instruments_hash: self.instruments.hash.as_deref(),
             max_positions: self.max_positions,
@@ -385,7 +387,7 @@ pub(super) fn numeric_options(
 }
 
 /// Lit le fichier de paramètres de la stratégie et en fait une construction d'essai.
-pub(super) fn load_params(args: &RunInputArgs) -> Result<toml::Value, CliError> {
+pub(super) fn load_params(args: &RunInputArgs) -> Result<(toml::Value, Timeframe), CliError> {
     let params_text = std::fs::read_to_string(&args.params).map_err(|source| CliError::Read {
         path: args.params.display().to_string(),
         source,
@@ -396,8 +398,8 @@ pub(super) fn load_params(args: &RunInputArgs) -> Result<toml::Value, CliError> 
             source,
         })?;
     // Construction d'essai : une stratégie inconnue ou des paramètres invalides échouent avant tout calcul.
-    registry::build(&args.strategy, &params)?;
-    Ok(params)
+    let decision_tf = registry::build(&args.strategy, &params)?.decision_tf();
+    Ok((params, decision_tf))
 }
 
 pub(super) fn prepare(
@@ -460,7 +462,7 @@ pub(super) fn prepare(
     };
     let fees = FeeSchedule::load_grid(args.fees, &args.fees_file)?;
 
-    let params = load_params(args)?;
+    let (params, decision_tf) = load_params(args)?;
 
     let dataset = DatasetInfo {
         name: loaded.manifest.name.clone(),
@@ -485,6 +487,8 @@ pub(super) fn prepare(
         sizing: numeric.sizing,
         min_order_bump: numeric.min_order_bump,
         quote_gap_ms: numeric.quote_gap_ms,
+        decision_tf,
+        sim_rules: args.sim_rules(decision_tf),
         strategy_id: args.strategy.clone(),
         params,
     })
@@ -578,11 +582,26 @@ pub(super) fn run(args: &BacktestArgs) -> Result<(), CliError> {
         trades_csv: hash::blake3_prefixed(&trades_bytes),
     };
 
+    let captured = super::stats_inputs::portfolio(
+        report::profiles::RenderedProfile {
+            metrics,
+            metrics_bytes,
+            trades_bytes,
+            equity_bytes,
+        },
+        &result,
+        &prepared.series,
+        prepared.decision_tf,
+        &mut super::stats_inputs::MarketCache::default(),
+    )?;
+    let metrics = &captured.metrics;
     let run_id = metrics.run_id();
     let out = args
         .out
         .clone()
         .unwrap_or_else(|| args.inputs.root.join("runs").join(&run_id));
+
+    super::stats_inputs::cleanup(&out)?;
 
     // Même discipline que S8 : le manifeste, qui marque un run complet, et le rapport HTML d'un rendu
     // précédent sont retirés avant de réécrire les autres fichiers, et le manifeste est écrit en dernier.
@@ -596,14 +615,12 @@ pub(super) fn run(args: &BacktestArgs) -> Result<(), CliError> {
     ] {
         remove_stale(&out, stale)?;
     }
-    report::write_bytes_atomic(&out, "metrics.json", &metrics_bytes)?;
-    report::write_bytes_atomic(&out, report::writers::TRADES_FILE, &trades_bytes)?;
-    report::write_bytes_atomic(&out, report::equity::EQUITY_FILE, &equity_bytes)?;
+    captured.write_files(&out)?;
     let cli_cold_ms = elapsed_ms(t0);
 
     let engine_info = report::EngineInfo::current(binary_hash()?);
     let mut manifest = ManifestS9::new(
-        &metrics,
+        metrics,
         ManifestS9Inputs {
             instruments_file: prepared.instruments.file_as_given.clone(),
             engine: engine_info,
@@ -617,6 +634,7 @@ pub(super) fn run(args: &BacktestArgs) -> Result<(), CliError> {
             },
         },
     )?;
+    manifest.stats_inputs = Some(captured.write_inputs(&out)?);
     manifest.governance = Some(governance);
     debug_assert_eq!(manifest.run_id, run_id);
     report::write_json_atomic(&out, MANIFEST_FILE, &manifest)?;

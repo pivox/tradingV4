@@ -712,12 +712,17 @@ fn la_libm_est_confinee_aux_calculs_approximatifs() {
     assert!(approx.is_file(), "report/approx.rs absent");
     let noise = src.join("research").join("noise.rs");
     assert!(noise.is_file(), "research/noise.rs absent");
+    let stats_approx = src.join("research/stats/approx.rs");
+    assert!(stats_approx.is_file());
     let mut violations = Vec::new();
     for path in files {
         if path == approx {
             continue;
         }
         for call in libm_calls(&read(&path)) {
+            if path == stats_approx && matches!(call, ".ln(" | ".exp_m1(" | ".powf(") {
+                continue;
+            }
             // S12 : seuls ln et exp_m1 pour le contexte de sélection hors simulation.
             if path == noise && matches!(call, ".ln(" | ".exp_m1(") {
                 continue;
@@ -727,10 +732,12 @@ fn la_libm_est_confinee_aux_calculs_approximatifs() {
     }
     assert!(
         violations.is_empty(),
-        "la libm est confinée à report/approx.rs et ln/exp_m1 dans research/noise.rs (docs/03 §7.4) :\n{}",
+        "la libm est confinée à report/approx.rs, ln/exp_m1 dans research/noise.rs et ln/exp_m1/powf dans research/stats/approx.rs (docs/03 §7.4) :\n{}",
         violations.join("\n")
     );
     // Les deux exceptions s'en servent bien : la règle n'est pas vacuement verte.
+    let stats_calls = libm_calls(&read(&stats_approx));
+    assert_eq!(stats_calls, [".ln(", ".exp_m1(", ".powf("]);
     let noise_calls = libm_calls(&read(&noise));
     assert!(noise_calls.contains(&".ln(") && noise_calls.contains(&".exp_m1("));
     let calls = libm_calls(&read(&approx));

@@ -82,6 +82,8 @@ fn copy_run(from: &Path, to: &Path) {
 fn refresh_manifest_hash(run: &Path, file: &str) {
     let manifest_path = run.join("manifest.json");
     let mut manifest: Value = serde_json::from_slice(&fs::read(&manifest_path).unwrap()).unwrap();
+    // Mutations de simulation : scénario historique explicite, sans paquet S13 périmé.
+    manifest.as_object_mut().unwrap().remove("stats_inputs");
     let nouveau = hash::blake3_prefixed(&fs::read(run.join(file)).unwrap());
     manifest["outputs"]["files"][file] = Value::String(nouveau.clone());
     if file == "trades.csv" {
@@ -132,6 +134,8 @@ fn un_run_est_identique_a_lui_meme_meme_si_le_manifeste_differe() {
     manifest["timings"]["run_ms"] = Value::from(999_999);
     manifest["started_at"] = Value::from("1999-01-01T00:00:00Z");
     manifest["run_id"] = Value::from("0".repeat(64));
+    // L’identité arbitraire ne doit pas être associée au paquet du run authentique.
+    manifest.as_object_mut().unwrap().remove("stats_inputs");
     manifest["engine"]["git_sha"] = Value::from("autre-commit");
     fs::write(&chemin, serde_json::to_vec(&manifest).unwrap()).unwrap();
     let (code, stdout, _) = verify(&a, &b);

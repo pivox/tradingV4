@@ -9,7 +9,7 @@ Les décisions du propriétaire et les règles de travail du dépôt sont dans `
 Depuis la racine du dépôt, sur la fixture de 10 000 bougies (le dataset `btcusd_2y` de la preuve se construit sur le poste du propriétaire, `docs/03-architecture.md` §11 S8) :
 
 ```sh
-# Run : metrics.json, trades.csv, equity.csv puis manifest.json (écrit en dernier) dans --out
+# Run : metrics.json, trades.csv, equity.csv, stats-inputs.json puis manifest.json (écrit en dernier) dans --out
 # (défaut : <root>/runs/<run_id>, ou <root>/runs/<profiles_id> avec --costs, mode s10 de
 # docs/specs/s10.md). Dans un dossier existant, l'ancien manifest.json, l'ancien report.html et
 # un ancien profiles.json sont supprimés avant l'écriture : un dossier sans manifeste n'est pas
@@ -106,6 +106,62 @@ Sharpe de l'excédent à exposition égale ne sont pas une porte de validation.
 Un ancien rapport sans contexte le signale ; un ancien run `unguarded` garde son
 avertissement. Détail : [conception S12](docs/specs/s12.md) et
 [protocole](docs/04-protocole-recherche.md).
+
+## Statistiques et vrais rejeux décalés (S13)
+
+Les nouveaux backtests conservent `stats-inputs.json` : prix issus des séries déjà
+admises, marquages quotidiens et de réalisation, cash du moteur et timeframe de
+décision. Le manifeste référence ce paquet par BLAKE3. Il permet le calcul sans
+recharger les bougies, même si elles ne sont plus présentes ensuite.
+
+Après le backtest technique de l'exemple précédent :
+
+```sh
+cargo run --release --bin tv4 -- stats runs/exemple-a --seed 42
+(cd control-plane && php bin/console tv4:report ../runs/exemple-a)
+```
+
+`stats.json` publie bootstrap, Monte Carlo marqué, régimes, concentration,
+benchmarks et clustering avec leurs effectifs et limites. La graine est requise
+et conservée comme chaîne décimale, sur toute la plage `u64`. Deux appels sur les
+mêmes entrées, options et graine produisent les mêmes octets. Les sources, le
+registre d'essais et ses compteurs restent intacts. Un dossier de profils ou de
+lignes reçoit un `stats.json` par feuille.
+
+Une donnée manquante produit une valeur `null` avec sa raison : absence de
+BTC/ETH, chauffe insuffisante, marquage quotidien incomplet, risques R absents
+ou corpus incomplet. Un ancien run sans paquet conserve les calculs identifiables
+sur son journal. `--inputs <stats-inputs.json>` peut fournir le paquet d'un rejeu
+admis dont les trois artefacts de simulation sont strictement identiques ; il ne
+déclenche aucune lecture de bougies ni aucun rejeu automatique.
+
+Le test de décalage utilise deux vrais backtests avec le même binaire :
+
+```sh
+# Réécrire aussi le run normal avec ce binaire pour fixer le moteur de comparaison.
+cargo run --release --bin tv4 -- backtest --fixture fixtures/kraken_xbtusd_1m.csv --strategy sma_cross \
+  --params config/strategies/sma_cross.toml --fees okx --out runs/exemple-a
+cargo run --release --bin tv4 -- backtest --fixture fixtures/kraken_xbtusd_1m.csv --strategy sma_cross \
+  --params config/strategies/sma_cross.toml --fees okx --entry-delay-bars 1 --out runs/exemple-decale
+cargo run --release --bin tv4 -- stats runs/exemple-a --seed 42 --delayed-run runs/exemple-decale
+```
+
+Une bougie signifie un timeframe de décision supplémentaire pour les seuls achats,
+TTL compris. La règle entre dans le `config_hash` : S12 compte cette nouvelle
+configuration et le gel d'une configuration normale ne l'autorise pas
+implicitement sur un bloc protégé. Le rapport indique les expectancies nettes,
+leur ratio et le contexte DEV du rejeu ; aucune valeur ne constitue un verdict G2.
+Ces commandes de fixture restent des vérifications techniques.
+
+`--peer-run <run_dir>` répété fournit un corpus comparable ; `--research-root`
+choisit le registre dont l'instantané est lu sous verrou. Le rapport distingue
+le N historique d'admission, le N courant vérifiable et les M configurations
+observées. Les clusters du panel ne deviennent un N_eff global que si le corpus
+est complet et vérifié ; les repères de bruit restent calculés sur N déclaré.
+La référence à exposition égale est descriptive, le Calmar est informatif à
+partir de 36 mois calendaires et la borne mensuelle n'est calculée qu'en DEV.
+
+Conventions et contrats : [conception S13](docs/specs/s13.md).
 
 ## Exploration DuckDB
 

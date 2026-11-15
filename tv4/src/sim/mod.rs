@@ -650,6 +650,29 @@ impl Simulator {
         signal_ms.saturating_add(i64::from(self.rules.activation_delay_bars) * MINUTE_MS)
     }
 
+    /// Les achats décalés utilisent une horloge contrôlée, sans saturation au futur.
+    fn entry_activation(&self, signal_ms: Ts) -> Result<Ts, Rejection> {
+        if self.rules.extra_entry_delay_bars == 0 {
+            return Ok(self.activation(signal_ms));
+        }
+        let minutes = self
+            .rules
+            .activation_delay_bars
+            .checked_add(self.rules.extra_entry_delay_bars)
+            .ok_or(Rejection::TimestampOverflow)?;
+        signal_ms
+            .checked_add(i64::from(minutes) * MINUTE_MS)
+            .ok_or(Rejection::TimestampOverflow)
+    }
+
+    fn entry_expiration(&self, act: Ts, ttl: u32) -> Result<Ts, Rejection> {
+        if self.rules.extra_entry_delay_bars == 0 {
+            return Ok(act.saturating_add(i64::from(ttl) * MINUTE_MS));
+        }
+        act.checked_add(i64::from(ttl) * MINUTE_MS)
+            .ok_or(Rejection::TimestampOverflow)
+    }
+
     /// Ajoute un ordre accepté en fin de file (sans réallocation : `submit` a vérifié la capacité).
     fn accept(&mut self, order: Order) -> Result<(), Rejection> {
         self.pending.push(order);
@@ -789,7 +812,7 @@ impl Simulator {
         if self.qty_lots > 0 || self.pending.iter().any(|o| o.origin == Origin::Enter) {
             return Err(Rejection::EntryWhileLong);
         }
-        let act = self.activation(ctx.signal_ms);
+        let act = self.entry_activation(ctx.signal_ms)?;
         match price {
             OrderPrice::Market => {
                 if sizing::size_qty(size, ctx.equity, ctx.ref_price, stop).is_none() {
@@ -858,11 +881,12 @@ impl Simulator {
                 {
                     return Err(Rejection::InsufficientQuote);
                 }
+                let expires = self.entry_expiration(act, ttl_bars)?;
                 self.detail.entries_capped_by_notional += u64::from(notional_capped);
                 self.detail.entries_bumped_to_min += u64::from(bumped);
                 let mut order =
                     Order::base(Origin::Enter, OrderType::LimitBuy, tag, ctx.signal_ms, act);
-                order.expires_at_ms = Some(act.saturating_add(i64::from(ttl_bars) * MINUTE_MS));
+                order.expires_at_ms = Some(expires);
                 order.limit = limit;
                 order.ttl_bars = ttl_bars;
                 order.lots = lots;
@@ -968,8 +992,14 @@ impl Simulator {
         if self.pending.iter().any(|o| o.slot == slot) {
             return Err(Rejection::SlotAlreadyOpen);
         }
-        let act = self.activation(ctx.signal_ms);
-        let expires = act.saturating_add(i64::from(ttl_bars) * MINUTE_MS);
+        let act = match side {
+            Side::Buy => self.entry_activation(ctx.signal_ms)?,
+            Side::Sell => self.activation(ctx.signal_ms),
+        };
+        let expires = match side {
+            Side::Buy => self.entry_expiration(act, ttl_bars)?,
+            Side::Sell => act.saturating_add(i64::from(ttl_bars) * MINUTE_MS),
+        };
         match side {
             Side::Buy => {
                 let limit = match floor_steps(price, self.inv_tick) {

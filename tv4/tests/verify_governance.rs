@@ -21,6 +21,8 @@ fn copy_run(root: &Path, name: &str, research: bool) -> PathBuf {
         fs::copy(source.join(file), dir.join(file)).unwrap();
     }
     let mut manifest = read(&dir, "manifest.json");
+    // Ce test de gouvernance manipule les sources du contrat historique sans paquet S13.
+    manifest.as_object_mut().unwrap().remove("stats_inputs");
     for file in ["metrics.json", "trades.csv", "equity.csv"] {
         manifest["outputs"]["files"][file] =
             json!(hash::blake3_prefixed(&fs::read(dir.join(file)).unwrap()));

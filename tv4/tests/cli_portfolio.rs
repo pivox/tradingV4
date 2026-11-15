@@ -281,6 +281,8 @@ fn tamper(run: &Path, file: &str, from: &str, to: &str) {
     fs::write(&path, text.replacen(from, to, 1)).unwrap();
     let manifest_path = run.join("manifest.json");
     let mut manifest = json(&manifest_path);
+    // Scénario legacy explicite : les mutations visent les invariants du rapport seul.
+    manifest.as_object_mut().unwrap().remove("stats_inputs");
     let new_hash = hash::blake3_prefixed(&fs::read(&path).unwrap());
     manifest["outputs"]["files"][file] = Value::String(new_hash.clone());
     if file == "trades.csv" {
@@ -337,6 +339,8 @@ fn tamper_metrics(run: &Path, edit: impl FnOnce(&mut Value)) {
     fs::write(&path, serde_json::to_vec(&metrics).unwrap()).unwrap();
     let manifest_path = run.join("manifest.json");
     let mut manifest = json(&manifest_path);
+    // Scénario legacy explicite : les mutations visent les invariants du rapport seul.
+    manifest.as_object_mut().unwrap().remove("stats_inputs");
     manifest["outputs"]["files"]["metrics.json"] =
         Value::String(hash::blake3_prefixed(&fs::read(&path).unwrap()));
     fs::write(&manifest_path, serde_json::to_vec(&manifest).unwrap()).unwrap();

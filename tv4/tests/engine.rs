@@ -199,6 +199,12 @@ fn frais_et_slippage_exacts_sur_un_cas_a_la_main() {
     for (obtenu, attendu) in result.equity.iter().zip(attendu) {
         close_to(*obtenu, attendu);
     }
+    let cash = [1000., 899.54965, 899.54965, 1009.055035, 1009.055035];
+    assert_eq!(result.cash.len(), result.equity.len());
+    assert!(result.cash.capacity() >= result.equity.len());
+    for (&obtained, expected) in result.cash.iter().zip(cash) {
+        close_to(obtained, expected);
+    }
 }
 
 #[test]

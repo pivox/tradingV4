@@ -39,6 +39,8 @@ pub mod metrics;
 pub mod metrics_s9;
 pub mod profiles;
 pub mod research;
+pub mod stats;
+pub mod stats_inputs;
 pub mod verify;
 pub mod writers;
 

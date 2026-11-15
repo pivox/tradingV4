@@ -509,3 +509,37 @@ fn la_meme_limit_encore_valable_a_t_plafonne_bien_l_achat_market() {
     // La limit expire une minute plus tard, comme dans le premier cas.
     assert_eq!(result.legs[0].counters.limits_expired, 1);
 }
+
+#[test]
+fn trace_cash_utilise_la_realisation_du_gap_et_garde_le_quote_reserve() {
+    let universe = names(&["X-USD", "Y-USD"]);
+    let instruments = vec![instrument(0.); 2];
+    let mut y = flat_series(0, 5, 100., 1e6);
+    y.extend(flat_series(8 * 1440, 5, 100., 1e6));
+    let result = run(
+        &[("X-USD", flat_series(0, 10, 100., 1e6)), ("Y-USD", y)],
+        vec![market_buyer_at(1), idle()],
+        compounding(&universe, &instruments),
+    );
+    assert_eq!(result.cash.len(), result.equity.len());
+    assert_eq!(result.cash.len(), result.grid_open_ms.len());
+    let trade = &result.trades[0];
+    assert_eq!(trade.exit_reason, ExitReason::QuoteGap);
+    let i = result.grid_open_ms.partition_point(|&t| t < trade.exit_ms);
+    assert!(result.grid_open_ms[i] > trade.exit_ms);
+    assert!(result.cash[i - 1] < result.cash[i]);
+    assert_eq!(result.cash[i], result.cash_final);
+    let pending = run(
+        &[
+            ("X-USD", flat_series(0, 10, 100., 1e6)),
+            ("Y-USD", flat_series(0, 10, 100., 1e6)),
+        ],
+        vec![limit_buyer_at(1, 50., 100), idle()],
+        compounding(&universe, &instruments),
+    );
+    assert!(pending.trades.is_empty());
+    assert!(
+        pending.cash.iter().all(|&cash| cash == 1000.),
+        "quote réservé encore en cash"
+    );
+}

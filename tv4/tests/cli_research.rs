@@ -73,7 +73,13 @@ fn une_ligne_full_ecrit_quatre_fichiers_de_schema_s11() {
     );
     assert_eq!(
         names(&out),
-        ["equity.csv", "manifest.json", "metrics.json", "trades.csv"]
+        [
+            "equity.csv",
+            "manifest.json",
+            "metrics.json",
+            "stats-inputs.json",
+            "trades.csv"
+        ]
     );
 
     let metrics = json(&out.join("metrics.json"));
@@ -214,7 +220,13 @@ fn deux_lignes_ecrivent_full_okx_usdc_et_lines_json() {
     for line in ["full", "okx_usdc"] {
         assert_eq!(
             names(&out.join(line)),
-            ["equity.csv", "manifest.json", "metrics.json", "trades.csv"],
+            [
+                "equity.csv",
+                "manifest.json",
+                "metrics.json",
+                "stats-inputs.json",
+                "trades.csv"
+            ],
             "{line}"
         );
     }
@@ -1285,6 +1297,50 @@ fn rotation_relabelle_holdout_et_ne_joue_que_le_forward_postgel() {
     assert_eq!(last.decision_start_ms, Some(decision_start));
     assert_eq!(last.decision_end_ms, Some(decision_end));
     assert!(last.is_complete());
+    let paths = [
+        p.root.join("research/trials.csv"),
+        p.root.join("research/README.md"),
+    ];
+    let before = paths.each_ref().map(|path| read(path));
+    for (dir, expected) in [(&old, "validation"), (&out, "holdout")] {
+        ok(&strings(&[
+            "stats",
+            &shown(dir),
+            "--seed",
+            "101",
+            "--research-root",
+            &shown(&p.root),
+        ]));
+        let stats = json(&dir.join("full/stats.json"));
+        assert_eq!(stats["partition"], expected);
+        assert_eq!(
+            stats["benchmarks"]["btc"]["monthly"]["lb95_excess"]["availability"],
+            "unavailable"
+        );
+        assert_eq!(
+            stats["benchmarks"]["btc"]["monthly"]["lb95_excess"]["value"],
+            Value::Null
+        );
+    }
+    assert_eq!(before, paths.each_ref().map(|path| read(path)));
+    // Une ancienne source sans admission S12 ne peut emprunter cette rotation.
+    let path = old.join("full/manifest.json");
+    let original = read(&path);
+    let mut legacy = json(&path);
+    legacy.as_object_mut().unwrap().remove("governance");
+    fs::write(&path, serde_json::to_vec(&legacy).unwrap()).unwrap();
+    let (code, text) = run(&strings(&[
+        "stats",
+        &shown(&old.join("full")),
+        "--seed",
+        "101",
+        "--research-root",
+        &shown(&p.root),
+    ]));
+    assert_eq!(code, Some(1), "{text}");
+    assert!(text.contains("governance"), "{text}");
+    fs::write(path, original).unwrap();
+    assert_eq!(before, paths.each_ref().map(|path| read(path)));
 }
 
 #[test]
@@ -1588,4 +1644,29 @@ fn deux_processus_ne_consomment_pas_le_meme_claim_et_quota_holdout() {
         1
     );
     assert!(reg.pending_reads().is_empty());
+}
+
+#[test]
+fn stats_existing_protected_run_never_consumes_another_claim_or_counter() {
+    let (p, sub) = frozen_holdout_for_process_test();
+    let out = p._dir.path().join("already-admitted");
+    ok(&p.args("bloc", &out, &["--okx-subset", &shown(&sub)]));
+    let paths = [
+        p.root.join("research/trials.csv"),
+        p.root.join("research/README.md"),
+    ];
+    let before = paths.each_ref().map(|path| read(path));
+    ok(&strings(&[
+        "stats",
+        &shown(&out),
+        "--seed",
+        "101",
+        "--research-root",
+        &shown(&p.root),
+    ]));
+    assert_eq!(before, paths.each_ref().map(|path| read(path)));
+    assert_eq!(
+        json(&out.join("okx_usdc/stats.json"))["partition"],
+        "holdout"
+    );
 }

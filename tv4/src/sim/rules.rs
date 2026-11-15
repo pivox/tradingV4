@@ -37,6 +37,9 @@ pub struct SimRules {
     /// `i` est actif à `signal_ms + délai × 1 min`, soit l'open de la 1m `i + 2` sans trou (docs/04
     /// §3.1 point 1). 0 donne le fill à l'open de `i + 1` (S3).
     pub activation_delay_bars: u32,
+    /// Délai supplémentaire des seuls achats, en minutes 1m (S13).
+    #[serde(skip_serializing_if = "is_zero")]
+    pub extra_entry_delay_bars: u32,
     /// Nombre de ticks qu'une 1m doit franchir au-delà du niveau d'une limit pour la remplir (docs/04
     /// §3.1 point 2). 0 donne un fill au toucher, toléré pour les tests.
     pub limit_cross_ticks: u32,
@@ -54,6 +57,10 @@ pub struct SimRules {
     pub stop_stress_bps: f64,
 }
 
+fn is_zero(value: &u32) -> bool {
+    *value == 0
+}
+
 impl Default for SimRules {
     fn default() -> SimRules {
         SimRules {
@@ -61,6 +68,7 @@ impl Default for SimRules {
             max_pending: 64,
             market_buy_cash_margin: 0.05,
             activation_delay_bars: 1,
+            extra_entry_delay_bars: 0,
             limit_cross_ticks: 1,
             intrabar: IntrabarRule::StopFirst,
             tp_ignored_on_fill_bar: true,
@@ -96,6 +104,11 @@ impl SimRules {
         if self.activation_delay_bars > 1440 {
             return Err(SimError::InvalidRules {
                 reason: "`activation_delay_bars` doit être au plus 1440",
+            });
+        }
+        if self.extra_entry_delay_bars > 1440 {
+            return Err(SimError::InvalidRules {
+                reason: "`extra_entry_delay_bars` doit être au plus 1440",
             });
         }
         if self.limit_cross_ticks > 1000 {

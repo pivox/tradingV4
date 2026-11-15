@@ -15,6 +15,7 @@ final readonly class RunReport
         public Metrics $metrics,
         public array $trades,
         public EquitySeries $equity,
+        public ?StatsReport $stats = null,
     ) {
     }
 }
