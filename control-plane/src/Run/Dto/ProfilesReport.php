@@ -34,6 +34,18 @@ final readonly class ProfilesReport
     ) {
     }
 
+    /** Un avertissement doit couvrir tous les profils, même ceux hors fiche baseline. */
+    public function isUnguarded(): bool
+    {
+        foreach ($this->runs as $run) {
+            if ($run->metrics->research?->isUnguarded()) {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
     /** La ligne de `profiles[]` du profil. */
     public function profile(string $name): ProfileSummary
     {

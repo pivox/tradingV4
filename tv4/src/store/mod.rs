@@ -79,8 +79,8 @@ pub use self::columns::{Columns, ColumnsParts};
 pub use self::dataset::{
     BuildOutcome, BuildRequest, BuildStatus, LoadedDataset, MultiBuildRequest, MultiDataset,
     ResearchInfo, ResearchMeta, build_dataset, build_dataset_multi, build_dataset_research,
-    fill_gaps, load_dataset, load_dataset_multi, read_series_window, read_verified_with_hash,
-    research_meta,
+    fill_gaps, load_dataset, load_dataset_multi, load_dataset_multi_manifest, read_series_window,
+    read_verified_with_hash, research_meta,
 };
 pub use self::layout::{GapsPolicy, Partition, Period, Symbol, Window, resolve_rel};
 pub use self::lock::{DatasetLock, PartitionLock};

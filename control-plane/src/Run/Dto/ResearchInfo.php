@@ -20,7 +20,7 @@ final readonly class ResearchInfo
     public const LINES = ['full', 'okx_usdc'];
 
     /** @var list<string> */
-    public const GUARDS = ['none', 'unguarded'];
+    public const GUARDS = ['none', 'unguarded', 'guarded'];
 
     /**
      * @param array<string, list<QualityExclusion>> $qualityExclusions exclusions par symbole

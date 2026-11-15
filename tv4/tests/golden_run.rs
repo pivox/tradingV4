@@ -23,6 +23,8 @@
 //! Mise à jour : `TV4_GOLDEN_UPDATE=1 cargo test --test golden_run` réécrit les fichiers (refusée si la
 //! variable `CI` est définie). Relire le diff avant de commiter, comme pour les `.snap`.
 
+mod research_test_support;
+
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -56,8 +58,10 @@ fn golden_dir(name: &str) -> PathBuf {
 
 /// Lance le backtest de la fixture avec le fichier de paramètres `params`, dans `out`.
 fn golden_run(params: &Path, out: &Path) {
-    let sortie = Command::new(env!("CARGO_BIN_EXE_tv4"))
-        .arg("backtest")
+    let mut command = Command::new(env!("CARGO_BIN_EXE_tv4"));
+    command.arg("backtest");
+    let _research_root = research_test_support::isolate(&mut command, &["backtest"]);
+    let sortie = command
         .arg("--fixture")
         .arg(repo("fixtures/kraken_xbtusd_1m.csv"))
         .args(["--strategy", "sma_cross", "--params"])

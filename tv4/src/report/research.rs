@@ -99,13 +99,15 @@ fn timestamp(ts_ms: Ts) -> Result<String, ReportError> {
 // Entrées fournies par la CLI
 // ---------------------------------------------------------------------------------------------
 
-/// Garde provisoire avant S12 (docs/specs/s11.md §9.5), écrite dans `research.guard`.
+/// Provenance de la lecture ; `Unguarded` est conservé pour les anciens rapports S11.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Guard {
     /// Aucune lecture protégée.
     None,
     /// Lecture d'un bloc protégé avec l'option cachée `--unguarded-protected-read`.
     Unguarded,
+    /// Lecture admise et réservée par le registre S12.
+    Guarded,
 }
 
 impl Guard {
@@ -114,6 +116,7 @@ impl Guard {
         match self {
             Guard::None => "none",
             Guard::Unguarded => "unguarded",
+            Guard::Guarded => "guarded",
         }
     }
 }
@@ -876,6 +879,7 @@ mod tests {
     fn la_garde_s_ecrit_comme_la_spec() {
         assert_eq!(Guard::None.as_str(), "none");
         assert_eq!(Guard::Unguarded.as_str(), "unguarded");
+        assert_eq!(Guard::Guarded.as_str(), "guarded");
     }
 
     #[test]

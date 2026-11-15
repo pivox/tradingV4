@@ -1,0 +1,36 @@
+{% set gov = manifest.governance %}
+<section id="essais-lectures" class="section{% if gov is null %} absent{% endif %}" aria-labelledby="essais-lectures-titre">
+  <h2 id="essais-lectures-titre">Essais et lectures</h2>
+  {% if gov is null %}
+  <p class="absent-note">Ce run ne porte pas de contexte d’essais et de lectures.</p>
+  {% else %}
+  <p class="note">Contexte déclaré à l’admission du run. Les repères de bruit concernent le Sharpe de l’excédent sur le benchmark à exposition égale ; ils ne constituent pas une porte de validation du Sharpe brut.</p>
+  <div class="cols">
+    <table class="kv">
+      <caption>Essais et bruit de sélection</caption>
+      <tbody>
+        <tr><th scope="row">N déclaré</th><td>{{ gov.noise.n|int }}</td></tr>
+        <tr><th scope="row">N_eff</th><td>{% if gov.noise.nEff is null %}Non calculé{% else %}{{ gov.noise.nEff|int }}{% endif %}</td></tr>
+        <tr><th scope="row">Sharpe de bruit q95</th><td>{{ gov.noise.q95|num }}</td></tr>
+        <tr><th scope="row">Espérance BLP</th><td>{{ gov.noise.expected|num }}</td></tr>
+        <tr><th scope="row">Approximation q90</th><td>{{ gov.noise.approxQ90|num }}</td></tr>
+        <tr><th scope="row">Durée de sélection T</th><td>{{ gov.noise.selectionYears|num }} ans</td></tr>
+      </tbody>
+    </table>
+    <table class="kv">
+      <caption>Provenance de la lecture</caption>
+      <tbody>
+        <tr><th scope="row">Essai inscrit</th><td>{{ gov.trialId|int }}</td></tr>
+        <tr><th scope="row">Lecture inscrite</th><td>{{ gov.readId|int }}</td></tr>
+        <tr><th scope="row">Fiche</th><td>{% if gov.hypothesis is not null %}<code>{{ gov.hypothesis.identifiant }}</code> · SHA-256 <code class="hash">{{ gov.hypothesis.sha256 }}</code>{% else %}Non renseignée{% endif %}</td></tr>
+        <tr><th scope="row">Tag gelé</th><td>{% if gov.frozenTag is not null %}<code>{{ gov.frozenTag }}</code>{% else %}Non renseigné{% endif %}</td></tr>
+        <tr><th scope="row">Gel UTC</th><td>{{ gov.frozenAt ?? 'Non renseigné' }}</td></tr>
+        <tr><th scope="row">Génération</th><td>{{ gov.generation|int }}</td></tr>
+        <tr><th scope="row">Bloc source</th><td>{{ gov.sourceBlock ?? 'Hors recherche' }}</td></tr>
+        <tr><th scope="row">Bloc lu (effectif)</th><td>{{ gov.effectiveBlock ?? 'Hors recherche' }}</td></tr>
+        {% if gov.claimHoldout is not null %}<tr><th scope="row">Claim HOLDOUT</th><td>{{ gov.claimHoldout|int }}</td></tr>{% endif %}
+      </tbody>
+    </table>
+  </div>
+  {% endif %}
+</section>

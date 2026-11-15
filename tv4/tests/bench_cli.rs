@@ -1,11 +1,15 @@
 //! `tv4 bench` (S8, `docs/specs/s8.md` §10) : on lance le vrai binaire sur la fixture.
 
+mod research_test_support;
+
 use std::path::PathBuf;
 use std::process::{Command, Output};
 
 fn tv4(args: &[String]) -> Output {
-    Command::new(env!("CARGO_BIN_EXE_tv4"))
-        .args(args)
+    let mut command = Command::new(env!("CARGO_BIN_EXE_tv4"));
+    command.args(args);
+    let _research_root = research_test_support::isolate(&mut command, args);
+    command
         .output()
         .expect("le binaire tv4 doit pouvoir être lancé")
 }

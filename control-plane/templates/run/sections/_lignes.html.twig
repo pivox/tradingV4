@@ -2,8 +2,8 @@
   <h2 id="lignes-titre">Deux lignes</h2>
   {% set full = lines.line('full') %}
   {% set okx = lines.line('okx_usdc') %}
-  {% if full.research.isUnguarded or okx.research.isUnguarded %}
-  <p class="callout-garde"><strong>Lecture protégée sans garde-fou.</strong> Ces runs ont été joués avec l'option cachée <code>--unguarded-protected-read</code> : les garde-fous de S12 ne sont pas livrés, aucune lecture n'est inscrite (docs/specs/s11.md §9.5).</p>
+  {% if full.isUnguarded or okx.isUnguarded %}
+  <p class="callout-garde"><strong>Lecture protégée sans garde-fou.</strong> Ce dossier contient des runs historiques joués avec <code>--unguarded-protected-read</code> : leur admission protégée n’est pas attestée.</p>
   {% endif %}
   <p class="note">Deux runs du même dataset de bloc <strong>{{ lines.block }}</strong> et de la même configuration : l'univers complet (<code>full</code>) et le sous-ensemble tradable sur OKX en USDC (<code>okx_usdc</code>), joués chacun à part (le cash partagé, <code>max_positions</code> et les trous de cotation dépendent des jambes présentes). La survivance résiduelle est l'écart <code>full</code> moins <code>okx_usdc</code> que <code>tv4</code> a écrit dans <code>lines.json</code> ; le control plane ne recalcule rien. Les métriques de trades portent sur les trades conservés.</p>
 

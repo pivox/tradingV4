@@ -1,5 +1,7 @@
 //! Tests d'intégration du binaire `tv4` : on lance le vrai exécutable.
 
+mod research_test_support;
+
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
 
@@ -10,8 +12,10 @@ mod common;
 use common::{DATASET_HASH_SKIP, HASH_FIXTURE_MOIS};
 
 fn tv4(args: &[&str]) -> Output {
-    Command::new(env!("CARGO_BIN_EXE_tv4"))
-        .args(args)
+    let mut command = Command::new(env!("CARGO_BIN_EXE_tv4"));
+    command.args(args);
+    let _research_root = research_test_support::isolate(&mut command, args);
+    command
         .output()
         .expect("le binaire tv4 doit pouvoir être lancé")
 }
@@ -1096,19 +1100,19 @@ fn backtest_options_de_recherche_refusees_sans_dataset_de_bloc() {
         args.extend(extra.iter().map(|s| (*s).to_string()));
         args
     };
-    // Comme les autres options du portefeuille (S9) : sans --symbols, erreur applicative (code 1).
-    for extra in [
-        &["--okx-subset", "liste.json"][..],
-        &["--unguarded-protected-read"],
-    ] {
-        let sortie = tv4_owned(&avec(extra));
-        let (_, stderr) = texte(&sortie);
-        assert_eq!(sortie.status.code(), Some(1), "{extra:?} : {stderr}");
-        assert!(
-            stderr.contains("n'a de sens qu'avec --symbols") && stderr.contains(extra[0]),
-            "{extra:?} : {stderr}"
-        );
-    }
+    // Sans --symbols, --okx-subset reste une erreur applicative (S9).
+    let sortie = tv4_owned(&avec(&["--okx-subset", "liste.json"]));
+    let (_, stderr) = texte(&sortie);
+    assert_eq!(sortie.status.code(), Some(1), "{stderr}");
+    assert!(
+        stderr.contains("n'a de sens qu'avec --symbols") && stderr.contains("--okx-subset"),
+        "{stderr}"
+    );
+    // S12 supprime le contournement : clap refuse désormais cette option avant toute lecture.
+    let sortie = tv4_owned(&avec(&["--unguarded-protected-read"]));
+    let (_, stderr) = texte(&sortie);
+    assert_eq!(sortie.status.code(), Some(2), "{stderr}");
+    assert!(stderr.contains("--unguarded-protected-read"), "{stderr}");
     // `--universe` remplace les fichiers d'instruments : conflit clap (code 2), avant toute lecture.
     let sortie = tv4_owned(&avec(&["--universe", "univers"]));
     let (_, stderr) = texte(&sortie);

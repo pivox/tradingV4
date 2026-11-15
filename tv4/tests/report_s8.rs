@@ -9,6 +9,8 @@
 //!   recalculé ici, depuis `trades.csv` et l'equity, par un code indépendant de `report` ;
 //! * le binaire `tv4 backtest` sur la fixture : quatre fichiers, schémas, clés, options.
 
+mod research_test_support;
+
 mod common;
 
 use std::path::{Path, PathBuf};
@@ -942,8 +944,10 @@ fn le_fichier_equity_recoupe_les_drawdowns_et_les_pas() {
 // ---------------------------------------------------------------------------------------------
 
 fn tv4(args: &[String]) -> Output {
-    Command::new(env!("CARGO_BIN_EXE_tv4"))
-        .args(args)
+    let mut command = Command::new(env!("CARGO_BIN_EXE_tv4"));
+    command.args(args);
+    let _research_root = research_test_support::isolate(&mut command, args);
+    command
         .output()
         .expect("le binaire tv4 doit pouvoir être lancé")
 }
@@ -1111,9 +1115,17 @@ fn la_fixture_produit_quatre_fichiers_coherents() {
         );
     }
 
-    // Sortie standard : une ligne, avec le run_id, le nombre de trades et le verdict.
+    // Résultat de simulation suivi de son contexte d’admission.
     let stdout = String::from_utf8_lossy(&sortie.stdout);
-    assert_eq!(stdout.lines().count(), 1, "{stdout}");
+    assert_eq!(stdout.lines().count(), 2, "{stdout}");
+    assert!(
+        stdout
+            .lines()
+            .nth(1)
+            .unwrap()
+            .starts_with("Essais et lectures : N = 1"),
+        "{stdout}"
+    );
     assert!(
         stdout.starts_with(&format!(
             "run {} écrit dans ",

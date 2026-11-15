@@ -33,6 +33,7 @@ pub mod distribution;
 pub mod drawdown;
 pub mod equity;
 pub mod executability;
+pub mod governance;
 pub mod manifest;
 pub mod metrics;
 pub mod metrics_s9;

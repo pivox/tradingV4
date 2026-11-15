@@ -737,6 +737,7 @@ fn protected(block: Block, with_block_dataset: bool) -> Protected {
     let dir = tempfile::tempdir().expect("dossier temporaire");
     let root = dir.path().join("racine");
     fs::create_dir_all(&root).expect("racine");
+    cli_research_common::init_research(&root);
     let start = block.span().start_ms;
     let symbols = write_series(&root, start);
     let window = window_of(start);
@@ -807,6 +808,12 @@ impl Protected {
             "--out".to_string(),
             shown(out),
         ]);
+        args.extend([
+            "--research-root".into(),
+            shown(&self.root),
+            "--hypothesis".into(),
+            "H-001".into(),
+        ]);
         args.extend(strings(extra));
         args
     }
@@ -821,28 +828,24 @@ impl Protected {
 }
 
 #[test]
-fn les_blocs_proteges_refusent_la_lecture_sans_la_garde_provisoire() {
+fn les_blocs_proteges_refusent_la_lecture_sans_candidat_gele() {
     for block in [Block::Validation, Block::Holdout] {
         let p = protected(block, true);
         let sub = p.subset(&["BTC"]);
         let out = p._dir.path().join("out");
         let (code, texte) = run(&p.args("bloc", &out, &["--okx-subset", &shown(&sub)]));
         assert_eq!(code, Some(2), "{block} : {texte}");
-        assert!(
-            texte.contains("garde-fous de S12 non livrés"),
-            "{block} : {texte}"
-        );
-        assert!(texte.contains(&block.to_string()), "{texte}");
+        assert!(texte.contains("frozen"), "{block} : {texte}");
         assert!(!out.exists(), "{block} : rien ne doit être lu ni écrit");
     }
 }
 
 #[test]
-fn les_blocs_proteges_exigent_le_sous_ensemble_meme_avec_la_garde() {
+fn les_blocs_proteges_exigent_le_sous_ensemble() {
     for block in [Block::Validation, Block::Holdout] {
         let p = protected(block, true);
         let out = p._dir.path().join("out");
-        let (code, texte) = run(&p.args("bloc", &out, &["--unguarded-protected-read"]));
+        let (code, texte) = run(&p.args("bloc", &out, &[]));
         assert_eq!(code, Some(2), "{block} : {texte}");
         assert!(texte.contains("--okx-subset"), "{block} : {texte}");
         assert!(texte.contains("full et okx_usdc"), "{texte}");
@@ -851,33 +854,57 @@ fn les_blocs_proteges_exigent_le_sous_ensemble_meme_avec_la_garde() {
 }
 
 #[test]
-fn la_lecture_protegee_non_gardee_est_tracee_dans_chaque_rapport_et_sur_stderr() {
+fn la_lecture_protegee_admise_est_tracee_dans_chaque_rapport() {
     for block in [Block::Validation, Block::Holdout] {
         let p = protected(block, true);
+        p.add_block("dev_seed", Block::Dev);
+        let seed = p._dir.path().join("seed");
+        ok(&p.args("dev_seed", &seed, &[]));
+        let hash = json(&seed.join("metrics.json"))["config_hash"]
+            .as_str()
+            .unwrap()
+            .to_owned();
         let sub = p.subset(&["BTC"]);
+        let subset = json(&sub)["subset_hash"].as_str().unwrap().to_owned();
+        cli_research_common::freeze(&p.root, &[hash], &subset);
+        if block == Block::Holdout {
+            ok(&strings(&[
+                "research",
+                "claim",
+                "--research-root",
+                &shown(&p.root),
+                "--hypothesis",
+                "H-001",
+            ]));
+        }
         let out = p._dir.path().join("out");
-        let (_, stderr) = ok(&p.args(
-            "bloc",
-            &out,
-            &["--okx-subset", &shown(&sub), "--unguarded-protected-read"],
-        ));
-        assert!(
-            stderr.contains("sans les garde-fous de S12"),
-            "{block} : {stderr}"
-        );
-        assert!(stderr.contains(&block.to_string()), "{stderr}");
+        let (stdout, stderr) = ok(&p.args("bloc", &out, &["--okx-subset", &shown(&sub)]));
+        assert!(stderr.is_empty(), "{stderr}");
+        assert!(stdout.contains("N_eff = non calculé"));
         for line in ["full", "okx_usdc"] {
             let metrics = json(&out.join(line).join("metrics.json"));
-            assert_eq!(metrics["research"]["guard"], "unguarded", "{block} {line}");
+            assert_eq!(metrics["research"]["guard"], "guarded");
             assert_eq!(metrics["research"]["block"], block.to_string());
+            let manifest = json(&out.join(line).join("manifest.json"));
+            assert_eq!(manifest["governance"]["schema"], "tv4-governance-v1");
+            assert_eq!(manifest["governance"]["noise"]["n"], 1);
+            assert_eq!(manifest["governance"]["effective_block"], block.to_string());
         }
         let lines = json(&out.join("lines.json"));
-        assert_eq!(lines["block"], block.to_string());
-        // La ligne okx_usdc ne joue que BTC-USD.
         assert_eq!(lines["lines"][1]["legs"], serde_json::json!(["BTC-USD"]));
-        let (code, texte) = verify(&out, &out);
-        assert_eq!(code, Some(0), "{texte}");
+        let (code, text) = verify(&out, &out);
+        assert_eq!(code, Some(0), "{text}");
     }
+}
+
+#[test]
+fn le_bypass_s11_est_supprime() {
+    let p = protected(Block::Holdout, true);
+    let out = p._dir.path().join("out");
+    let (code, text) = run(&p.args("bloc", &out, &["--unguarded-protected-read"]));
+    assert_eq!(code, Some(2), "{text}");
+    assert!(text.contains("unexpected argument"), "{text}");
+    assert!(!p.root.join("research/trials.csv").exists());
 }
 
 #[test]
@@ -972,4 +999,593 @@ fn une_jambe_absente_du_dataset_est_refusee_en_code_1() {
     assert_eq!(code, Some(1), "{texte}");
     assert!(texte.contains("XRP-USD"), "{texte}");
     assert!(!out.exists());
+}
+
+#[test]
+fn trois_profils_et_deux_lignes_reservent_une_seule_lecture_et_trois_essais() {
+    let p = protected(Block::Holdout, true);
+    p.add_block("dev_seed", Block::Dev);
+    let seed = p._dir.path().join("seed");
+    ok(&p.args("dev_seed", &seed, &["--costs", &costs_file()]));
+    let hashes = ["baseline", "adverse", "maker"]
+        .iter()
+        .map(|profile| {
+            json(&seed.join(profile).join("metrics.json"))["config_hash"]
+                .as_str()
+                .unwrap()
+                .to_owned()
+        })
+        .collect::<Vec<_>>();
+    let sub = p.subset(&["BTC"]);
+    let subset = json(&sub)["subset_hash"].as_str().unwrap().to_owned();
+    cli_research_common::freeze(&p.root, &hashes, &subset);
+    ok(&strings(&[
+        "research",
+        "claim",
+        "--research-root",
+        &shown(&p.root),
+        "--hypothesis",
+        "H-001",
+    ]));
+    let out = p._dir.path().join("out");
+    ok(&p.args(
+        "bloc",
+        &out,
+        &["--costs", &costs_file(), "--okx-subset", &shown(&sub)],
+    ));
+    let registry =
+        tv4::research::registry::Registry::from_csv(&read(&p.root.join("research/trials.csv")))
+            .unwrap();
+    assert_eq!(registry.n(), 3);
+    assert_eq!(registry.reads().len(), 2);
+    assert_eq!(registry.claims().len(), 3);
+    let holdout = registry
+        .reads()
+        .values()
+        .find(|r| r.block == Some(Block::Holdout))
+        .unwrap();
+    assert_eq!(holdout.config_hashes.len(), 3);
+    assert!(holdout.is_complete());
+    for (i, profile) in ["baseline", "adverse", "maker"].iter().enumerate() {
+        for line in ["full", "okx_usdc"] {
+            let manifest = json(&out.join(line).join(profile).join("manifest.json"));
+            assert_eq!(manifest["governance"]["noise"]["n"], 3);
+            assert_eq!(manifest["governance"]["read_id"], holdout.id.0);
+            assert_eq!(manifest["config_hash"], hashes[i]);
+        }
+    }
+    // Les métriques du registre sont celles de full, chaque profil une seule fois.
+    for hash in hashes {
+        let event = registry
+            .events()
+            .iter()
+            .find(|e| {
+                e.read_id == Some(holdout.id)
+                    && e.config_hash.as_str() == hash
+                    && e.status == tv4::research::registry::Status::Completed
+            })
+            .unwrap();
+        let name = ["baseline", "adverse", "maker"]
+            .into_iter()
+            .find(|name| {
+                json(&out.join("full").join(name).join("metrics.json"))["config_hash"] == hash
+            })
+            .unwrap();
+        assert_eq!(
+            event.metrics.n,
+            Some(
+                json(&out.join("full").join(name).join("metrics.json"))["n_trades"]
+                    .as_u64()
+                    .unwrap()
+            )
+        );
+    }
+}
+
+#[test]
+fn tous_les_refus_proteges_precedent_parquet_et_conservent_le_prefixe() {
+    for case in ["tag", "fiche", "hash", "claim", "subset", "profils"] {
+        let p = protected(Block::Holdout, true);
+        p.add_block("dev_seed", Block::Dev);
+        let seed = p._dir.path().join("seed");
+        ok(&p.args("dev_seed", &seed, &[]));
+        let hash = json(&seed.join("metrics.json"))["config_hash"]
+            .as_str()
+            .unwrap()
+            .to_owned();
+        let sub = p.subset(&["BTC"]);
+        let subset = json(&sub)["subset_hash"].as_str().unwrap().to_owned();
+        cli_research_common::freeze(&p.root, &[hash], &subset);
+        let mut extra = vec!["--okx-subset".to_owned(), shown(&sub)];
+        match case {
+            "tag" => cli_research_common::git(&p.root, &["tag", "-d", "frozen/H-001"]),
+            "fiche" => {
+                let path = p.root.join("research/H-001.md");
+                let mut text = fs::read_to_string(&path).unwrap();
+                text.push('\n');
+                fs::write(path, text).unwrap();
+            }
+            "hash" => {
+                fs::write(
+                    &p.params,
+                    "tf = \"15m\"\nfast = 6\nslow = 20\nstop_atr_mult = 2.0\n",
+                )
+                .unwrap();
+            }
+            "subset" => {
+                let other = p.subset(&["BTC", "ETH"]);
+                extra[1] = shown(&other);
+            }
+            "profils" => extra.extend(["--costs".into(), costs_file()]),
+            "claim" => {}
+            _ => unreachable!(),
+        }
+        let csv = p.root.join("research/trials.csv");
+        let prefix = read(&csv);
+        fs::remove_dir_all(p.root.join("data")).unwrap();
+        let out = p._dir.path().join("out");
+        let refs = extra.iter().map(String::as_str).collect::<Vec<_>>();
+        let (code, text) = run(&p.args("bloc", &out, &refs));
+        assert_eq!(code, Some(2), "{case}: {text}");
+        assert!(!text.contains("parquet"), "{case}: {text}");
+        assert_eq!(read(&csv), prefix, "{case}");
+        assert!(!out.exists());
+    }
+}
+
+fn seed_rotation(root: &Path, seed_registry: &tv4::research::registry::Registry) -> String {
+    use tv4::research::registry::{
+        Admission, AdmissionTime, ConfigSpec, Digest, Registry, UtcDate, encode_events, header_csv,
+    };
+    let (hash, trial) = seed_registry.trials().first_key_value().unwrap();
+    let config = ConfigSpec {
+        config_hash: hash.clone(),
+        family: trial.family.clone(),
+        hypothesis: trial.hypothesis.clone(),
+    };
+    let date = UtcDate::new("2024-01-01T00:00:00Z").unwrap();
+    let admission = Admission {
+        configs: vec![config.clone()],
+        dataset_hash: Digest::new("b".repeat(64)).unwrap(),
+        block: Some(Block::Dev),
+        time: AdmissionTime::new(date.clone(), date.quarter()).unwrap(),
+        generation: 0,
+        decision_start_ms: Some(Block::Dev.span().start_ms),
+        decision_end_ms: Block::Dev.span().end_ms,
+    };
+    let mut reg = Registry::default()
+        .with_events(
+            &Registry::default()
+                .propose_admission(&admission)
+                .unwrap()
+                .events,
+        )
+        .unwrap();
+    // Pré-histoire synthétique : trois lectures de la génération initiale, sans résultats.
+    for date in [
+        "2025-01-01T00:00:00Z",
+        "2025-04-01T00:00:00Z",
+        "2025-07-01T00:00:00Z",
+    ] {
+        let date = UtcDate::new(date).unwrap();
+        reg = reg
+            .with_events(
+                &reg.propose_claims(
+                    std::slice::from_ref(hash),
+                    config.hypothesis.as_ref().unwrap(),
+                    &date,
+                )
+                .unwrap(),
+            )
+            .unwrap();
+        let request = Admission {
+            configs: vec![config.clone()],
+            dataset_hash: Digest::new("b".repeat(64)).unwrap(),
+            block: Some(Block::Holdout),
+            time: AdmissionTime::new(date.clone(), date.quarter()).unwrap(),
+            generation: 0,
+            decision_start_ms: Some(Block::Holdout.span().start_ms),
+            decision_end_ms: Block::Holdout.span().end_ms,
+        };
+        reg = reg
+            .with_events(&reg.propose_admission(&request).unwrap().events)
+            .unwrap();
+    }
+    let mut csv = header_csv();
+    csv.extend(encode_events(reg.events()).unwrap());
+    fs::write(root.join("research/trials.csv"), csv).unwrap();
+    hash.to_string()
+}
+
+#[test]
+fn rotation_relabelle_holdout_et_ne_joue_que_le_forward_postgel() {
+    use tv4::research::registry::Registry;
+    let p = protected(Block::Holdout, true);
+    p.add_block("dev_seed", Block::Dev);
+    let seed = p._dir.path().join("seed");
+    ok(&p.args("dev_seed", &seed, &[]));
+    let seed_registry = Registry::from_csv(&read(&p.root.join("research/trials.csv"))).unwrap();
+    let hash = seed_rotation(&p.root, &seed_registry);
+    let sub = p.subset(&["BTC"]);
+    let subset = json(&sub)["subset_hash"].as_str().unwrap().to_owned();
+    cli_research_common::freeze(&p.root, std::slice::from_ref(&hash), &subset);
+    let old = p._dir.path().join("ancien");
+    ok(&p.args("bloc", &old, &["--okx-subset", &shown(&sub)]));
+    let old_manifest = json(&old.join("full/manifest.json"));
+    assert_eq!(old_manifest["governance"]["source_block"], "HOLDOUT");
+    assert_eq!(old_manifest["governance"]["effective_block"], "VALIDATION");
+    assert_eq!(
+        json(&old.join("full/metrics.json"))["research"]["block"],
+        "VALIDATION"
+    );
+    let frozen_at = old_manifest["governance"]["frozen_at"].as_str().unwrap();
+    let frozen_ms = tv4::store::time::parse_rfc3339_utc(frozen_at).unwrap();
+    let (year, month, _) = tv4::store::time::civil_from_days(frozen_ms.div_euclid(86_400_000));
+    let quarter = (month - 1) / 3;
+    let first_month = quarter * 3 + 4;
+    let (first_year, first_month) = if first_month > 12 {
+        (year + 1, 1)
+    } else {
+        (year, first_month)
+    };
+    let (end_year, end_month) = if first_month == 10 {
+        (first_year + 1, 1)
+    } else {
+        (first_year, first_month + 3)
+    };
+    let decision_start = tv4::store::time::days_from_civil(first_year, first_month, 1) * 86_400_000;
+    let decision_end = tv4::store::time::days_from_civil(end_year, end_month, 1) * 86_400_000;
+    let symbols = write_series(&p.root, decision_start);
+    build_dataset_research(
+        &p.root,
+        &MultiBuildRequest {
+            name: "renouvele",
+            exchange: ExchangeId::Kraken,
+            symbols: &symbols,
+            tf: Timeframe::M1,
+            window: Window::new(Block::Forward.span().start_ms, decision_end).unwrap(),
+            gaps_policy: GapsPolicy::ZeroVolumeMarked,
+        },
+        &ResearchMeta {
+            block: Block::Forward,
+            universe: None,
+            universe_quality: None,
+        },
+        FUTUR,
+    )
+    .unwrap();
+    ok(&strings(&[
+        "research",
+        "claim",
+        "--research-root",
+        &shown(&p.root),
+        "--hypothesis",
+        "H-001",
+    ]));
+    let out = p._dir.path().join("nouveau");
+    ok(&p.args("renouvele", &out, &["--okx-subset", &shown(&sub)]));
+    let manifest = json(&out.join("full/manifest.json"));
+    let metrics = json(&out.join("full/metrics.json"));
+    assert_eq!(manifest["governance"]["source_block"], "FORWARD");
+    assert_eq!(manifest["governance"]["effective_block"], "HOLDOUT");
+    assert_eq!(manifest["governance"]["generation"], 1);
+    assert_eq!(metrics["research"]["block"], "HOLDOUT");
+    assert_eq!(metrics["research"]["identity"]["block"], "HOLDOUT");
+    assert_eq!(
+        metrics["research"]["decision_window"]["start_ms"],
+        decision_start
+    );
+    assert_eq!(
+        metrics["research"]["decision_window"]["end_ms"],
+        decision_end
+    );
+    assert_eq!(metrics["config_hash"], hash.to_string());
+    let reg = Registry::from_csv(&read(&p.root.join("research/trials.csv"))).unwrap();
+    let last = reg.reads().last_key_value().unwrap().1;
+    assert_eq!(last.decision_start_ms, Some(decision_start));
+    assert_eq!(last.decision_end_ms, Some(decision_end));
+    assert!(last.is_complete());
+}
+
+#[test]
+fn lecture_protegee_interrompue_consomme_claim_et_quota_sans_remboursement() {
+    let p = protected(Block::Holdout, true);
+    p.add_block("dev_seed", Block::Dev);
+    let seed = p._dir.path().join("seed");
+    ok(&p.args("dev_seed", &seed, &[]));
+    let hash = json(&seed.join("metrics.json"))["config_hash"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let sub = p.subset(&["BTC"]);
+    let subset = json(&sub)["subset_hash"].as_str().unwrap().to_owned();
+    cli_research_common::freeze(&p.root, &[hash], &subset);
+    ok(&strings(&[
+        "research",
+        "claim",
+        "--research-root",
+        &shown(&p.root),
+        "--hypothesis",
+        "H-001",
+    ]));
+    fs::remove_dir_all(p.root.join("data")).unwrap();
+    let out = p._dir.path().join("out");
+    let args = p.args("bloc", &out, &["--okx-subset", &shown(&sub)]);
+    let (code, text) = run(&args);
+    assert_eq!(code, Some(1), "{text}");
+    assert!(!out.exists());
+    let csv = p.root.join("research/trials.csv");
+    let prefix = read(&csv);
+    let registry = tv4::research::registry::Registry::from_csv(&prefix).unwrap();
+    assert_eq!(registry.n(), 1);
+    assert_eq!(registry.reads().len(), 2);
+    assert!(
+        registry
+            .claims()
+            .values()
+            .all(|claim| claim.consumed_by.is_some())
+    );
+    assert_eq!(
+        registry
+            .events()
+            .iter()
+            .filter(|e| e.status == tv4::research::registry::Status::Failed)
+            .count(),
+        1
+    );
+    let (code, text) = run(&args);
+    assert_eq!(code, Some(2), "{text}");
+    assert!(text.contains("quota HOLDOUT"), "{text}");
+    assert_eq!(read(&csv), prefix);
+}
+
+#[test]
+fn rotation_quarterly_reduit_union_et_recalcule_window_hash_sans_changer_config() {
+    use std::collections::BTreeMap;
+    use tv4::research::registry::Registry;
+    use tv4::store::time::{civil_from_days, days_from_civil, format_rfc3339_utc};
+    use tv4::store::universe::{
+        InstrumentRule, QuarterBuild, UnionEntry, UniverseBuild, load, write_universe,
+    };
+    let p = protected(Block::Forward, false);
+    let world = World::with_universe();
+    let source = load(&world.universe).unwrap();
+    let output = std::process::Command::new("git")
+        .arg("-C")
+        .arg(&p.root)
+        .args(["show", "-s", "--format=%ct", "HEAD"])
+        .output()
+        .unwrap();
+    let seconds = String::from_utf8(output.stdout)
+        .unwrap()
+        .trim()
+        .parse::<i64>()
+        .unwrap();
+    let (year, month, _) = civil_from_days(seconds.div_euclid(86_400));
+    let next_month = ((month - 1) / 3) * 3 + 4;
+    let (year, month) = if next_month > 12 {
+        (year + 1, 1)
+    } else {
+        (year, next_month)
+    };
+    let decision_start = days_from_civil(year, month, 1) * 86_400_000;
+    let (end_year, end_month) = if month == 10 {
+        (year + 1, 1)
+    } else {
+        (year, month + 3)
+    };
+    let decision_end = days_from_civil(end_year, end_month, 1) * 86_400_000;
+    let mut quarters = Vec::new();
+    let mut cursor = Block::Forward.span().start_ms;
+    let old_rows = source.quarters()[0]
+        .rows
+        .iter()
+        .filter(|r| r.base == "BTC" || r.base == "ETH")
+        .cloned()
+        .collect::<Vec<_>>();
+    while cursor < decision_end {
+        let (year, month, _) = civil_from_days(cursor.div_euclid(86_400_000));
+        let rows = old_rows
+            .iter()
+            .filter(|row| cursor < decision_start || row.base == "BTC")
+            .cloned()
+            .collect::<Vec<_>>();
+        quarters.push(QuarterBuild {
+            quarter: format!("{year}-Q{}", (month - 1) / 3 + 1),
+            eligible: rows.len() as u32,
+            quality_hashes: rows
+                .iter()
+                .map(|row| (row.symbol.clone(), row.input_hash.clone()))
+                .collect::<BTreeMap<_, _>>(),
+            rows,
+        });
+        let (year, month) = if month == 10 {
+            (year + 1, 1)
+        } else {
+            (year, month + 3)
+        };
+        cursor = days_from_civil(year, month, 1) * 86_400_000;
+    }
+    let mut source_info = source.file().source.clone();
+    source_info.coverage_end = format_rfc3339_utc(decision_end).unwrap();
+    let universe = p._dir.path().join("quarterly");
+    write_universe(
+        &universe,
+        &UniverseBuild {
+            source: source_info,
+            rules: source.file().rules.clone(),
+            quarters,
+            at: vec![],
+            rejected_pairs: vec![],
+            unrecognized_pairs: vec![],
+            union: old_rows
+                .iter()
+                .map(|row| UnionEntry {
+                    symbol: row.symbol.clone(),
+                    kraken_pair: row.kraken_pair.clone(),
+                    first_quarter: "2026-Q3".into(),
+                })
+                .collect(),
+            instruments: old_rows
+                .iter()
+                .map(|row| {
+                    let rules = tv4::model::InstrumentRules::from_toml_str(
+                        ExchangeId::Kraken,
+                        &row.symbol,
+                        source.instruments_text(),
+                    )
+                    .unwrap();
+                    InstrumentRule {
+                        symbol: row.symbol.clone(),
+                        tick_size: rules.tick_size,
+                        lot_size: rules.lot_size,
+                        min_qty: rules.min_qty,
+                        min_notional: rules.min_notional,
+                    }
+                })
+                .collect(),
+            instruments_method: "decimals_v1".into(),
+        },
+    )
+    .unwrap();
+    let loaded = load(&universe).unwrap();
+    let symbols = write_series(&p.root, decision_start);
+    build_dataset_research(
+        &p.root,
+        &MultiBuildRequest {
+            name: "quarterly",
+            exchange: ExchangeId::Kraken,
+            symbols: &symbols,
+            tf: Timeframe::M1,
+            window: Window::new(Block::Forward.span().start_ms, decision_end).unwrap(),
+            gaps_policy: GapsPolicy::ZeroVolumeMarked,
+        },
+        &ResearchMeta {
+            block: Block::Forward,
+            universe: Some(
+                loaded
+                    .reference(Block::Forward.span().start_ms, decision_end)
+                    .unwrap(),
+            ),
+            universe_quality: None,
+        },
+        FUTUR,
+    )
+    .unwrap();
+    let args_for = |out: &Path, subset: Option<&Path>| {
+        let mut args = p.args("quarterly", out, &[]);
+        for option in ["--symbols", "--instruments-file"] {
+            let index = args.iter().position(|arg| arg == option).unwrap();
+            args.drain(index..index + 2);
+        }
+        args.extend(["--universe".into(), shown(&universe)]);
+        if let Some(subset) = subset {
+            args.extend(["--okx-subset".into(), shown(subset)]);
+        }
+        args
+    };
+    let seed = p._dir.path().join("seed");
+    ok(&args_for(&seed, None));
+    let seed_metrics = json(&seed.join("metrics.json"));
+    let seed_registry = Registry::from_csv(&read(&p.root.join("research/trials.csv"))).unwrap();
+    let hash = seed_rotation(&p.root, &seed_registry);
+    let sub = p.subset(&["BTC"]);
+    let subset = json(&sub)["subset_hash"].as_str().unwrap().to_owned();
+    cli_research_common::freeze(&p.root, std::slice::from_ref(&hash), &subset);
+    ok(&strings(&[
+        "research",
+        "claim",
+        "--research-root",
+        &shown(&p.root),
+        "--hypothesis",
+        "H-001",
+    ]));
+    let out = p._dir.path().join("out");
+    ok(&args_for(&out, Some(&sub)));
+    let metrics = json(&out.join("full/metrics.json"));
+    let manifest = json(&out.join("full/manifest.json"));
+    assert_eq!(metrics["config_hash"], hash);
+    assert_eq!(manifest["governance"]["effective_block"], "HOLDOUT");
+    assert_eq!(
+        metrics["research"]["identity"]["universe_window_hash"],
+        loaded.window_hash(decision_start, decision_end).unwrap()
+    );
+    assert_ne!(
+        metrics["research"]["identity"]["universe_window_hash"],
+        seed_metrics["research"]["identity"]["universe_window_hash"]
+    );
+    assert_eq!(
+        json(&out.join("lines.json"))["lines"][0]["legs"],
+        serde_json::json!(["BTC-USD"])
+    );
+    assert_eq!(
+        json(&out.join("lines.json"))["lines"][1]["legs"],
+        serde_json::json!(["BTC-USD"])
+    );
+}
+
+fn frozen_holdout_for_process_test() -> (Protected, PathBuf) {
+    let p = protected(Block::Holdout, true);
+    p.add_block("dev_seed", Block::Dev);
+    let seed = p._dir.path().join("seed");
+    ok(&p.args("dev_seed", &seed, &[]));
+    let hash = json(&seed.join("metrics.json"))["config_hash"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let sub = p.subset(&["BTC"]);
+    let subset = json(&sub)["subset_hash"].as_str().unwrap().to_owned();
+    cli_research_common::freeze(&p.root, &[hash], &subset);
+    ok(&strings(&[
+        "research",
+        "claim",
+        "--research-root",
+        &shown(&p.root),
+        "--hypothesis",
+        "H-001",
+    ]));
+    (p, sub)
+}
+
+#[test]
+fn deux_processus_ne_consomment_pas_le_meme_claim_et_quota_holdout() {
+    let (p, sub) = frozen_holdout_for_process_test();
+    let launch = |name: &str| {
+        std::process::Command::new(env!("CARGO_BIN_EXE_tv4"))
+            .args(p.args(
+                "bloc",
+                &p._dir.path().join(name),
+                &["--okx-subset", &shown(&sub)],
+            ))
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .spawn()
+            .unwrap()
+    };
+    let mut a = launch("a");
+    let mut b = launch("b");
+    let mut codes = [
+        a.wait().unwrap().code().unwrap(),
+        b.wait().unwrap().code().unwrap(),
+    ];
+    codes.sort();
+    assert_eq!(codes, [0, 2]);
+    let reg =
+        tv4::research::registry::Registry::from_csv(&read(&p.root.join("research/trials.csv")))
+            .unwrap();
+    assert_eq!(
+        reg.reads()
+            .values()
+            .filter(|r| r.block == Some(Block::Holdout))
+            .count(),
+        1
+    );
+    assert_eq!(
+        reg.claims()
+            .values()
+            .filter(|c| c.consumed_by.is_some())
+            .count(),
+        1
+    );
+    assert!(reg.pending_reads().is_empty());
 }

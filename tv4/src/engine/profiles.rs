@@ -99,7 +99,7 @@ pub struct ProfilesResult {
 
 /// Refus de la configuration propre aux profils : slippage scalaire, stress de simulateur, grille sans
 /// nom.
-fn check_cost_config(config: &PortfolioConfig<'_>) -> Result<(), EngineError> {
+pub(super) fn check_cost_config(config: &PortfolioConfig<'_>) -> Result<(), EngineError> {
     if config.slippage != Slippage::ZERO {
         return Err(EngineError::ScalarSlippageWithCosts {
             bps: config.slippage.bps(),
@@ -134,7 +134,7 @@ fn same_declaration(a: &[Box<dyn Strategy>], b: &[Box<dyn Strategy>]) -> bool {
 }
 
 /// Résout les coûts de chaque jambe pour un profil.
-fn resolve_legs(
+pub(super) fn resolve_legs(
     config: &PortfolioConfig<'_>,
     costs: &CostSetup<'_>,
     profile: CostProfileName,

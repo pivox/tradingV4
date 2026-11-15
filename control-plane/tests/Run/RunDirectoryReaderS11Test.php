@@ -398,6 +398,6 @@ final class RunDirectoryReaderS11Test extends TestCase
     {
         self::assertSame(['DEV', 'VALIDATION', 'HOLDOUT', 'FORWARD'], ResearchInfo::BLOCKS);
         self::assertSame(['full', 'okx_usdc'], ResearchInfo::LINES);
-        self::assertSame(['none', 'unguarded'], ResearchInfo::GUARDS);
+        self::assertSame(['none', 'unguarded', 'guarded'], ResearchInfo::GUARDS);
     }
 }

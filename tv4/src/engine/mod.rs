@@ -99,6 +99,7 @@
 pub mod config;
 mod portfolio;
 pub mod portfolio_config;
+pub mod preflight;
 pub mod priority;
 pub mod profiles;
 mod regime;

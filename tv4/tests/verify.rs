@@ -1,5 +1,7 @@
 //! `tv4 verify` (S8, docs/specs/s8.md §9) : on lance le vrai binaire sur des runs écrits par `tv4 backtest`.
 
+mod research_test_support;
+
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
@@ -8,8 +10,10 @@ use serde_json::Value;
 use tv4::model::hash;
 
 fn tv4(args: &[String]) -> Output {
-    Command::new(env!("CARGO_BIN_EXE_tv4"))
-        .args(args)
+    let mut command = Command::new(env!("CARGO_BIN_EXE_tv4"));
+    command.args(args);
+    let _research_root = research_test_support::isolate(&mut command, args);
+    command
         .output()
         .expect("le binaire tv4 doit pouvoir être lancé")
 }

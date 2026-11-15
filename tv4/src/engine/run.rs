@@ -65,10 +65,7 @@ pub struct CellResult {
 impl CellResult {
     /// Remplace le seuil `min_trades` (refuse 0) et recalcule le `config_hash`.
     pub fn with_min_trades(mut self, min_trades: u32) -> Result<CellResult, EngineError> {
-        if min_trades == 0 {
-            return Err(EngineError::InvalidMinTrades);
-        }
-        self.config.min_trades = min_trades;
+        self.config = self.config.with_min_trades(min_trades)?;
         self.config_hash = self.config.hash()?;
         Ok(self)
     }

@@ -2,6 +2,9 @@
 {% set gt = profiles.gates %}
 <section id="profils" class="section" aria-labelledby="profils-titre">
   <h2 id="profils-titre">Profils de coûts</h2>
+{% if profiles.isUnguarded %}
+  <p class="callout-garde"><strong>Lecture protégée sans garde-fou.</strong> Ce dossier contient des profils historiques dont l’admission protégée n’est pas attestée.</p>
+{% endif %}
   <p class="note">Trois runs du même dataset et de la même configuration, joués avec les profils de coûts baseline, adverse et maker (docs/specs/s10.md). Les portes se jugent sur baseline <strong>et</strong> adverse ; le profil maker est informatif. Les valeurs sont celles que <code>tv4</code> a écrites dans <code>profiles.json</code> et dans chaque sous-dossier ; le control plane ne recalcule ni étiquette ni porte.</p>
 
   <p class="badge label-{{ profiles.label }}">Étiquette : <strong>{{ profiles.labelFr }}</strong> (<code>{{ profiles.label }}</code>)</p>

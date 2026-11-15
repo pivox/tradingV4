@@ -41,6 +41,7 @@ final readonly class Manifest
         public ?string $costMeasuresHash = null,
         public ?string $profilesId = null,
         public ?array $researchInputs = null,
+        public ?GovernanceContext $governance = null,
     ) {
     }
 }

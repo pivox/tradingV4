@@ -12,7 +12,7 @@
 //! sûr) ou usage refusé par la CLI de S10 (`--costs` sans `--symbols` ou avec `--slippage-bps`, dataset
 //! absent ou paramètre invalide de `costs calibrate-stress`) ou par celle de S11 (option de recherche
 //! mal combinée, dataset de bloc lu sans `--symbols` ni `--universe`, `--universe` qui n'est pas celui du
-//! dataset, lecture protégée avant S12), 3 `tv4 verify` a trouvé deux runs différents.
+//! dataset, admission de recherche S12 refusée), 3 `tv4 verify` a trouvé deux runs différents.
 //!
 //! La CLI est le seul module qui lit l'horloge système ([`now_ms`]) : le store reçoit l'instant en
 //! paramètre (docs/03 §5.3, écart 5 de S4).
@@ -39,6 +39,7 @@ pub use ingest_okx::{
     MonthStatus, OkxIngestOptions, OkxIngestReport, UtcDate, ingest_okx,
 };
 pub use instruments::{FetchArgs, InstrumentsAction};
+pub use research::{ResearchAction, ResearchError};
 pub use universe::{
     UniverseAction, UniverseBuildArgs, UniverseOkxSubsetArgs, UniverseSurvivorshipArgs,
     UniverseVerifyArgs,
@@ -53,12 +54,15 @@ mod dataset;
 mod ingest;
 mod ingest_okx;
 mod instruments;
+pub(crate) mod research;
 mod universe;
 mod verify;
 
 /// Erreurs de la couche CLI.
 #[derive(Debug, thiserror::Error)]
 pub enum CliError {
+    #[error(transparent)]
+    Research(#[from] ResearchError),
     /// Un fichier d'entrée n'a pas pu être lu.
     #[error("lecture de `{path}` impossible : {source}")]
     Read {
@@ -247,14 +251,6 @@ pub enum CliError {
         detail: String,
     },
 
-    /// Lecture d'un bloc protégé (VALIDATION, HOLDOUT) avant les garde-fous de S12 (docs/specs/s11.md
-    /// §9.5). Code 2.
-    #[error(
-        "lecture protégée : garde-fous de S12 non livrés (bloc {block}, dataset `{dataset}`) ; \
-         l'option cachée --unguarded-protected-read la trace dans les rapports"
-    )]
-    ProtectedRead { block: String, dataset: String },
-
     /// Le zip ne donne pas de fin de couverture lisible et `--coverage-end` n'est pas fourni : le repli
     /// de l'ingestion sur l'instant présent rendrait les fichiers dépendants de l'heure d'exécution
     /// (docs/specs/s11.md §4.5).
@@ -296,13 +292,13 @@ impl CliError {
     pub fn exit_code(&self) -> u8 {
         match self {
             CliError::VerifyMismatch { .. } => 3,
+            CliError::Research(error) => error.exit_code(),
             CliError::Credentials(error) if error.is_unsafe_file() => 2,
             CliError::PrivateApi(error) if error.is_key_refused() => 2,
             CliError::CostsWithoutSymbols
             | CliError::CostsWithScalarSlippage
             | CliError::Usage { .. }
             | CliError::UniverseMismatch { .. }
-            | CliError::ProtectedRead { .. }
             | CliError::DatasetNotFound { .. }
             | CliError::Stress(crate::research::stress::StressError::InvalidParams { .. }) => 2,
             _ => 1,
@@ -369,6 +365,11 @@ pub enum Command {
         #[command(subcommand)]
         action: CostsAction,
     },
+    /// Registre des essais, quotas et claims HOLDOUT (S12).
+    Research {
+        #[command(subcommand)]
+        action: ResearchAction,
+    },
     /// Univers trimestriel, test de survivance et liste OKX en USDC (S11).
     Universe {
         /// Opération demandée.
@@ -406,6 +407,7 @@ pub fn run(command: &Command) -> Result<(), CliError> {
         Command::Dataset { action } => match action {
             DatasetAction::Build(args) => dataset::build(args),
         },
+        Command::Research { action } => research::run(action),
         Command::Backtest(args) => backtest::run(args),
         Command::CompareSources(args) => compare_sources::run(args),
         Command::Verify(args) => verify::run(args),
